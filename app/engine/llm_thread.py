@@ -12,12 +12,16 @@ _CONTEXT_BUDGET = 4096
 _RESPONSE_RESERVE = 1024
 _HISTORY_CHAR_LIMIT = (_CONTEXT_BUDGET - _RESPONSE_RESERVE) * 3
 
+_OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
+_CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
+
 
 class LLMThread(QThread):
     new_thought_token = pyqtSignal(str)
     new_chat_token = pyqtSignal(str)
-    new_raw_token = pyqtSignal(str)                 # M7: every character pre-parser
-    generation_finished = pyqtSignal(str, str)       # thought, response
+    new_raw_token = pyqtSignal(str)
+    # truncated=True means max_tokens was hit mid-generation — UI should auto-continue
+    generation_finished = pyqtSignal(str, str, bool)  # thought, response, truncated
     error_occurred = pyqtSignal(str)
 
     def __init__(self, system_prompt, chat_history, hyperparams, retrieved_chunks=None):
@@ -45,12 +49,11 @@ class LLMThread(QThread):
     def run(self):
         try:
             importlib.reload(core.interaction_loop)
-            
+
             llm = ModelLoader.get_instance()
             trimmed_history = self._trim_history(self.chat_history)
             prompt = core.interaction_loop.build_prompt(self.system_prompt, trimmed_history)
-            
-            # M7: Open raw token archive file
+
             os.makedirs(RAW_LOG_DIR, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
             raw_log_path = os.path.join(RAW_LOG_DIR, f"{ts}.tokens")
@@ -71,16 +74,24 @@ class LLMThread(QThread):
             parsed_response = ""
             in_thought = False
             buffer = ""
+            finish_reason = "stop"  # default — overridden if we see 'length'
 
             with open(raw_log_path, "w", encoding="utf-8") as raw_file:
                 for chunk in response_generator:
                     if 'choices' not in chunk or not chunk['choices']:
                         continue
-                    text = chunk['choices'][0].get('text', '')
+
+                    choice = chunk['choices'][0]
+
+                    # Track finish_reason from every chunk (last non-None wins)
+                    fr = choice.get('finish_reason')
+                    if fr is not None:
+                        finish_reason = fr
+
+                    text = choice.get('text', '')
                     if not text:
                         continue
 
-                    # M7: Write raw token immediately, before any parsing
                     micro_ts = f"{time.time():.6f}"
                     raw_file.write(f"{micro_ts}\t{text}\n")
                     raw_file.flush()
@@ -105,9 +116,6 @@ class LLMThread(QThread):
                             parsed_thought += parts[0]
                         buffer = parts[1]
 
-                    _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
-                    _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
-
                     if in_thought:
                         if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
                             self.new_thought_token.emit(buffer)
@@ -129,6 +137,7 @@ class LLMThread(QThread):
                     parsed_response += buffer
 
             execution_time = time.time() - start_time
+            truncated = (finish_reason == "length")
 
             self.logger.log_generation(
                 compiled_prompt=prompt,
@@ -140,7 +149,7 @@ class LLMThread(QThread):
                 rag_context=self.retrieved_chunks
             )
 
-            self.generation_finished.emit(parsed_thought, parsed_response)
+            self.generation_finished.emit(parsed_thought, parsed_response, truncated)
 
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")

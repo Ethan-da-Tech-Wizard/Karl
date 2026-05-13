@@ -399,19 +399,43 @@ class MainWindow(QMainWindow):
             c.movePosition(c.MoveOperation.End); c.insertText(token)
             self.raw_display.setTextCursor(c)
 
-    def handle_generation_finished(self, final_thought, final_response):
-        # Store ONLY the response in history — think blocks are introspection data,
-        # not context the model needs to re-read. Storing them inflates the context fast.
-        self.chat_history.append({"role": "assistant", "content": final_response})
-        self.chat_display.append("\n")
+    def _fire_generation(self):
+        """Spin up a new LLMThread using the current chat_history state."""
+        sys_prompt = self.system_prompt_input.toPlainText()
+        self.thread = LLMThread(sys_prompt, self.chat_history, self._get_hyperparams())
+        self.thread.new_thought_token.connect(self.handle_thought_token)
+        self.thread.new_chat_token.connect(self.handle_chat_token)
+        self.thread.new_raw_token.connect(self.handle_raw_token)
+        self.thread.generation_finished.connect(self.handle_generation_finished)
+        self.thread.error_occurred.connect(self.handle_error)
+        self.thread.start()
 
-        # M9: Auto-loop — fire agentic loop instead of re-enabling controls
+    def handle_generation_finished(self, final_thought, final_response, truncated=False):
+        # Store ONLY the response — think blocks are introspection data.
+        self.chat_history.append({"role": "assistant", "content": final_response})
+
+        if truncated:
+            # Hit max_tokens mid-generation — silently continue.
+            self.new_thought_token_direct("\n[↻ continuing...]\n")
+            self.chat_history.append({
+                "role": "user",
+                "content": "Please continue exactly from where you stopped. Do not repeat anything."
+            })
+            self._fire_generation()
+            return
+
+        self.chat_display.append("\n")
         if self.auto_loop_toggle.isChecked():
             self.start_agentic_loop()
         else:
             self._set_controls_enabled(True)
             self.stop_agentic_button.setEnabled(False)
             self.user_input.setFocus()
+
+    def new_thought_token_direct(self, text):
+        c = self.thought_display.textCursor()
+        c.movePosition(c.MoveOperation.End); c.insertText(text)
+        self.thought_display.setTextCursor(c)
 
     def handle_error(self, msg):
         self.chat_display.append(f"<br><font color='red'>{msg}</font><br>")
@@ -451,8 +475,8 @@ class MainWindow(QMainWindow):
         self.stop_agentic_button.setEnabled(False)
 
     def handle_agentic_iteration(self, iteration, thought, response):
-        full = f"<think>\n{thought}\n</think>\n{response}" if thought else response
-        self.chat_history.append({"role": "assistant", "content": full})
+        # Store only the response, not the think block
+        self.chat_history.append({"role": "assistant", "content": response})
         self.agentic_status.setText(f"Agentic: Iteration {iteration + 1} done")
 
     def handle_agentic_finished(self, total):
