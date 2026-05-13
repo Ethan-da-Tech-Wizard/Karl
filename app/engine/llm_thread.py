@@ -11,6 +11,7 @@ RAW_LOG_DIR = "data/logs/raw"
 _CONTEXT_BUDGET = 4096
 _RESPONSE_RESERVE = 1024
 _HISTORY_CHAR_LIMIT = (_CONTEXT_BUDGET - _RESPONSE_RESERVE) * 3
+_MAX_MSG_CHARS = 1500   # Truncate any single message to this length before it enters the prompt
 
 _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
 _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
@@ -33,17 +34,29 @@ class LLMThread(QThread):
         self.logger = TraceLogger()
 
     def _trim_history(self, history):
-        """Drop oldest messages to stay within context budget. Always keeps message[0]."""
+        """
+        Prepares history for the prompt:
+        1. Truncates any individual message > _MAX_MSG_CHARS (keeps the tail — most recent content)
+        2. Drops oldest messages until the total fits in the budget
+        3. Always keeps message[0] (the seed)
+        """
+        def _cap(msg):
+            content = msg.get("content", "")
+            if len(content) > _MAX_MSG_CHARS:
+                content = "[...truncated...] " + content[-_MAX_MSG_CHARS:]
+            return {**msg, "content": content}
+
+        capped = [_cap(m) for m in history]
         kept = []
         running = 0
-        for msg in reversed(history):
+        for msg in reversed(capped):
             entry_len = len(msg.get("content", ""))
             if running + entry_len > _HISTORY_CHAR_LIMIT and kept:
                 break
             kept.insert(0, msg)
             running += entry_len
-        if history and history[0] not in kept:
-            kept.insert(0, history[0])
+        if capped and capped[0] not in kept:
+            kept.insert(0, capped[0])
         return kept
 
     def run(self):
@@ -61,7 +74,7 @@ class LLMThread(QThread):
             start_time = time.time()
             response_generator = llm(
                 prompt,
-                max_tokens=self.hyperparams.get("max_tokens", 512),
+                max_tokens=self.hyperparams.get("max_tokens", 512),  # 512 default — chain if needed
                 temperature=self.hyperparams.get("temperature", 0.7),
                 top_p=self.hyperparams.get("top_p", 0.95),
                 repeat_penalty=1.15,

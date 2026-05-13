@@ -192,7 +192,7 @@ class MainWindow(QMainWindow):
         tok_row = QHBoxLayout()
         tok_row.addWidget(QLabel("Max Tokens:"))
         self.tokens_spin = QSpinBox()
-        self.tokens_spin.setRange(1, 4096); self.tokens_spin.setValue(1024)
+        self.tokens_spin.setRange(1, 4096); self.tokens_spin.setValue(512)
         tok_row.addWidget(self.tokens_spin); hl.addLayout(tok_row)
         cfg.addWidget(hyper_group)
 
@@ -399,10 +399,11 @@ class MainWindow(QMainWindow):
             c.movePosition(c.MoveOperation.End); c.insertText(token)
             self.raw_display.setTextCursor(c)
 
-    def _fire_generation(self):
-        """Spin up a new LLMThread using the current chat_history state."""
+    def _fire_generation(self, history_override=None):
+        """Spin up a new LLMThread. history_override lets continuations bypass chat_history."""
         sys_prompt = self.system_prompt_input.toPlainText()
-        self.thread = LLMThread(sys_prompt, self.chat_history, self._get_hyperparams())
+        history = history_override if history_override is not None else self.chat_history
+        self.thread = LLMThread(sys_prompt, history, self._get_hyperparams())
         self.thread.new_thought_token.connect(self.handle_thought_token)
         self.thread.new_chat_token.connect(self.handle_chat_token)
         self.thread.new_raw_token.connect(self.handle_raw_token)
@@ -415,13 +416,14 @@ class MainWindow(QMainWindow):
         self.chat_history.append({"role": "assistant", "content": final_response})
 
         if truncated:
-            # Hit max_tokens mid-generation — silently continue.
+            # Hit max_tokens — continue silently WITHOUT polluting chat_history.
+            # Build a one-shot continuation history: existing history + silent "continue" prompt.
             self.new_thought_token_direct("\n[↻ continuing...]\n")
-            self.chat_history.append({
+            continuation_history = list(self.chat_history) + [{
                 "role": "user",
-                "content": "Please continue exactly from where you stopped. Do not repeat anything."
-            })
-            self._fire_generation()
+                "content": "Continue."
+            }]
+            self._fire_generation(history_override=continuation_history)
             return
 
         self.chat_display.append("\n")
