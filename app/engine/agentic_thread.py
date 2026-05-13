@@ -1,0 +1,153 @@
+import time
+import importlib
+from PyQt6.QtCore import QThread, pyqtSignal
+from app.engine.model_loader import ModelLoader
+from app.utils.trace_logger import TraceLogger
+import core.interaction_loop
+import core.agentic_loop
+
+
+class AgenticThread(QThread):
+    """
+    Runs Karl in autonomous agentic mode.
+    It loops: generate → parse → check stop condition → inject next prompt → repeat.
+    The hackable stop condition and next-prompt logic live in core/agentic_loop.py.
+    """
+    new_thought_token = pyqtSignal(str)
+    new_chat_token = pyqtSignal(str)
+    iteration_finished = pyqtSignal(int, str, str)   # iteration, thought, response
+    loop_finished = pyqtSignal(int)                  # total iterations run
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, system_prompt, initial_history, hyperparams):
+        super().__init__()
+        self.system_prompt = system_prompt
+        self.chat_history = list(initial_history)   # copy so we can mutate safely
+        self.hyperparams = hyperparams
+        self.logger = TraceLogger()
+        self._stop_requested = False
+
+    def request_stop(self):
+        self._stop_requested = True
+
+    def _run_single_generation(self, llm, prompt):
+        """Runs one streaming generation. Returns (raw, thought, response)."""
+        response_gen = llm(
+            prompt,
+            max_tokens=self.hyperparams.get("max_tokens", 1024),
+            temperature=self.hyperparams.get("temperature", 0.7),
+            top_p=self.hyperparams.get("top_p", 0.95),
+            repeat_penalty=1.15,
+            stream=True,
+            stop=["<|im_end|>"]
+        )
+
+        raw_output = ""
+        parsed_thought = ""
+        parsed_response = ""
+        in_thought = False
+        buffer = ""
+
+        for chunk in response_gen:
+            if self._stop_requested:
+                break
+            if 'choices' not in chunk or not chunk['choices']:
+                continue
+            text = chunk['choices'][0].get('text', '')
+            if not text:
+                continue
+
+            raw_output += text
+            buffer += text
+
+            if "<think>" in buffer and not in_thought:
+                in_thought = True
+                pre_think = buffer.split("<think>")[0]
+                if pre_think:
+                    self.new_chat_token.emit(pre_think)
+                    parsed_response += pre_think
+                buffer = buffer.split("<think>", 1)[1]
+
+            if in_thought and "</think>" in buffer:
+                in_thought = False
+                parts = buffer.split("</think>", 1)
+                if parts[0]:
+                    self.new_thought_token.emit(parts[0])
+                    parsed_thought += parts[0]
+                buffer = parts[1]
+
+            if in_thought:
+                if not any(buffer.endswith(s) for s in ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]):
+                    self.new_thought_token.emit(buffer)
+                    parsed_thought += buffer
+                    buffer = ""
+            else:
+                self.new_chat_token.emit(buffer)
+                parsed_response += buffer
+                buffer = ""
+
+        # flush
+        if buffer:
+            if in_thought:
+                self.new_thought_token.emit(buffer)
+                parsed_thought += buffer
+            else:
+                self.new_chat_token.emit(buffer)
+                parsed_response += buffer
+
+        return raw_output, parsed_thought, parsed_response
+
+    def run(self):
+        try:
+            importlib.reload(core.interaction_loop)
+            importlib.reload(core.agentic_loop)
+
+            llm = ModelLoader.get_instance()
+            iteration = 0
+
+            while not self._stop_requested:
+                # Build and emit iteration header
+                self.new_thought_token.emit(f"\n{'='*40}\n[AGENTIC LOOP — Iteration {iteration + 1}]\n{'='*40}\n")
+                self.new_chat_token.emit(f"\n[Iteration {iteration + 1}]\n")
+
+                prompt = core.interaction_loop.build_prompt(self.system_prompt, self.chat_history)
+
+                start = time.time()
+                raw, thought, response = self._run_single_generation(llm, prompt)
+                elapsed = time.time() - start
+
+                if self._stop_requested:
+                    break
+
+                # Log this iteration
+                self.logger.log_generation(
+                    compiled_prompt=prompt,
+                    hyperparams=self.hyperparams,
+                    raw_output=raw,
+                    parsed_thought=thought,
+                    parsed_response=response,
+                    execution_time=elapsed,
+                    rag_context=[f"agentic_iteration_{iteration}"]
+                )
+
+                # Update history with this iteration's output
+                full_context = f"<think>\n{thought}\n</think>\n{response}" if thought else response
+                self.chat_history.append({"role": "assistant", "content": full_context})
+
+                self.iteration_finished.emit(iteration, thought, response)
+
+                iteration += 1
+
+                # Hot-reload stop condition and check it
+                importlib.reload(core.agentic_loop)
+                if not core.agentic_loop.should_continue(iteration, response):
+                    break
+
+                # Build next user turn and inject it
+                next_prompt_content = core.agentic_loop.build_next_prompt(response, iteration)
+                self.chat_history.append({"role": "user", "content": next_prompt_content})
+
+            self.loop_finished.emit(iteration)
+
+        except Exception as e:
+            self.error_occurred.emit(f"Agentic Error: {str(e)}")

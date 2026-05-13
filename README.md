@@ -73,3 +73,4 @@ python main.py
 - ✅ Milestone 3: Memory & Context Management
 - ✅ Milestone 4: Universal RAG Pipeline
 - ✅ Milestone 5: Hackable Decoupling
+- ✅ Milestone 6: Agentic Loop (Autonomous Self-Iteration)

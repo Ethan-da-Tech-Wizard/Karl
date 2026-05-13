@@ -42,3 +42,12 @@
 - **Tasks:**
   - Abstract all conversational loop logic into `core/interaction_loop.py`.
   - Implement `importlib.reload()` so users can modify the loop on the fly without restarting the app.
+
+### Milestone 6: The Agentic Loop (Completed)
+**Goal:** Enable Karl to run autonomously, feeding its own output back in and iterating without user input.
+- **Tasks:**
+  - Build `core/agentic_loop.py` — the hackable stop condition and next-prompt injection logic.
+  - Build `app/engine/agentic_thread.py` — a `QThread` that loops generation, hot-reloads the agentic core on each iteration, and emits per-iteration signals.
+  - Wire a **"Run Agentic Loop"** button and **"Stop"** button into the UI.
+  - Track iteration count in the UI status bar.
+- **Success Criteria:** User sends an initial prompt, clicks "Run Agentic Loop", and Karl iterates autonomously — streaming each thought and response in the live panels — until the stop condition in `core/agentic_loop.py` is met.
