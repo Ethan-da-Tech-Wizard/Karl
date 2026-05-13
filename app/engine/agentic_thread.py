@@ -6,6 +6,11 @@ from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
 import core.agentic_loop
 
+# Reserve this many tokens for the next generation's output.
+# The rest of the budget is used for history.
+_CONTEXT_BUDGET = 4096
+_RESPONSE_RESERVE = 1024  # max_tokens headroom
+_HISTORY_CHAR_LIMIT = (_CONTEXT_BUDGET - _RESPONSE_RESERVE) * 3  # ~1 token ≈ 3 chars (conservative)
 
 class AgenticThread(QThread):
     """
@@ -29,6 +34,35 @@ class AgenticThread(QThread):
 
     def request_stop(self):
         self._stop_requested = True
+
+    def _trim_history(self, history, system_prompt):
+        """
+        Trims the chat history so the compiled prompt stays inside the context budget.
+        Always keeps the first user message (the seed) and the most recent turns.
+        """
+        base_len = len(system_prompt)
+        budget = _HISTORY_CHAR_LIMIT - base_len
+
+        # Walk backwards through history accumulating character count.
+        # Always keep at least the first message (index 0) as the seed.
+        kept = []
+        running = 0
+        for msg in reversed(history):
+            entry_len = len(msg.get("content", ""))
+            if running + entry_len > budget and kept:
+                break  # Stop adding older messages
+            kept.insert(0, msg)
+            running += entry_len
+
+        # Always preserve seed (first message)
+        if history and history[0] not in kept:
+            kept.insert(0, history[0])
+
+        if len(kept) < len(history):
+            self.new_thought_token.emit(
+                f"\n[Context Trim: kept {len(kept)}/{len(history)} messages to fit context window]\n"
+            )
+        return kept
 
     def _run_single_generation(self, llm, prompt):
         """Runs one streaming generation. Returns (raw, thought, response)."""
@@ -110,7 +144,9 @@ class AgenticThread(QThread):
                 self.new_thought_token.emit(f"\n{'='*40}\n[AGENTIC LOOP — Iteration {iteration + 1}]\n{'='*40}\n")
                 self.new_chat_token.emit(f"\n[Iteration {iteration + 1}]\n")
 
-                prompt = core.interaction_loop.build_prompt(self.system_prompt, self.chat_history)
+                # Trim history to fit context before building prompt
+                trimmed_history = self._trim_history(self.chat_history, self.system_prompt)
+                prompt = core.interaction_loop.build_prompt(self.system_prompt, trimmed_history)
 
                 start = time.time()
                 raw, thought, response = self._run_single_generation(llm, prompt)
