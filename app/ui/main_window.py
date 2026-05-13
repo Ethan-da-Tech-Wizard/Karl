@@ -113,16 +113,27 @@ class MainWindow(QMainWindow):
 
         thought_panel = QWidget()
         tl = QVBoxLayout(thought_panel)
-        tl.addWidget(QLabel("<b>Thought Stream (Introspection)</b>"))
+        thought_label = QLabel("🧠  Thought Stream")
+        thought_label.setStyleSheet("font-weight: bold; color: #A0A0A0; font-size: 10pt; padding: 4px 0;")
+        tl.addWidget(thought_label)
         self.thought_display = QTextBrowser()
-        self.thought_display.setStyleSheet("background-color: #1A1A1A; color: #A0A0A0; font-family: 'Consolas';")
+        self.thought_display.setStyleSheet(
+            "background-color: #111827; color: #9CA3AF; font-family: 'Consolas'; "
+            "border: 1px solid #374151; border-radius: 4px; padding: 6px;"
+        )
         tl.addWidget(self.thought_display)
 
         chat_panel = QWidget()
         cl = QVBoxLayout(chat_panel)
-        cl.addWidget(QLabel("<b>Final Response</b>"))
+        chat_label = QLabel("💬  Final Response")
+        chat_label.setStyleSheet("font-weight: bold; color: #F3F4F6; font-size: 10pt; padding: 4px 0;")
+        cl.addWidget(chat_label)
         self.chat_display = QTextBrowser()
         self.chat_display.setOpenExternalLinks(True)
+        self.chat_display.setStyleSheet(
+            "background-color: #1F2937; color: #F3F4F6; font-family: 'Segoe UI', sans-serif; "
+            "border: 1px solid #4B5563; border-radius: 4px; padding: 6px;"
+        )
         cl.addWidget(self.chat_display)
 
         # Input row
@@ -170,7 +181,12 @@ class MainWindow(QMainWindow):
         cfg = QVBoxLayout(config_panel)
         cfg.addWidget(QLabel("<b>System Prompt</b>"))
         self.system_prompt_input = QTextEdit()
-        self.system_prompt_input.setPlainText("You are a helpful, analytical AI assistant.")
+        self.system_prompt_input.setPlainText(
+            "You are a precise, analytical AI assistant.\n"
+            "When reasoning inside <think> blocks: be direct, avoid repeating 'Wait' or 'But wait', "
+            "and do not re-state conclusions you have already reached.\n"
+            "Your final answer after </think> should be clean and concise."
+        )
         self.system_prompt_input.setMaximumHeight(180)
         cfg.addWidget(self.system_prompt_input)
 
@@ -399,11 +415,12 @@ class MainWindow(QMainWindow):
             c.movePosition(c.MoveOperation.End); c.insertText(token)
             self.raw_display.setTextCursor(c)
 
-    def _fire_generation(self, history_override=None):
+    def _fire_generation(self, history_override=None, start_in_thought=False):
         """Spin up a new LLMThread. history_override lets continuations bypass chat_history."""
         sys_prompt = self.system_prompt_input.toPlainText()
         history = history_override if history_override is not None else self.chat_history
-        self.thread = LLMThread(sys_prompt, history, self._get_hyperparams())
+        self.thread = LLMThread(sys_prompt, history, self._get_hyperparams(),
+                                start_in_thought=start_in_thought)
         self.thread.new_thought_token.connect(self.handle_thought_token)
         self.thread.new_chat_token.connect(self.handle_chat_token)
         self.thread.new_raw_token.connect(self.handle_raw_token)
@@ -411,19 +428,22 @@ class MainWindow(QMainWindow):
         self.thread.error_occurred.connect(self.handle_error)
         self.thread.start()
 
-    def handle_generation_finished(self, final_thought, final_response, truncated=False):
+    def handle_generation_finished(self, final_thought, final_response, truncated=False, ended_in_thought=False):
         # Store ONLY the response — think blocks are introspection data.
         self.chat_history.append({"role": "assistant", "content": final_response})
 
         if truncated:
             # Hit max_tokens — continue silently WITHOUT polluting chat_history.
-            # Build a one-shot continuation history: existing history + silent "continue" prompt.
+            # Pass ended_in_thought so the next chunk routes to the correct panel.
             self.new_thought_token_direct("\n[↻ continuing...]\n")
             continuation_history = list(self.chat_history) + [{
                 "role": "user",
                 "content": "Continue."
             }]
-            self._fire_generation(history_override=continuation_history)
+            self._fire_generation(
+                history_override=continuation_history,
+                start_in_thought=ended_in_thought
+            )
             return
 
         self.chat_display.append("\n")

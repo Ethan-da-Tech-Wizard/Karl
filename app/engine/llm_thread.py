@@ -21,16 +21,17 @@ class LLMThread(QThread):
     new_thought_token = pyqtSignal(str)
     new_chat_token = pyqtSignal(str)
     new_raw_token = pyqtSignal(str)
-    # truncated=True means max_tokens was hit mid-generation — UI should auto-continue
-    generation_finished = pyqtSignal(str, str, bool)  # thought, response, truncated
+    # thought, response, truncated, ended_in_thought
+    generation_finished = pyqtSignal(str, str, bool, bool)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, system_prompt, chat_history, hyperparams, retrieved_chunks=None):
+    def __init__(self, system_prompt, chat_history, hyperparams, retrieved_chunks=None, start_in_thought=False):
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = chat_history
         self.hyperparams = hyperparams
         self.retrieved_chunks = retrieved_chunks or []
+        self.start_in_thought = start_in_thought  # True when continuing mid-thought
         self.logger = TraceLogger()
 
     def _trim_history(self, history):
@@ -85,9 +86,9 @@ class LLMThread(QThread):
             raw_output = ""
             parsed_thought = ""
             parsed_response = ""
-            in_thought = False
+            in_thought = self.start_in_thought  # resume state from previous chunk if continuing
             buffer = ""
-            finish_reason = "stop"  # default — overridden if we see 'length'
+            finish_reason = "stop"
 
             with open(raw_log_path, "w", encoding="utf-8") as raw_file:
                 for chunk in response_generator:
@@ -151,6 +152,8 @@ class LLMThread(QThread):
 
             execution_time = time.time() - start_time
             truncated = (finish_reason == "length")
+            # Pass whether we ended inside a thought block so continuation knows where to resume
+            ended_in_thought = in_thought
 
             self.logger.log_generation(
                 compiled_prompt=prompt,
@@ -162,7 +165,7 @@ class LLMThread(QThread):
                 rag_context=self.retrieved_chunks
             )
 
-            self.generation_finished.emit(parsed_thought, parsed_response, truncated)
+            self.generation_finished.emit(parsed_thought, parsed_response, truncated, ended_in_thought)
 
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")
