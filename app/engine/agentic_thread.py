@@ -182,9 +182,8 @@ class AgenticThread(QThread):
                     rag_context=[f"agentic_iteration_{iteration}"]
                 )
 
-                # Update history with this iteration's output
-                full_context = f"<think>\n{thought}\n</think>\n{response}" if thought else response
-                self.chat_history.append({"role": "assistant", "content": full_context})
+                # Store only the response — not the think block — to keep context lean
+                self.chat_history.append({"role": "assistant", "content": response})
 
                 self.iteration_finished.emit(iteration, thought, response)
 

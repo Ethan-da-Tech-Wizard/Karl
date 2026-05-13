@@ -400,8 +400,9 @@ class MainWindow(QMainWindow):
             self.raw_display.setTextCursor(c)
 
     def handle_generation_finished(self, final_thought, final_response):
-        full = f"<think>\n{final_thought}\n</think>\n{final_response}" if final_thought else final_response
-        self.chat_history.append({"role": "assistant", "content": full})
+        # Store ONLY the response in history — think blocks are introspection data,
+        # not context the model needs to re-read. Storing them inflates the context fast.
+        self.chat_history.append({"role": "assistant", "content": final_response})
         self.chat_display.append("\n")
 
         # M9: Auto-loop — fire agentic loop instead of re-enabling controls

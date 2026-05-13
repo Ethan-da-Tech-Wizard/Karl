@@ -8,6 +8,9 @@ from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
 
 RAW_LOG_DIR = "data/logs/raw"
+_CONTEXT_BUDGET = 4096
+_RESPONSE_RESERVE = 1024
+_HISTORY_CHAR_LIMIT = (_CONTEXT_BUDGET - _RESPONSE_RESERVE) * 3
 
 
 class LLMThread(QThread):
@@ -25,12 +28,27 @@ class LLMThread(QThread):
         self.retrieved_chunks = retrieved_chunks or []
         self.logger = TraceLogger()
 
+    def _trim_history(self, history):
+        """Drop oldest messages to stay within context budget. Always keeps message[0]."""
+        kept = []
+        running = 0
+        for msg in reversed(history):
+            entry_len = len(msg.get("content", ""))
+            if running + entry_len > _HISTORY_CHAR_LIMIT and kept:
+                break
+            kept.insert(0, msg)
+            running += entry_len
+        if history and history[0] not in kept:
+            kept.insert(0, history[0])
+        return kept
+
     def run(self):
         try:
             importlib.reload(core.interaction_loop)
             
             llm = ModelLoader.get_instance()
-            prompt = core.interaction_loop.build_prompt(self.system_prompt, self.chat_history)
+            trimmed_history = self._trim_history(self.chat_history)
+            prompt = core.interaction_loop.build_prompt(self.system_prompt, trimmed_history)
             
             # M7: Open raw token archive file
             os.makedirs(RAW_LOG_DIR, exist_ok=True)
