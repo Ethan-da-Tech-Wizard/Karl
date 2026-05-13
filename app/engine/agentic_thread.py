@@ -1,10 +1,14 @@
+import os
 import time
 import importlib
+from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.model_loader import ModelLoader
 from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
 import core.agentic_loop
+
+RAW_LOG_DIR = "data/logs/raw"
 
 # Reserve this many tokens for the next generation's output.
 # The rest of the budget is used for history.
@@ -20,8 +24,9 @@ class AgenticThread(QThread):
     """
     new_thought_token = pyqtSignal(str)
     new_chat_token = pyqtSignal(str)
-    iteration_finished = pyqtSignal(int, str, str)   # iteration, thought, response
-    loop_finished = pyqtSignal(int)                  # total iterations run
+    new_raw_token = pyqtSignal(str)                  # M7: every character pre-parser
+    iteration_finished = pyqtSignal(int, str, str)
+    loop_finished = pyqtSignal(int)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, system_prompt, initial_history, hyperparams):
@@ -64,7 +69,7 @@ class AgenticThread(QThread):
             )
         return kept
 
-    def _run_single_generation(self, llm, prompt):
+    def _run_single_generation(self, llm, prompt, raw_file):
         """Runs one streaming generation. Returns (raw, thought, response)."""
         response_gen = llm(
             prompt,
@@ -93,6 +98,12 @@ class AgenticThread(QThread):
 
             raw_output += text
             buffer += text
+
+            # M7: write raw token before parsing
+            micro_ts = f"{time.time():.6f}"
+            raw_file.write(f"{micro_ts}\t{text}\n")
+            raw_file.flush()
+            self.new_raw_token.emit(text)
 
             if "<think>" in buffer and not in_thought:
                 in_thought = True
@@ -149,7 +160,12 @@ class AgenticThread(QThread):
                 prompt = core.interaction_loop.build_prompt(self.system_prompt, trimmed_history)
 
                 start = time.time()
-                raw, thought, response = self._run_single_generation(llm, prompt)
+                # M7: open raw archive file for this iteration
+                os.makedirs(RAW_LOG_DIR, exist_ok=True)
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+                raw_log_path = os.path.join(RAW_LOG_DIR, f"agentic_{ts}_iter{iteration}.tokens")
+                with open(raw_log_path, "w", encoding="utf-8") as raw_file:
+                    raw, thought, response = self._run_single_generation(llm, prompt, raw_file)
                 elapsed = time.time() - start
 
                 if self._stop_requested:

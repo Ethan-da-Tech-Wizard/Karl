@@ -30,56 +30,22 @@ how the model thinks via hot-reloadable Python scripts.
 | 4 | Universal RAG Pipeline | `app/utils/rag_pipeline.py` — PDF, DOCX, TXT, PY, MD, CSV |
 | 5 | Hackable Decoupling | `core/interaction_loop.py` + `importlib.reload()` on every generation |
 | 6 | Agentic Loop | `core/agentic_loop.py`, `app/engine/agentic_thread.py`, UI buttons |
+| 7 | Raw Token Archive | `new_raw_token` signal, `data/logs/raw/*.tokens` files, toggleable UI panel |
+| 8 | Hardware Scout & Model Registry | `core/hardware_scout.py`, `data/model_registry.json`, `app/engine/upgrade_manager.py` |
+| 9 | Auto-Loop Mode | "Auto-Loop" checkbox in UI — generation_finished → start_agentic_loop() |
+| 10 | Self-Upgrade Git Push | `upgrade_manager.perform_upgrade()` → git commit + push on model upgrade |
 
 ### 🔵 Next Milestones (Planned, No Code Written Yet)
 
-In priority order:
+The core feature set is complete. These are enhancement ideas:
 
-#### Milestone 7: Raw Token Archive
-Every character the model outputs, pre-parser, zero truncation — preserved even if
-the dead man's switch kills the generation mid-thought.
-
-- Add a third scrollable panel in the UI: "Raw Token Archive" (toggleable)
-- In `llm_thread.py` and `agentic_thread.py`, write every raw token chunk to
-  `data/logs/raw/<timestamp>.tokens` before it hits the parser
-- Log file should be plain UTF-8, one chunk per line with a microsecond timestamp prefix
-- The UI panel should auto-scroll like the existing thought/chat panels
-- Toggle visibility via a checkbox in the config panel
-
-#### Milestone 8: Hardware Scout & Model Registry
-Karl detects available hardware and knows which model tier it should be running.
-
-- Create `core/hardware_scout.py` using `psutil` and `GPUtil`
-  - Returns: `{ "ram_gb": float, "vram_gb": float, "storage_gb": float }`
-- Create `data/model_registry.json` (tiered model list)
-  - Schema: `[{ "tier": int, "name": str, "min_ram_gb": float, "min_vram_gb": float,
-    "min_storage_gb": float, "url": str, "filename": str, "n_ctx": int }]`
-  - Pre-populate with DeepSeek-R1 tiers: 1.5B, 7B, 14B, 70B
-- Create `app/engine/upgrade_manager.py`
-  - On startup: compare hardware to registry, find highest eligible tier
-  - If current model < eligible tier: show upgrade notification in UI
-  - On approve: download GGUF → `ModelLoader.reset_instance()` → reload
-  - Update `data/active_model.json` with current model info
-  - Run `git commit + git push` to record the upgrade in history
-
-#### Milestone 9: Auto-Loop Mode ("Karl Thinks Alone")
-A single toggle that makes every generation automatically feed into the next —
-no user clicking "Run Agentic Loop."
-
-- Add "Auto-Loop" toggle (QCheckBox) to the config panel
-- When ON: `LLMThread.generation_finished` signal triggers the agentic loop
-  directly instead of re-enabling the input controls
-- The user's only way to stop is the "■ Stop" button or the stop condition
-  in `core/agentic_loop.py` returning `False`
-- Visually: the Generate button changes label to "Send + Loop" when toggle is ON
-
-#### Milestone 10: Self-Upgrade Git Push
-When the Hardware Scout triggers a model upgrade, Karl commits and pushes automatically.
-
-- `upgrade_manager.py` must call `subprocess.run(["git", "add", ...])` etc.
-- Commit message format: `"upgrade(karl): self-upgraded to {tier_name} (Tier {n})"`
-- The git remote must already be configured (it is: `origin = Ethan-da-Tech-Wizard/Karl`)
-- Guard: only push if `git remote -v` returns a valid remote
+- **Tokenizer Visualization:** Display actual token IDs and probabilities alongside the raw stream.
+  Requires `llama_cpp` logprobs support (set `logprobs=5` in the generation call).
+- **Persistent Vector DB:** Currently the FAISS index is in-memory only — lost on restart.
+  Serialize with `faiss.write_index()` / `faiss.read_index()` to `data/vector_db/index.faiss`
+  and save `documents[]` as a companion JSON.
+- **Session Branching:** Let the user fork a session at any point and explore alternate prompt paths.
+- **Prompt Diff Tool:** Side-by-side comparison of two trace logs to see how a prompt change affected reasoning.
 
 ---
 
@@ -98,9 +64,17 @@ The user is expected to edit them directly. Do NOT add complex dependencies here
 ### The Threading Model
 - `LLMThread(QThread)` — single-shot generation. Lives in `app/engine/llm_thread.py`.
 - `AgenticThread(QThread)` — autonomous loop. Lives in `app/engine/agentic_thread.py`.
-- Both emit `new_thought_token(str)` and `new_chat_token(str)` PyQt signals.
+- Both emit `new_thought_token(str)`, `new_chat_token(str)`, and `new_raw_token(str)` PyQt signals.
 - The UI connects these signals to cursor-insert methods on `QTextBrowser`.
 - **Thread safety:** Never touch UI widgets directly from inside `run()`. Only emit signals.
+
+### The Raw Token Archive (M7)
+Every raw token is emitted via `new_raw_token(str)` **before** the parser sees it.
+Each generation also writes a timestamped `.tokens` file:
+- Path: `data/logs/raw/<YYYYMMDD_HHMMSS_microseconds>.tokens`
+- Format: one line per chunk — `{unix_float_timestamp}\t{raw_text}`
+- The UI has a "Raw Token Archive" panel (hidden by default, toggle via checkbox).
+- Even if a generation is killed mid-thought, everything written so far is on disk.
 
 ### The Streaming Parser (Critical — Read This)
 Both threads contain an inline streaming state machine. It:
@@ -127,6 +101,20 @@ Both threads contain an inline streaming state machine. It:
 - Budget = `(4096 - 1024) * 3` chars (~conservative token estimate)
 - Always preserves the seed message (index 0)
 - Emits a notice to the Thought Stream when trimming occurs
+
+### The Hardware Scout & Upgrade Manager (M8 + M10)
+On startup, `UpgradeCheckThread` (in `main_window.py`) runs off the UI thread:
+1. `core/hardware_scout.py` → `get_hardware_profile()` returns `{ram_gb, vram_gb, storage_gb}`
+2. `app/engine/upgrade_manager.py` → `check_for_upgrade()` compares profile to `data/model_registry.json`
+3. If a higher tier is eligible, the UI shows a notification + "Upgrade Karl" button
+4. On user approval: `perform_upgrade()` downloads GGUF, calls `ModelLoader.reset_instance()`,
+   updates `data/active_model.json`, then runs `git commit + git push`
+
+### Auto-Loop Mode (M9)
+A `QCheckBox` "Auto-Loop" in the config panel.
+- When ON: `handle_generation_finished()` calls `start_agentic_loop()` instead of re-enabling controls.
+- The Send button label changes to "Send + Loop".
+- Stop via the "■ Stop" button or the stop condition in `core/agentic_loop.py`.
 
 ### The Trace Logger
 Every generation writes a JSONL entry to `data/logs/traces/trace_YYYY-MM-DD.jsonl`.
@@ -156,6 +144,12 @@ Fields: `timestamp`, `execution_time_seconds`, `hyperparameters`, `rag_context_u
 5. **Git remote is already configured.** Do not re-init the repo. The remote is:
    `https://github.com/Ethan-da-Tech-Wizard/Karl.git` on branch `main`.
 
+6. **GPUtil is optional.** If no discrete GPU is detected, `vram_gb` returns `0.0` gracefully.
+   The model registry tiers 1–2 require zero VRAM so the upgrade logic still works on CPU-only machines.
+
+7. **`data/model_registry.json` is NOT gitignored.** It is source-controlled. Edit it to add
+   new model tiers. `data/active_model.json` IS written at runtime and committed by the upgrade manager.
+
 ---
 
 ## How to Run
@@ -172,6 +166,9 @@ python engine_test.py
 
 # Download/re-download the model
 python download_test_model.py
+
+# Check your hardware profile
+python -c "from core.hardware_scout import get_hardware_profile; print(get_hardware_profile())"
 ```
 
 ---
@@ -189,12 +186,14 @@ Karl/
 ├── core/                  ← HACKABLE — user edits these
 │   ├── interaction_loop.py
 │   ├── cognitive_parser.py
-│   └── agentic_loop.py
+│   ├── agentic_loop.py
+│   └── hardware_scout.py
 ├── app/
 │   ├── engine/
 │   │   ├── model_loader.py
 │   │   ├── llm_thread.py
-│   │   └── agentic_thread.py
+│   │   ├── agentic_thread.py
+│   │   └── upgrade_manager.py
 │   ├── ui/
 │   │   ├── main_window.py
 │   │   └── styles/neutral.qss
@@ -202,11 +201,15 @@ Karl/
 │       ├── trace_logger.py
 │       ├── memory_manager.py
 │       └── rag_pipeline.py
-├── data/                  ← gitignored (user data + large binaries)
-│   ├── models/
-│   ├── logs/
-│   ├── sessions/
-│   └── vector_db/
+├── data/                  ← partially gitignored
+│   ├── model_registry.json   ← source controlled
+│   ├── active_model.json     ← written at runtime, committed on upgrade
+│   ├── models/               ← gitignored (large binaries)
+│   ├── logs/                 ← gitignored
+│   │   ├── traces/           ← JSONL trace logs
+│   │   └── raw/              ← .tokens raw archive files
+│   ├── sessions/             ← gitignored
+│   └── vector_db/            ← gitignored
 └── docs/
     ├── 01_problem_statement.md
     ├── 02_prd.md

@@ -4,3 +4,5 @@ sentence-transformers
 faiss-cpu
 PyMuPDF
 python-docx
+psutil
+GPUtil
