@@ -1,0 +1,28 @@
+# Virtual Environment
+venv/
+
+# Downloaded models (large binary files)
+data/models/
+
+# Vector DB (regenerate by re-ingesting)
+data/vector_db/
+
+# Trace logs and sessions (user data, not source)
+data/logs/
+data/sessions/
+
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.spec
+
+# VS Build Tools installer
+vs_buildtools.exe
+
+# Temp/scratch dirs
+t/
+
+# IDE
+.vscode/

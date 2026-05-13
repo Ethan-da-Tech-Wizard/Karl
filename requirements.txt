@@ -1,0 +1,6 @@
+llama-cpp-python
+PyQt6
+sentence-transformers
+faiss-cpu
+PyMuPDF
+python-docx
