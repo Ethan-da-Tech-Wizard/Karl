@@ -140,10 +140,26 @@ with less VRAM. The exported JSONL is in HuggingFace chat format (`{"messages": 
 be fed directly to Unsloth's `SFTTrainer`. This is how you would eventually train a new version
 of Karl's model on data collected from real sessions.
 
+**To actually run fine-tuning (needs NVIDIA GPU, 6+ GB VRAM):**
+
+```bash
+pip install -r requirements-finetune.txt
+python finetune.py
+# or with explicit paths:
+python finetune.py --input data/training/export_unsloth.jsonl --output data/models/karl-v2 --epochs 3
+```
+
+The script downloads the base model from HuggingFace (~3 GB, first run only),
+trains a LoRA adapter on your examples, merges it back into the base weights,
+and exports a `.gguf` file you can drop straight into `data/models/`.
+It prints exact instructions for swapping the model in Karl when done.
+
 **Files:**
 - `data/training/curated.jsonl` — raw log with metadata (source, timestamp, messages)
 - `data/training/export_unsloth.jsonl` — clean export (messages only), ready to train
 - `app/utils/training_curator.py` — `save_example()`, `get_stats()`, `export_unsloth()`
+- `finetune.py` — fine-tuning script
+- `requirements-finetune.txt` — separate deps for fine-tuning (don't add to main requirements.txt)
 
 ---
 
