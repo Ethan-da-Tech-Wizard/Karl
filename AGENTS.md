@@ -124,6 +124,50 @@ Fields: `timestamp`, `execution_time_seconds`, `hyperparameters`, `rag_context_u
 
 ---
 
+## The Training Data Curator (M11)
+
+Karl records high-quality exchanges so the model can be fine-tuned on its own conversations.
+
+**Workflow:**
+1. Have a conversation in Karl.
+2. Click **👍 Good** after a good response — it's saved to `data/training/curated.jsonl`.
+3. Click **👎 Fix** after a bad one — a dialog opens so you can write the correct response. That corrected pair is saved instead.
+4. Click **📦 Export for Unsloth** in the config panel to export a clean JSONL file ready for fine-tuning.
+
+**What is Unsloth?**
+Unsloth (`pip install unsloth`) is a fine-tuning framework that makes training LLMs 2–5× faster
+with less VRAM. The exported JSONL is in HuggingFace chat format (`{"messages": [...]}`) and can
+be fed directly to Unsloth's `SFTTrainer`. This is how you would eventually train a new version
+of Karl's model on data collected from real sessions.
+
+**Files:**
+- `data/training/curated.jsonl` — raw log with metadata (source, timestamp, messages)
+- `data/training/export_unsloth.jsonl` — clean export (messages only), ready to train
+- `app/utils/training_curator.py` — `save_example()`, `get_stats()`, `export_unsloth()`
+
+---
+
+## Recent Fixes (read before modifying these systems)
+
+### Thinking always visible — prompt priming (latest)
+DeepSeek R1 1.5B doesn't reliably generate `<think>` blocks on its own.
+Fix: `core/interaction_loop.py` now ends the prompt with `<|im_start|>assistant\n<think>\n`,
+forcing the model into a thought block from the first token.
+Both `LLMThread` and `AgenticThread._run_single_generation()` now start with `in_thought = True`
+to match. **Do not remove the `<think>` primer without also resetting `in_thought` back to `False`.**
+
+### Agentic loop completion (latest)
+The old stop signals (`[DONE]`, `[END]`, etc.) were exact-match strings the 1.5B model almost
+never produced. Fixes applied to `core/agentic_loop.py`:
+- `should_continue()` now does **case-insensitive substring matching** against a broad set of
+  natural completion phrases (`"final answer:"`, `"in conclusion,"`, `"task complete"`, etc.)
+- `build_next_prompt()` gets progressively more directive: iteration 1 asks for review, later
+  iterations count down remaining steps and demand `FINAL ANSWER:` explicitly.
+- `MAX_ITERATIONS` raised from 5 → 10.
+- The default system prompt now instructs the model to prefix complete answers with `FINAL ANSWER:`.
+
+---
+
 ## Key Gotchas
 
 1. **`llama-cpp-python` must be compiled from source** for the user's Intel 12th Gen CPU.
@@ -155,9 +199,42 @@ Fields: `timestamp`, `execution_time_seconds`, `hyperparameters`, `rag_context_u
 
 ## How to Run
 
+### First-time setup (or pulling onto a new machine, e.g. Antigrav)
+
+```bash
+# 1. Clone or pull the active branch
+git clone https://github.com/Ethan-da-Tech-Wizard/Karl.git
+cd Karl
+git checkout claude/new-session-greeting-gHkb6   # or 'main' for stable
+git pull origin claude/new-session-greeting-gHkb6
+
+# 2. Create and activate a virtual environment
+python -m venv venv
+# Windows:
+.\venv\Scripts\activate
+# Linux/Mac:
+source venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+# NOTE: on Intel 12th Gen (or any CPU that needs native tuning), compile llama-cpp-python
+# from source instead of using a pre-built wheel:
+#   Windows: $env:CMAKE_ARGS="-DGGML_NATIVE=ON"; pip install llama-cpp-python --no-binary llama-cpp-python
+#   Linux:   CMAKE_ARGS="-DGGML_NATIVE=ON" pip install llama-cpp-python --no-binary llama-cpp-python
+
+# 4. Download the model (runs once, ~1 GB)
+python download_test_model.py
+
+# 5. Run Karl
+python main.py
+```
+
+### Day-to-day commands
+
 ```powershell
 # Activate venv
-.\venv\Scripts\activate
+.\venv\Scripts\activate   # Windows
+source venv/bin/activate  # Linux/Mac
 
 # Run Karl
 python main.py
@@ -165,12 +242,27 @@ python main.py
 # Run headless engine test (no UI)
 python engine_test.py
 
-# Download/re-download the model
+# Re-download the model if missing
 python download_test_model.py
 
 # Check your hardware profile
 python -c "from core.hardware_scout import get_hardware_profile; print(get_hardware_profile())"
 ```
+
+### Pulling latest changes on an existing clone
+
+```bash
+git fetch origin
+git checkout claude/new-session-greeting-gHkb6
+git pull origin claude/new-session-greeting-gHkb6
+pip install -r requirements.txt   # in case dependencies changed
+python main.py
+```
+
+### Active development branch
+
+`claude/new-session-greeting-gHkb6` — all current work lives here.
+`main` is the last stable baseline.
 
 ---
 
