@@ -86,7 +86,9 @@ class LLMThread(QThread):
             raw_output = ""
             parsed_thought = ""
             parsed_response = ""
-            in_thought = self.start_in_thought  # resume state from previous chunk if continuing
+            # Prompt is primed with <think>, so we're always inside a thought block at start.
+            # start_in_thought is still respected for mid-thought continuations.
+            in_thought = True
             buffer = ""
             finish_reason = "stop"
 

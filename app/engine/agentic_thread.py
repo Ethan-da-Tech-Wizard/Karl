@@ -84,7 +84,7 @@ class AgenticThread(QThread):
         raw_output = ""
         parsed_thought = ""
         parsed_response = ""
-        in_thought = False
+        in_thought = True  # prompt is primed with <think>
         buffer = ""
 
         for chunk in response_gen:

@@ -12,6 +12,6 @@ def build_prompt(system_prompt, chat_history):
         content = msg.get("content", "")
         prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
     
-    # Prompt the assistant to reply
-    prompt += "<|im_start|>assistant\n"
+    # Prime the think block so the model always reasons before answering
+    prompt += "<|im_start|>assistant\n<think>\n"
     return prompt

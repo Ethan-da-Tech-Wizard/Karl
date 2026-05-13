@@ -207,9 +207,10 @@ class MainWindow(QMainWindow):
         self.system_prompt_input = QTextEdit()
         self.system_prompt_input.setPlainText(
             "You are a precise, analytical AI assistant.\n"
-            "When reasoning inside <think> blocks: be direct, avoid repeating 'Wait' or 'But wait', "
-            "and do not re-state conclusions you have already reached.\n"
-            "Your final answer after </think> should be clean and concise."
+            "Think through problems carefully inside your <think> block before answering.\n"
+            "Your response after </think> should be clean, concise, and complete.\n"
+            "For multi-step tasks: work through each step fully. "
+            "When you have a complete solution, begin your response with 'FINAL ANSWER: '."
         )
         self.system_prompt_input.setMaximumHeight(180)
         cfg.addWidget(self.system_prompt_input)
