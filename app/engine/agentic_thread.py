@@ -121,15 +121,19 @@ class AgenticThread(QThread):
                     parsed_thought += parts[0]
                 buffer = parts[1]
 
+            _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
+            _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
+
             if in_thought:
-                if not any(buffer.endswith(s) for s in ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]):
+                if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
                     self.new_thought_token.emit(buffer)
                     parsed_thought += buffer
                     buffer = ""
             else:
-                self.new_chat_token.emit(buffer)
-                parsed_response += buffer
-                buffer = ""
+                if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
+                    self.new_chat_token.emit(buffer)
+                    parsed_response += buffer
+                    buffer = ""
 
         # flush
         if buffer:
