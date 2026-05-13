@@ -1,12 +1,14 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTextBrowser, QLineEdit, QPushButton, QSplitter,
                              QTextEdit, QLabel, QDoubleSpinBox, QSpinBox, QGroupBox,
-                             QListWidget, QFileDialog, QCheckBox, QMessageBox)
+                             QListWidget, QFileDialog, QCheckBox, QMessageBox, QDialog,
+                             QDialogButtonBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
 from app.utils.memory_manager import MemoryManager
 from app.utils.rag_pipeline import RAGPipeline
+from app.utils.training_curator import save_example, get_stats, export_unsloth
 
 
 # ── Upgrade worker — runs hardware check off the UI thread ────────────────────
@@ -57,10 +59,14 @@ class MainWindow(QMainWindow):
         self.current_session_file = None
         self.agentic_thread = None
         self._pending_upgrade_entry = None
+        # M11: track last exchange for rating
+        self._last_user_msg = ""
+        self._last_response = ""
 
         self.setup_ui()
         self.refresh_session_list()
         self._run_upgrade_check()
+        self._refresh_curator_stats()
 
     # ── UI Construction ───────────────────────────────────────────────────────
 
@@ -151,6 +157,24 @@ class MainWindow(QMainWindow):
         input_row.addWidget(self.send_button)
         cl.addLayout(input_row)
 
+        # M11: Rating row — appears after generation
+        rating_row = QHBoxLayout()
+        rating_label = QLabel("Rate response:")
+        rating_label.setStyleSheet("color: #666; font-size: 9pt;")
+        self.thumbs_up_btn = QPushButton("👍  Good")
+        self.thumbs_up_btn.setStyleSheet("background-color: #1A3A1A; font-size: 9pt; padding: 2px 8px;")
+        self.thumbs_up_btn.setEnabled(False)
+        self.thumbs_up_btn.clicked.connect(self._rate_thumbs_up)
+        self.thumbs_down_btn = QPushButton("👎  Fix")
+        self.thumbs_down_btn.setStyleSheet("background-color: #3A1A1A; font-size: 9pt; padding: 2px 8px;")
+        self.thumbs_down_btn.setEnabled(False)
+        self.thumbs_down_btn.clicked.connect(self._rate_thumbs_down)
+        rating_row.addWidget(rating_label)
+        rating_row.addWidget(self.thumbs_up_btn)
+        rating_row.addWidget(self.thumbs_down_btn)
+        rating_row.addStretch()
+        cl.addLayout(rating_row)
+
         # M9: Auto-Loop + Agentic controls row
         agentic_row = QHBoxLayout()
         self.auto_loop_toggle = QCheckBox("Auto-Loop")
@@ -223,6 +247,19 @@ class MainWindow(QMainWindow):
         self.upgrade_button.setVisible(False)
         self.upgrade_button.clicked.connect(self._confirm_upgrade)
         cfg.addWidget(self.upgrade_button)
+
+        # M11: Curator stats + export
+        curator_group = QGroupBox("Training Data Curator")
+        curator_group.setStyleSheet("QGroupBox { font-weight: bold; color: #8B8BFF; }")
+        cl2 = QVBoxLayout(curator_group)
+        self.curator_stats_label = QLabel("Examples: 0  (👍 0  ✏️ 0)")
+        self.curator_stats_label.setStyleSheet("font-size: 9pt; color: #AAA;")
+        cl2.addWidget(self.curator_stats_label)
+        export_btn = QPushButton("📦  Export for Unsloth")
+        export_btn.setStyleSheet("background-color: #1A3A1A;")
+        export_btn.clicked.connect(self._export_training_data)
+        cl2.addWidget(export_btn)
+        cfg.addWidget(curator_group)
 
         hint = QLabel("<small><b>Agentic core:</b> edit <code>core/agentic_loop.py</code> — hot-reloaded per iteration.</small>")
         hint.setWordWrap(True)
@@ -377,6 +414,9 @@ class MainWindow(QMainWindow):
         text = self.user_input.text().strip()
         if not text: return
         self.user_input.clear()
+        self._last_user_msg = text          # M11: track for rating
+        self.thumbs_up_btn.setEnabled(False)
+        self.thumbs_down_btn.setEnabled(False)
         self._set_controls_enabled(False)
         self.stop_agentic_button.setEnabled(self.auto_loop_toggle.isChecked())
 
@@ -431,14 +471,12 @@ class MainWindow(QMainWindow):
     def handle_generation_finished(self, final_thought, final_response, truncated=False, ended_in_thought=False):
         # Store ONLY the response — think blocks are introspection data.
         self.chat_history.append({"role": "assistant", "content": final_response})
+        self._last_response = final_response  # M11: for rating
 
         if truncated:
-            # Hit max_tokens — continue silently WITHOUT polluting chat_history.
-            # Pass ended_in_thought so the next chunk routes to the correct panel.
-            self.new_thought_token_direct("\n[↻ continuing...]\n")
+            self.new_thought_token_direct("\n[\u21bb continuing...]\n")
             continuation_history = list(self.chat_history) + [{
-                "role": "user",
-                "content": "Continue."
+                "role": "user", "content": "Continue."
             }]
             self._fire_generation(
                 history_override=continuation_history,
@@ -447,6 +485,10 @@ class MainWindow(QMainWindow):
             return
 
         self.chat_display.append("\n")
+        # M11: enable rating buttons now that generation is complete
+        self.thumbs_up_btn.setEnabled(bool(self._last_user_msg))
+        self.thumbs_down_btn.setEnabled(bool(self._last_user_msg))
+
         if self.auto_loop_toggle.isChecked():
             self.start_agentic_loop()
         else:
@@ -509,3 +551,77 @@ class MainWindow(QMainWindow):
             f"\n<i><font color='#4A9A4A'>— Agentic loop finished after {total} iteration(s) —</font></i>\n"
         )
         self.user_input.setFocus()
+
+    # ── Training Data Curator (M11) ───────────────────────────────────────────
+
+    def _rate_thumbs_up(self):
+        if not self._last_user_msg or not self._last_response:
+            return
+        save_example(
+            system_prompt=self.system_prompt_input.toPlainText(),
+            user_msg=self._last_user_msg,
+            good_response=self._last_response,
+            source="thumbs_up"
+        )
+        self.thumbs_up_btn.setEnabled(False)
+        self.thumbs_down_btn.setEnabled(False)
+        self.thumbs_up_btn.setText("✅ Saved")
+        self._refresh_curator_stats()
+
+    def _rate_thumbs_down(self):
+        """Open correction dialog, then save the corrected response."""
+        if not self._last_user_msg:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Correct this response")
+        dialog.resize(600, 300)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"<b>Prompt:</b> {self._last_user_msg[:120]}"))
+        layout.addWidget(QLabel("<b>Write the correct response:</b>"))
+        editor = QTextEdit()
+        editor.setPlaceholderText("Type the ideal response here...")
+        editor.setPlainText(self._last_response)
+        layout.addWidget(editor)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dialog.accept)
+        btns.rejected.connect(dialog.reject)
+        layout.addWidget(btns)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            corrected = editor.toPlainText().strip()
+            if corrected:
+                save_example(
+                    system_prompt=self.system_prompt_input.toPlainText(),
+                    user_msg=self._last_user_msg,
+                    good_response=corrected,
+                    source="corrected"
+                )
+                self.thumbs_up_btn.setEnabled(False)
+                self.thumbs_down_btn.setEnabled(False)
+                self.thumbs_down_btn.setText("✅ Fixed")
+                self._refresh_curator_stats()
+
+    def _refresh_curator_stats(self):
+        try:
+            stats = get_stats()
+            self.curator_stats_label.setText(
+                f"Examples: {stats['total']}  (👍 {stats['thumbs_up']}  ✏️ {stats['corrected']})"
+            )
+        except Exception:
+            pass
+
+    def _export_training_data(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Training Data", "data/training/export_unsloth.jsonl",
+            "JSONL Files (*.jsonl)"
+        )
+        if path:
+            out_path, count = export_unsloth(path)
+            QMessageBox.information(
+                self, "Export Complete",
+                f"Exported {count} examples to:\n{out_path}\n\n"
+                f"Ready for Unsloth fine-tuning."
+            )

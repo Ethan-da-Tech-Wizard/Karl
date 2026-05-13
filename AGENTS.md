@@ -34,6 +34,7 @@ how the model thinks via hot-reloadable Python scripts.
 | 8 | Hardware Scout & Model Registry | `core/hardware_scout.py`, `data/model_registry.json`, `app/engine/upgrade_manager.py` |
 | 9 | Auto-Loop Mode | "Auto-Loop" checkbox in UI — generation_finished → start_agentic_loop() |
 | 10 | Self-Upgrade Git Push | `upgrade_manager.perform_upgrade()` → git commit + push on model upgrade |
+| 11 | Training Data Curator | `app/utils/training_curator.py` — 👍/👎 rating row, correction dialog, Unsloth JSONL export |
 
 ### 🔵 Next Milestones (Planned, No Code Written Yet)
 
