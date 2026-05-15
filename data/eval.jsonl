@@ -1,0 +1,8 @@
+{"id": "eval_001", "instruction": "Rewrite this customer complaint professionally.", "input": "this stupid thing broke again", "expected_keywords": ["sorry", "help", "resolve"]}
+{"id": "eval_002", "instruction": "Rewrite this customer complaint professionally.", "input": "i cant believe how bad your support is", "expected_keywords": ["apologize", "understand", "assist"]}
+{"id": "eval_003", "instruction": "Classify the support ticket into one of these categories: Account Access, Billing, Technical Issue, Shipping, General Inquiry.", "input": "I can't log into my account after changing my email address.", "expected_keywords": ["Account Access"]}
+{"id": "eval_004", "instruction": "Classify the support ticket into one of these categories: Account Access, Billing, Technical Issue, Shipping, General Inquiry.", "input": "My package shows delivered but I never received it.", "expected_keywords": ["Shipping"]}
+{"id": "eval_005", "instruction": "Convert this informal note into a professional email.", "input": "boss wants the numbers by tomorrow morning", "expected_keywords": ["I", "required", "morning"]}
+{"id": "eval_006", "instruction": "Rewrite this customer complaint professionally.", "input": "you charged me twice and nobody is helping", "expected_keywords": ["apologize", "charge", "resolve"]}
+{"id": "eval_007", "instruction": "Classify the support ticket into one of these categories: Account Access, Billing, Technical Issue, Shipping, General Inquiry.", "input": "The mobile app keeps freezing on the home screen.", "expected_keywords": ["Technical Issue"]}
+{"id": "eval_008", "instruction": "Rewrite this customer complaint professionally.", "input": "the instructions were impossible to understand", "expected_keywords": ["sorry", "help", "clarify"]}

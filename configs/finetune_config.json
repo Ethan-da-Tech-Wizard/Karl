@@ -1,0 +1,32 @@
+{
+  "_comment": "Karl Lite Fine-Tuning Config. Run: python -m karl_finetune.train_lora configs/finetune_config.json",
+
+  "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+
+  "train_file": "data/train_alpaca.jsonl",
+  "eval_file":  "data/eval.jsonl",
+  "output_dir": "outputs/adapters/karl_lora",
+  "template":   "alpaca",
+
+  "max_seq_length": 1024,
+  "load_in_4bit":   false,
+
+  "epochs":                      2,
+  "learning_rate":               0.0002,
+  "batch_size":                  1,
+  "gradient_accumulation_steps": 8,
+  "logging_steps":               5,
+
+  "lora_r":       16,
+  "lora_alpha":   32,
+  "lora_dropout": 0.05,
+  "target_modules": ["q_proj", "v_proj"],
+
+  "_notes": [
+    "For 4GB VRAM: set load_in_4bit=true, batch_size=1, lora_r=8",
+    "For CPU only: set batch_size=1, gradient_accumulation_steps=16, epochs=1",
+    "For RTX 3070 laptop: load_in_4bit=true works well with lora_r=16",
+    "Run --dry-run first to validate config without using GPU/tokens",
+    "Format your dataset first: python -m karl_finetune.format_dataset data/train.jsonl --template alpaca"
+  ]
+}

@@ -1,0 +1,18 @@
+# Karl Lite Fine-Tuning — Training Dependencies
+# Install ONLY when you want to run karl_finetune/train_lora.py
+# Keep separate from the main venv to avoid conflicts with llama-cpp-python
+#
+# Recommended: use a dedicated venv or Google Colab
+#
+#   python -m venv venv-training
+#   .\venv-training\Scripts\activate
+#   pip install -r requirements-training.txt
+
+torch>=2.1.0
+transformers>=4.40.0
+peft>=0.10.0
+trl>=0.8.0
+datasets>=2.19.0
+accelerate>=0.30.0
+bitsandbytes>=0.43.0    # for 4-bit QLoRA — Windows users: check https://github.com/TimDettmers/bitsandbytes
+sentencepiece            # tokenizer support for some model families
