@@ -164,9 +164,16 @@ class MainWindow(QMainWindow):
         model_row.addWidget(load_model_btn)
         cl.addLayout(model_row)
 
+        chat_top_row = QHBoxLayout()
         chat_label = QLabel("💬  Final Response")
         chat_label.setStyleSheet("font-weight: bold; color: #F3F4F6; font-size: 10pt; padding: 4px 0;")
-        cl.addWidget(chat_label)
+        clear_chat_btn = QPushButton("Clear Chat")
+        clear_chat_btn.setFixedWidth(90)
+        clear_chat_btn.setStyleSheet("background-color: #374151; color: #D1D5DB;")
+        clear_chat_btn.clicked.connect(self._clear_chat)
+        chat_top_row.addWidget(chat_label, stretch=1)
+        chat_top_row.addWidget(clear_chat_btn)
+        cl.addLayout(chat_top_row)
         self.chat_display = QTextBrowser()
         self.chat_display.setOpenExternalLinks(True)
         self.chat_display.setStyleSheet(
@@ -445,9 +452,18 @@ class MainWindow(QMainWindow):
             short = path.split("/")[-1].split("\\")[-1]
             self.model_path_label.setText(f"Model: {short}")
             self.model_path_label.setStyleSheet("color: #34D399; font-size: 9pt;")
-            self.chat_display.append(f"<font color='#34D399'><i>Loaded: {short}</i></font>")
+            self._clear_chat()
+            self.chat_display.append(f"<font color='#34D399'><i>Model loaded: {short} — chat history cleared.</i></font>")
         except Exception as e:
             QMessageBox.critical(self, "Model Load Failed", str(e))
+
+    def _clear_chat(self):
+        self.chat_history = []
+        self.chat_display.clear()
+        self.thought_display.clear()
+        self._last_user_msg = ""
+        self._last_response = ""
+        self._last_logprobs = []
 
     def _run_upgrade_check(self):
         self._upgrade_check_thread = UpgradeCheckThread()
