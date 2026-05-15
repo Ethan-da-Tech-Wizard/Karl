@@ -35,8 +35,10 @@ ERROR_COUNT = 10
 MAX_TOKENS  = 1024   # rough: 1 token ≈ 4 chars
 
 
-def _estimate_tokens(text: str) -> int:
-    return max(1, len(text) // 4)
+def _estimate_tokens(text) -> int:
+    if isinstance(text, int):
+        return max(1, text // 4)
+    return max(1, len(str(text)) // 4)
 
 
 def _detect_format(record: dict) -> str:

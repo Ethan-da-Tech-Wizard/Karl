@@ -3,7 +3,7 @@
 
   "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
 
-  "train_file": "data/train_alpaca.jsonl",
+  "train_file": "data/train.jsonl",
   "eval_file":  "data/eval.jsonl",
   "output_dir": "outputs/adapters/karl_lora",
   "template":   "alpaca",
