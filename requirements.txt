@@ -6,3 +6,5 @@ PyMuPDF
 python-docx
 psutil
 GPUtil
+tqdm
+requests

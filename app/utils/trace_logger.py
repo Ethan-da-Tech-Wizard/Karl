@@ -10,22 +10,39 @@ class TraceLogger:
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self.log_file = os.path.join(self.log_dir, f"trace_{date_str}.jsonl")
 
-    def log_generation(self, compiled_prompt, hyperparams, raw_output, parsed_thought, parsed_response, execution_time, rag_context=None):
+    def log_generation(
+        self,
+        compiled_prompt,
+        hyperparams,
+        raw_output,
+        parsed_thought,
+        parsed_response,
+        execution_time,
+        rag_context=None,
+        workflow: str = "general_chat",
+        template: str = "reasoning_minimal",
+    ):
         """
         Logs a single generation event to disk as a JSONL entry.
+
+        Added fields (M12+):
+            workflow: Active workflow name at generation time.
+            template: Prompt template name used.
         """
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "execution_time_seconds": execution_time,
+            "workflow": workflow,
+            "template": template,
             "hyperparameters": hyperparams,
             "rag_context_used": rag_context or [],
             "compiled_prompt": compiled_prompt,
             "raw_output": raw_output,
             "parsed_thought": parsed_thought,
-            "parsed_response": parsed_response
+            "parsed_response": parsed_response,
         }
-        
+
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
-        
+
         return self.log_file

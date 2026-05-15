@@ -35,30 +35,34 @@ how the model thinks via hot-reloadable Python scripts.
 | 9 | Auto-Loop Mode | "Auto-Loop" checkbox in UI — generation_finished → start_agentic_loop() |
 | 10 | Self-Upgrade Git Push | `upgrade_manager.perform_upgrade()` → git commit + push on model upgrade |
 | 11 | Training Data Curator | `app/utils/training_curator.py` — 👍/👎 rating row, correction dialog, Unsloth JSONL export |
+| 12 | Eval Harness | `eval/harness.py`, `eval/graders.py`, `eval/run_eval.py` — dataset runner, 5 graders, CLI |
+| 13 | Three Workflow Modes | `core/prompt_templates.py`, `core/workflows.py` — document_extractor, grounded_answer, code_review |
+| 14 | RAG Hardening | `app/utils/rag_pipeline.py` — persistent FAISS index, file metadata, contextual headers, retrieval eval metrics |
+| 15 | Training Path Formalization | `training/validate_dataset.py`, `training/qlora_config_template.yaml`, `training/WHEN_TO_TUNE.md` |
 
 ### 🔵 Next Milestones (Planned, No Code Written Yet)
 
-The core feature set is complete. These are enhancement ideas:
-
 - **Tokenizer Visualization:** Display actual token IDs and probabilities alongside the raw stream.
   Requires `llama_cpp` logprobs support (set `logprobs=5` in the generation call).
-- **Persistent Vector DB:** Currently the FAISS index is in-memory only — lost on restart.
-  Serialize with `faiss.write_index()` / `faiss.read_index()` to `data/vector_db/index.faiss`
-  and save `documents[]` as a companion JSON.
 - **Session Branching:** Let the user fork a session at any point and explore alternate prompt paths.
 - **Prompt Diff Tool:** Side-by-side comparison of two trace logs to see how a prompt change affected reasoning.
+  The `workflow` + `template` fields now in every trace make this tractable.
+- **DPO Export:** The training curator currently exports SFT format only. DPO needs rejected text stored
+  at rating time — `_last_response` must be saved alongside the correction in `_rate_thumbs_down()`.
 
 ---
 
 ## Architecture — What You Need to Know
 
 ### The Extension Points (Hackable Core)
-These three files are hot-reloaded on every generation via `importlib.reload()`.
+These files are hot-reloaded on every generation via `importlib.reload()`.
 The user is expected to edit them directly. Do NOT add complex dependencies here.
 
 | File | What It Controls |
 |------|-----------------|
 | `core/interaction_loop.py` | Prompt string construction. `build_prompt(system, history) -> str` |
+| `core/prompt_templates.py` | Named prompt templates. `get_template(name, **kwargs) -> str`. Add new templates here. |
+| `core/workflows.py` | Workflow mode definitions (template, RAG config, schema, grader). |
 | `core/cognitive_parser.py` | Batch parsing of thought vs. response. Used by `engine_test.py` only. |
 | `core/agentic_loop.py` | Stop condition and next-prompt injection for the agentic loop. |
 
@@ -119,8 +123,9 @@ A `QCheckBox` "Auto-Loop" in the config panel.
 
 ### The Trace Logger
 Every generation writes a JSONL entry to `data/logs/traces/trace_YYYY-MM-DD.jsonl`.
-Fields: `timestamp`, `execution_time_seconds`, `hyperparameters`, `rag_context_used`,
-`compiled_prompt`, `raw_output`, `parsed_thought`, `parsed_response`.
+Fields: `timestamp`, `execution_time_seconds`, `workflow`, `template`, `hyperparameters`,
+`rag_context_used`, `compiled_prompt`, `raw_output`, `parsed_thought`, `parsed_response`.
+The `workflow` and `template` fields enable prompt diff analysis across trace files.
 
 ---
 
@@ -181,11 +186,13 @@ Karl/
 ├── AGENTS.md              ← YOU ARE HERE
 ├── README.md              ← Human-readable overview
 ├── main.py                ← Entry point
-├── engine_test.py         ← Headless inference test
+├── engine_test.py         ← Headless inference test (uses deepseek-r1-1.5b.gguf)
 ├── download_test_model.py ← Model downloader
 ├── requirements.txt       ← pip dependencies
 ├── core/                  ← HACKABLE — user edits these
 │   ├── interaction_loop.py
+│   ├── prompt_templates.py  ← Named prompt templates (M13)
+│   ├── workflows.py         ← Workflow mode definitions (M13)
 │   ├── cognitive_parser.py
 │   ├── agentic_loop.py
 │   └── hardware_scout.py
@@ -199,18 +206,34 @@ Karl/
 │   │   ├── main_window.py
 │   │   └── styles/neutral.qss
 │   └── utils/
-│       ├── trace_logger.py
+│       ├── trace_logger.py    ← now logs workflow + template
 │       ├── memory_manager.py
-│       └── rag_pipeline.py
+│       ├── rag_pipeline.py    ← persistent index, metadata (M14)
+│       └── training_curator.py
+├── eval/                  ← Eval harness (M12)
+│   ├── harness.py
+│   ├── graders.py
+│   ├── run_eval.py
+│   ├── benchmark_rag.py
+│   ├── datasets/
+│   │   ├── document_extractor.jsonl
+│   │   ├── grounded_answer.jsonl
+│   │   └── code_review.jsonl
+│   └── results/           ← gitignored (run artifacts)
+├── training/              ← Training path (M15)
+│   ├── validate_dataset.py
+│   ├── qlora_config_template.yaml
+│   └── WHEN_TO_TUNE.md
 ├── data/                  ← partially gitignored
 │   ├── model_registry.json   ← source controlled
 │   ├── active_model.json     ← written at runtime, committed on upgrade
 │   ├── models/               ← gitignored (large binaries)
 │   ├── logs/                 ← gitignored
-│   │   ├── traces/           ← JSONL trace logs
+│   │   ├── traces/           ← JSONL trace logs (workflow+template fields added)
 │   │   └── raw/              ← .tokens raw archive files
 │   ├── sessions/             ← gitignored
-│   └── vector_db/            ← gitignored
+│   ├── training/             ← gitignored (curated.jsonl, adapters)
+│   └── vector_db/            ← gitignored (index.faiss, metadata.json)
 └── docs/
     ├── 01_problem_statement.md
     ├── 02_prd.md

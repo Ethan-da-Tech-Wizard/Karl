@@ -21,8 +21,8 @@ def download_file(url, filepath):
             bar.update(size)
 
 if __name__ == "__main__":
-    # We use a tiny 0.5B model for testing the engine so it downloads fast.
-    # We will use Qwen 1.5 0.5B Chat (Q4_K_M) which is ~398MB
+    # Downloads DeepSeek-R1-Distill-Qwen-1.5B (Q4_K_M quantized, ~986 MB).
+    # This is the default Tier-1 model for Karl — see data/model_registry.json.
     url = "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"
     
     os.makedirs("data/models", exist_ok=True)

@@ -5,10 +5,11 @@ from app.utils.trace_logger import TraceLogger
 from core.cognitive_parser import parse_thought_stream
 
 def test_introspection_engine():
-    model_path = "data/models/tinyllama-1.1b.gguf"
+    model_path = "data/models/deepseek-r1-1.5b.gguf"
     
     if not os.path.exists(model_path):
         print(f"ERROR: Model not found at {model_path}.")
+        print("Run: python download_test_model.py")
         return
 
     print("Initializing Introspection Engine...")

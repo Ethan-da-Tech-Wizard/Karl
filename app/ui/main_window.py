@@ -2,13 +2,15 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTextBrowser, QLineEdit, QPushButton, QSplitter,
                              QTextEdit, QLabel, QDoubleSpinBox, QSpinBox, QGroupBox,
                              QListWidget, QFileDialog, QCheckBox, QMessageBox, QDialog,
-                             QDialogButtonBox)
+                             QDialogButtonBox, QComboBox, QFrame)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
 from app.utils.memory_manager import MemoryManager
 from app.utils.rag_pipeline import RAGPipeline
 from app.utils.training_curator import save_example, get_stats, export_unsloth
+from core.workflows import list_workflows, get_workflow
+from core.prompt_templates import get_template, list_templates
 
 
 # ── Upgrade worker — runs hardware check off the UI thread ────────────────────
@@ -62,6 +64,11 @@ class MainWindow(QMainWindow):
         # M11: track last exchange for rating
         self._last_user_msg = ""
         self._last_response = ""
+        # Workflow tracking
+        self._last_workflow = "general_chat"
+        self._last_template = "reasoning_minimal"
+        self._last_latency = 0.0
+        self._last_chunks_used: list = []
 
         self.setup_ui()
         self.refresh_session_list()
@@ -119,8 +126,8 @@ class MainWindow(QMainWindow):
 
         thought_panel = QWidget()
         tl = QVBoxLayout(thought_panel)
-        thought_label = QLabel("🧠  Thought Stream")
-        thought_label.setStyleSheet("font-weight: bold; color: #A0A0A0; font-size: 10pt; padding: 4px 0;")
+        thought_label = QLabel("🔬  Diagnostic Lane  (reasoning trace)")
+        thought_label.setStyleSheet("font-weight: bold; color: #6B7280; font-size: 9pt; padding: 4px 0;")
         tl.addWidget(thought_label)
         self.thought_display = QTextBrowser()
         self.thought_display.setStyleSheet(
@@ -156,6 +163,24 @@ class MainWindow(QMainWindow):
         input_row.addWidget(self.force_thought_button)
         input_row.addWidget(self.send_button)
         cl.addLayout(input_row)
+
+        # Workflow report panel (collapsible)
+        report_row = QHBoxLayout()
+        self.report_toggle = QCheckBox("Workflow Report")
+        self.report_toggle.setChecked(True)
+        self.report_toggle.stateChanged.connect(self._toggle_report_panel)
+        report_row.addWidget(self.report_toggle)
+        report_row.addStretch()
+        cl.addLayout(report_row)
+
+        self.report_display = QTextBrowser()
+        self.report_display.setMaximumHeight(80)
+        self.report_display.setStyleSheet(
+            "background-color: #0F1117; color: #6EE7B7; font-family: 'Consolas'; "
+            "font-size: 8pt; border: 1px solid #1F2937; border-radius: 3px; padding: 4px;"
+        )
+        self.report_display.setPlaceholderText("Workflow report will appear here after each generation.")
+        cl.addWidget(self.report_display)
 
         # M11: Rating row — appears after generation
         rating_row = QHBoxLayout()
@@ -214,6 +239,44 @@ class MainWindow(QMainWindow):
         self.system_prompt_input.setMaximumHeight(180)
         cfg.addWidget(self.system_prompt_input)
 
+        # Workflow + Template selectors
+        mode_group = QGroupBox("Workflow Mode")
+        mode_group.setStyleSheet("QGroupBox { font-weight: bold; color: #60A5FA; }")
+        ml = QVBoxLayout(mode_group)
+
+        wf_row = QHBoxLayout()
+        wf_row.addWidget(QLabel("Workflow:"))
+        self.workflow_combo = QComboBox()
+        for wf_name, wf_label in list_workflows():
+            self.workflow_combo.addItem(wf_label, wf_name)
+        self.workflow_combo.currentIndexChanged.connect(self._on_workflow_changed)
+        wf_row.addWidget(self.workflow_combo)
+        ml.addLayout(wf_row)
+
+        tpl_row = QHBoxLayout()
+        tpl_row.addWidget(QLabel("Template:"))
+        self.template_combo = QComboBox()
+        for tpl in list_templates():
+            self.template_combo.addItem(tpl)
+        tpl_row.addWidget(self.template_combo)
+        ml.addLayout(tpl_row)
+
+        rag_row = QHBoxLayout()
+        rag_row.addWidget(QLabel("RAG top-k:"))
+        self.rag_topk_spin = QSpinBox()
+        self.rag_topk_spin.setRange(0, 10)
+        self.rag_topk_spin.setValue(3)
+        rag_row.addWidget(self.rag_topk_spin)
+        ml.addLayout(rag_row)
+
+        self.ctx_headers_check = QCheckBox("Contextual chunk headers")
+        self.ctx_headers_check.setToolTip(
+            "Prepend [Source: file | Chunk N] to each retrieved chunk for model citation."
+        )
+        self.ctx_headers_check.stateChanged.connect(self._on_headers_toggled)
+        ml.addWidget(self.ctx_headers_check)
+
+        cfg.addWidget(mode_group)
         hyper_group = QGroupBox("Generation Hyperparameters")
         hl = QVBoxLayout(hyper_group)
 
@@ -318,7 +381,51 @@ class MainWindow(QMainWindow):
     def _toggle_raw_panel(self, state):
         self.raw_display.setVisible(bool(state))
 
-    # ── Auto-Loop Toggle (M9) ─────────────────────────────────────────────────
+    def _toggle_report_panel(self, state):
+        self.report_display.setVisible(bool(state))
+
+    # ── Workflow / Template handlers ───────────────────────────────────────────
+
+    def _on_workflow_changed(self, index):
+        """Sync template combo to workflow default when workflow changes."""
+        wf_name = self.workflow_combo.itemData(index)
+        try:
+            wf_cfg = get_workflow(wf_name)
+            default_tpl = wf_cfg.get("template", "reasoning_minimal")
+            # Select the matching template in the combo
+            for i in range(self.template_combo.count()):
+                if self.template_combo.itemText(i) == default_tpl:
+                    self.template_combo.setCurrentIndex(i)
+                    break
+            # Update RAG top-k to workflow default
+            self.rag_topk_spin.setValue(wf_cfg.get("rag_top_k", 3))
+        except KeyError:
+            pass
+
+    def _on_headers_toggled(self, state):
+        """Toggle contextual chunk headers on the RAG pipeline."""
+        self.rag_pipeline.contextual_headers = bool(state)
+
+    def _get_current_workflow_name(self) -> str:
+        idx = self.workflow_combo.currentIndex()
+        return self.workflow_combo.itemData(idx) or "general_chat"
+
+    def _get_current_template_name(self) -> str:
+        return self.template_combo.currentText() or "reasoning_minimal"
+
+    def _update_report_panel(self, workflow: str, template: str, chunks: list, latency: float, status: str = ""):
+        """Render a one-line workflow report into the report display."""
+        chunk_count = len(chunks)
+        sources = list({c.split("]")[0].replace("[Source: ", "") for c in chunks if "[Source:" in c})
+        source_str = ", ".join(sources) if sources else f"{chunk_count} chunk(s)"
+        msg = (
+            f"workflow={workflow}  template={template}  "
+            f"rag_chunks={chunk_count}  "
+            f"{'sources=[' + source_str + ']  ' if chunk_count else ''}"
+            f"latency={latency:.1f}s  "
+            f"{status}"
+        )
+        self.report_display.setPlainText(msg)
 
     def _on_auto_loop_toggled(self, state):
         if state:
@@ -411,6 +518,7 @@ class MainWindow(QMainWindow):
     # ── Single Generation ─────────────────────────────────────────────────────
 
     def send_message(self):
+        import time as _time
         text = self.user_input.text().strip()
         if not text: return
         self.user_input.clear()
@@ -426,10 +534,27 @@ class MainWindow(QMainWindow):
 
         self.chat_history.append({"role": "user", "content": text})
 
-        retrieved = self.rag_pipeline.retrieve(text, top_k=3)
-        sys_prompt = self.system_prompt_input.toPlainText()
-        if retrieved:
-            sys_prompt += "\n\n# RELEVANT KNOWLEDGE:\n" + "".join(f"- {c}\n" for c in retrieved)
+        # ── Workflow-aware system prompt construction ──────────────────────────
+        wf_name   = self._get_current_workflow_name()
+        tpl_name  = self._get_current_template_name()
+        top_k     = self.rag_topk_spin.value()
+
+        retrieved = self.rag_pipeline.retrieve(text, top_k=top_k) if top_k > 0 else []
+        rag_context = "\n\n".join(retrieved) if retrieved else ""
+
+        # Build system prompt via template if not general_chat, else use text box
+        if wf_name != "general_chat":
+            sys_prompt = get_template(tpl_name, rag_context=rag_context)
+        else:
+            sys_prompt = self.system_prompt_input.toPlainText()
+            if retrieved:
+                sys_prompt += "\n\n# RELEVANT KNOWLEDGE:\n" + "".join(f"- {c}\n" for c in retrieved)
+
+        # Store tracking state
+        self._last_workflow = wf_name
+        self._last_template = tpl_name
+        self._last_chunks_used = retrieved
+        self._gen_start_time = _time.time()
 
         self.thread = LLMThread(sys_prompt, self.chat_history, self._get_hyperparams(), retrieved)
         self.thread.new_thought_token.connect(self.handle_thought_token)
@@ -488,6 +613,18 @@ class MainWindow(QMainWindow):
         # M11: enable rating buttons now that generation is complete
         self.thumbs_up_btn.setEnabled(bool(self._last_user_msg))
         self.thumbs_down_btn.setEnabled(bool(self._last_user_msg))
+
+        # Update workflow report panel
+        import time as _time
+        latency = _time.time() - getattr(self, "_gen_start_time", _time.time())
+        self._last_latency = latency
+        self._update_report_panel(
+            workflow=self._last_workflow,
+            template=self._last_template,
+            chunks=self._last_chunks_used,
+            latency=latency,
+        )
+
 
         if self.auto_loop_toggle.isChecked():
             self.start_agentic_loop()
