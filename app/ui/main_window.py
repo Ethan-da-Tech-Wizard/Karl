@@ -150,6 +150,20 @@ class MainWindow(QMainWindow):
 
         chat_panel = QWidget()
         cl = QVBoxLayout(chat_panel)
+
+        # Model loader row
+        model_row = QHBoxLayout()
+        self.model_path_label = QLabel("No model loaded")
+        self.model_path_label.setStyleSheet("color: #9CA3AF; font-size: 9pt;")
+        self.model_path_label.setWordWrap(False)
+        load_model_btn = QPushButton("Load Model")
+        load_model_btn.setFixedWidth(110)
+        load_model_btn.setStyleSheet("background-color: #1D4ED8; color: white; font-weight: bold;")
+        load_model_btn.clicked.connect(self._pick_and_load_model)
+        model_row.addWidget(self.model_path_label, stretch=1)
+        model_row.addWidget(load_model_btn)
+        cl.addLayout(model_row)
+
         chat_label = QLabel("💬  Final Response")
         chat_label.setStyleSheet("font-weight: bold; color: #F3F4F6; font-size: 10pt; padding: 4px 0;")
         cl.addWidget(chat_label)
@@ -288,10 +302,8 @@ class MainWindow(QMainWindow):
         cfg.addWidget(QLabel("<b>System Prompt</b>"))
         self.system_prompt_input = QTextEdit()
         self.system_prompt_input.setPlainText(
-            "You are a precise, analytical AI assistant.\n"
-            "When reasoning inside <think> blocks: be direct, avoid repeating 'Wait' or 'But wait', "
-            "and do not re-state conclusions you have already reached.\n"
-            "Your final answer after </think> should be clean and concise."
+            "You are a helpful, friendly AI assistant. "
+            "Answer questions clearly and concisely."
         )
         self.system_prompt_input.setMaximumHeight(180)
         cfg.addWidget(self.system_prompt_input)
@@ -419,6 +431,23 @@ class MainWindow(QMainWindow):
         main_splitter.setSizes([230, 820, 310])
 
     # ── Upgrade (M8 + M10) ────────────────────────────────────────────────────
+
+    def _pick_and_load_model(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select GGUF Model", "data/models", "GGUF Models (*.gguf);;All Files (*.*)"
+        )
+        if not path:
+            return
+        try:
+            from app.engine.model_loader import ModelLoader
+            ModelLoader.reset_instance()
+            ModelLoader.get_instance(model_path=path)
+            short = path.split("/")[-1].split("\\")[-1]
+            self.model_path_label.setText(f"Model: {short}")
+            self.model_path_label.setStyleSheet("color: #34D399; font-size: 9pt;")
+            self.chat_display.append(f"<font color='#34D399'><i>Loaded: {short}</i></font>")
+        except Exception as e:
+            QMessageBox.critical(self, "Model Load Failed", str(e))
 
     def _run_upgrade_check(self):
         self._upgrade_check_thread = UpgradeCheckThread()

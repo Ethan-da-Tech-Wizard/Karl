@@ -12,8 +12,9 @@ class ModelLoader:
             print("Loading model...")
             cls._instance = Llama(
                 model_path=model_path,
-                n_ctx=4096,   # Increased from 2048 to support agentic loops
-                verbose=False
+                n_ctx=4096,
+                n_gpu_layers=-1,  # offload all layers to GPU if available, 0 = CPU only
+                verbose=False,
             )
             print("Model loaded.")
         return cls._instance
