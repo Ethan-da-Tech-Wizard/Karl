@@ -8,7 +8,9 @@ from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
 from app.utils.memory_manager import MemoryManager
 from app.utils.rag_pipeline import RAGPipeline
-from app.utils.training_curator import save_example, get_stats, export_unsloth
+from app.utils.training_curator import (
+    save_example, get_stats, export_unsloth, export_dpo, get_dpo_stats
+)
 from core.workflows import list_workflows, get_workflow
 from core.prompt_templates import get_template, list_templates
 
@@ -98,6 +100,14 @@ class MainWindow(QMainWindow):
         self.btn_save = QPushButton("Save"); self.btn_save.clicked.connect(self.save_session)
         btn_row.addWidget(self.btn_new); btn_row.addWidget(self.btn_save)
         ll.addLayout(btn_row)
+        # M16: Branching controls
+        branch_row = QHBoxLayout()
+        self.btn_fork = QPushButton("⑂ Fork"); self.btn_fork.clicked.connect(self.fork_session)
+        self.btn_fork.setToolTip("Clone the current session to a new branch file")
+        self.btn_version = QPushButton("📌 Save Version"); self.btn_version.clicked.connect(self.save_version)
+        self.btn_version.setToolTip("Snapshot the session with a named tag")
+        branch_row.addWidget(self.btn_fork); branch_row.addWidget(self.btn_version)
+        ll.addLayout(branch_row)
         ll.addWidget(QLabel("<b>Knowledge Base (RAG)</b>"))
         self.kb_list = QListWidget()
         ll.addWidget(self.kb_list)
@@ -199,6 +209,30 @@ class MainWindow(QMainWindow):
         rating_row.addWidget(self.thumbs_down_btn)
         rating_row.addStretch()
         cl.addLayout(rating_row)
+
+        # Token confidence bar (logprobs)
+        conf_row = QHBoxLayout()
+        conf_lbl = QLabel("Token confidence:")
+        conf_lbl.setStyleSheet("color: #6B7280; font-size: 9pt;")
+        self.confidence_bar = QLabel("—")
+        self.confidence_bar.setStyleSheet(
+            "color: #10B981; font-family: 'Consolas'; font-size: 9pt; "
+            "background-color: #0F172A; padding: 2px 6px; border-radius: 3px;"
+        )
+        self.confidence_bar.setToolTip(
+            "Average logprob of response tokens. "
+            "Higher (less negative) = more confident.\n"
+            "Requires logprobs support in the loaded model."
+        )
+        conf_row.addWidget(conf_lbl)
+        conf_row.addWidget(self.confidence_bar)
+        diff_btn = QPushButton("🔍 Prompt Diff")
+        diff_btn.setToolTip("Open the side-by-side trace diff viewer (M17)")
+        diff_btn.setStyleSheet("font-size: 9pt; padding: 2px 8px;")
+        diff_btn.clicked.connect(self._open_diff_viewer)
+        conf_row.addWidget(diff_btn)
+        conf_row.addStretch()
+        cl.addLayout(conf_row)
 
         # M9: Auto-Loop + Agentic controls row
         agentic_row = QHBoxLayout()
@@ -318,10 +352,15 @@ class MainWindow(QMainWindow):
         self.curator_stats_label = QLabel("Examples: 0  (👍 0  ✏️ 0)")
         self.curator_stats_label.setStyleSheet("font-size: 9pt; color: #AAA;")
         cl2.addWidget(self.curator_stats_label)
-        export_btn = QPushButton("📦  Export for Unsloth")
+        export_btn = QPushButton("📦  Export SFT (Unsloth)")
         export_btn.setStyleSheet("background-color: #1A3A1A;")
         export_btn.clicked.connect(self._export_training_data)
         cl2.addWidget(export_btn)
+        dpo_export_btn = QPushButton("⚖️  Export DPO Pairs")
+        dpo_export_btn.setStyleSheet("background-color: #1A2A3A;")
+        dpo_export_btn.setToolTip("Export chosen/rejected pairs for DPO training (TRL DPOTrainer format)")
+        dpo_export_btn.clicked.connect(self._export_dpo_data)
+        cl2.addWidget(dpo_export_btn)
         cfg.addWidget(curator_group)
 
         hint = QLabel("<small><b>Agentic core:</b> edit <code>core/agentic_loop.py</code> — hot-reloaded per iteration.</small>")
@@ -479,6 +518,39 @@ class MainWindow(QMainWindow):
                 else:
                     self.chat_display.append(f"<b>Assistant:</b> {content}\n")
 
+    # ── M16: Session Branching ────────────────────────────────────────────────
+
+    def fork_session(self):
+        if not self.current_session_file:
+            QMessageBox.warning(self, "Fork Session", "Save the session first, then fork it.")
+            return
+        try:
+            new_file = self.memory_manager.fork_session(self.current_session_file)
+            self.current_session_file = new_file
+            self.refresh_session_list()
+            self.chat_display.append(f"<i>⑂ Forked to <b>{new_file}</b> — you are now on the fork.</i>")
+        except Exception as e:
+            QMessageBox.critical(self, "Fork Error", str(e))
+
+    def save_version(self):
+        from PyQt6.QtWidgets import QInputDialog
+        tag, ok = QInputDialog.getText(
+            self, "Save Version", "Enter a short version tag (e.g. v2-with-rag):"
+        )
+        if not ok or not tag.strip():
+            return
+        try:
+            new_file = self.memory_manager.save_version(
+                self.chat_history,
+                self.system_prompt_input.toPlainText(),
+                self.current_session_file,
+                tag.strip(),
+            )
+            self.refresh_session_list()
+            self.chat_display.append(f"<i>📌 Version saved as <b>{new_file}</b></i>")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Version Error", str(e))
+
     def ingest_document(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Select Document", "", "All Files (*.*)")
         if filepath:
@@ -528,6 +600,11 @@ class MainWindow(QMainWindow):
         self._set_controls_enabled(False)
         self.stop_agentic_button.setEnabled(self.auto_loop_toggle.isChecked())
 
+        self.confidence_bar.setText("…computing…")
+        self.confidence_bar.setStyleSheet(
+            "color: #6B7280; font-family: 'Consolas'; font-size: 9pt; "
+            "background-color: #0F172A; padding: 2px 6px; border-radius: 3px;"
+        )
         self.chat_display.append(f"<b>User:</b> {text}")
         self.chat_display.append("<b>Assistant:</b> ")
         self.thought_display.append(f"\n--- Generation for: '{text[:20]}...' ---")
@@ -561,6 +638,7 @@ class MainWindow(QMainWindow):
         self.thread.new_chat_token.connect(self.handle_chat_token)
         self.thread.new_raw_token.connect(self.handle_raw_token)
         self.thread.generation_finished.connect(self.handle_generation_finished)
+        self.thread.token_logprobs_ready.connect(self.handle_token_logprobs)
         self.thread.error_occurred.connect(self.handle_error)
         self.thread.start()
 
@@ -590,6 +668,7 @@ class MainWindow(QMainWindow):
         self.thread.new_chat_token.connect(self.handle_chat_token)
         self.thread.new_raw_token.connect(self.handle_raw_token)
         self.thread.generation_finished.connect(self.handle_generation_finished)
+        self.thread.token_logprobs_ready.connect(self.handle_token_logprobs)
         self.thread.error_occurred.connect(self.handle_error)
         self.thread.start()
 
@@ -643,6 +722,35 @@ class MainWindow(QMainWindow):
         self._set_controls_enabled(True)
         self.stop_agentic_button.setEnabled(False)
         self.agentic_status.setText("Agentic: Error")
+
+    def handle_token_logprobs(self, logprobs: list):
+        """Update the confidence bar with mean logprob of response tokens."""
+        if not logprobs:
+            return
+        import math
+        values = [lp for _, lp in logprobs if lp is not None and not math.isnan(lp)]
+        if not values:
+            return
+        mean_lp = sum(values) / len(values)
+        # logprob range: 0 (certain) to -inf (impossible); map to colour
+        if mean_lp >= -0.5:
+            colour = "#10B981"   # green — high confidence
+        elif mean_lp >= -1.5:
+            colour = "#F59E0B"   # amber — moderate
+        else:
+            colour = "#EF4444"   # red — low confidence
+        self.confidence_bar.setText(f"avg logprob {mean_lp:.3f}  ({len(logprobs)} tokens)")
+        self.confidence_bar.setStyleSheet(
+            f"color: {colour}; font-family: 'Consolas'; font-size: 9pt; "
+            "background-color: #0F172A; padding: 2px 6px; border-radius: 3px;"
+        )
+
+    # ── M17: Prompt Diff Viewer ───────────────────────────────────────────────
+
+    def _open_diff_viewer(self):
+        from app.ui.diff_viewer import DiffViewerDialog
+        dlg = DiffViewerDialog(self)
+        dlg.exec()
 
     # ── Agentic Loop ──────────────────────────────────────────────────────────
 
@@ -734,7 +842,8 @@ class MainWindow(QMainWindow):
                     system_prompt=self.system_prompt_input.toPlainText(),
                     user_msg=self._last_user_msg,
                     good_response=corrected,
-                    source="corrected"
+                    source="corrected",
+                    rejected_response=self._last_response,
                 )
                 self.thumbs_up_btn.setEnabled(False)
                 self.thumbs_down_btn.setEnabled(False)
@@ -752,7 +861,7 @@ class MainWindow(QMainWindow):
 
     def _export_training_data(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Training Data", "data/training/export_unsloth.jsonl",
+            self, "Export SFT Training Data", "data/training/export_unsloth.jsonl",
             "JSONL Files (*.jsonl)"
         )
         if path:
@@ -761,4 +870,26 @@ class MainWindow(QMainWindow):
                 self, "Export Complete",
                 f"Exported {count} examples to:\n{out_path}\n\n"
                 f"Ready for Unsloth fine-tuning."
+            )
+
+    def _export_dpo_data(self):
+        dpo_stats = get_dpo_stats()
+        if dpo_stats["dpo_pairs"] == 0:
+            QMessageBox.information(
+                self, "No DPO Pairs",
+                "No DPO pairs found.\n\n"
+                "DPO pairs are created when you click 👎 Fix and provide a correction. "
+                "The original (rejected) response is stored automatically."
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export DPO Pairs", "data/training/export_dpo.jsonl",
+            "JSONL Files (*.jsonl)"
+        )
+        if path:
+            out_path, count = export_dpo(path)
+            QMessageBox.information(
+                self, "DPO Export Complete",
+                f"Exported {count} chosen/rejected pairs to:\n{out_path}\n\n"
+                f"Compatible with TRL DPOTrainer and Unsloth DPO."
             )

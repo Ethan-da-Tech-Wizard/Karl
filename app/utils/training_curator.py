@@ -18,15 +18,23 @@ def _ensure_dir():
     os.makedirs(os.path.dirname(CURATED_PATH), exist_ok=True)
 
 
-def save_example(system_prompt: str, user_msg: str, good_response: str, source: str = "thumbs_up"):
+def save_example(
+    system_prompt: str,
+    user_msg: str,
+    good_response: str,
+    source: str = "thumbs_up",
+    rejected_response: str | None = None,
+):
     """
     Append one training example to the curated dataset.
 
     Args:
-        system_prompt: The system prompt active at generation time.
-        user_msg:      The user's input that triggered the response.
-        good_response: The accepted/corrected assistant response (no <think> block).
-        source:        'thumbs_up' | 'corrected'
+        system_prompt:     The system prompt active at generation time.
+        user_msg:          The user's input that triggered the response.
+        good_response:     The accepted/corrected assistant response (no <think> block).
+        source:            'thumbs_up' | 'corrected'
+        rejected_response: Original (bad) response — populated for 'corrected' examples.
+                           Used to build DPO pairs.
     """
     _ensure_dir()
     record = {
@@ -35,9 +43,11 @@ def save_example(system_prompt: str, user_msg: str, good_response: str, source: 
         "messages": [
             {"role": "system",    "content": system_prompt},
             {"role": "user",      "content": user_msg},
-            {"role": "assistant", "content": good_response}
-        ]
+            {"role": "assistant", "content": good_response},
+        ],
     }
+    if rejected_response is not None:
+        record["rejected"] = rejected_response
     with open(CURATED_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -82,6 +92,47 @@ def export_unsloth(output_path: str = "data/training/export_unsloth.jsonl"):
             out = {"messages": ex["messages"]}
             f.write(json.dumps(out, ensure_ascii=False) + "\n")
     return output_path, len(examples)
+
+
+def export_dpo(output_path: str = "data/training/export_dpo.jsonl"):
+    """
+    Export DPO (Direct Preference Optimisation) pairs.
+
+    Only 'corrected' examples that have a stored rejected response are exported.
+    Output format (compatible with TRL DPOTrainer):
+      {
+        "prompt":   [system_msg, user_msg],
+        "chosen":   [{"role": "assistant", "content": corrected}],
+        "rejected": [{"role": "assistant", "content": original}]
+      }
+
+    Returns (output_path, pair_count).
+    """
+    _ensure_dir()
+    examples = [
+        e for e in get_all_examples()
+        if e.get("source") == "corrected" and e.get("rejected")
+    ]
+    with open(output_path, "w", encoding="utf-8") as f:
+        for ex in examples:
+            msgs = ex["messages"]
+            record = {
+                "prompt":   [msgs[0], msgs[1]],
+                "chosen":   [msgs[2]],
+                "rejected": [{"role": "assistant", "content": ex["rejected"]}],
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return output_path, len(examples)
+
+
+def get_dpo_stats() -> dict:
+    """Return how many DPO-ready pairs exist in the dataset."""
+    examples = get_all_examples()
+    dpo_ready = sum(
+        1 for e in examples
+        if e.get("source") == "corrected" and e.get("rejected")
+    )
+    return {"dpo_pairs": dpo_ready}
 
 
 def delete_example(index: int):

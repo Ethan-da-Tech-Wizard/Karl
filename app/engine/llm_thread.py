@@ -24,6 +24,8 @@ class LLMThread(QThread):
     # thought, response, truncated, ended_in_thought
     generation_finished = pyqtSignal(str, str, bool, bool)
     error_occurred = pyqtSignal(str)
+    # List of (token_str, logprob_float) for the top alternative at each step
+    token_logprobs_ready = pyqtSignal(list)
 
     def __init__(self, system_prompt, chat_history, hyperparams, retrieved_chunks=None, start_in_thought=False):
         super().__init__()
@@ -75,20 +77,22 @@ class LLMThread(QThread):
             start_time = time.time()
             response_generator = llm(
                 prompt,
-                max_tokens=self.hyperparams.get("max_tokens", 512),  # 512 default — chain if needed
+                max_tokens=self.hyperparams.get("max_tokens", 512),
                 temperature=self.hyperparams.get("temperature", 0.7),
                 top_p=self.hyperparams.get("top_p", 0.95),
                 repeat_penalty=1.15,
                 stream=True,
-                stop=["<|im_end|>"]
+                stop=["<|im_end|>"],
+                logprobs=5,
             )
 
             raw_output = ""
             parsed_thought = ""
             parsed_response = ""
-            in_thought = self.start_in_thought  # resume state from previous chunk if continuing
+            in_thought = self.start_in_thought
             buffer = ""
             finish_reason = "stop"
+            collected_logprobs: list[tuple[str, float]] = []  # (token, top_logprob)
 
             with open(raw_log_path, "w", encoding="utf-8") as raw_file:
                 for chunk in response_generator:
@@ -105,6 +109,18 @@ class LLMThread(QThread):
                     text = choice.get('text', '')
                     if not text:
                         continue
+
+                    # Collect logprob of the chosen token (top alternative)
+                    lp_data = choice.get('logprobs')
+                    if lp_data and isinstance(lp_data, dict):
+                        token_lps = lp_data.get('top_logprobs')
+                        if token_lps:
+                            # token_lps is a list of dicts [{token: logprob, ...}]
+                            top_entry = token_lps[0] if token_lps else {}
+                            if top_entry:
+                                top_token = next(iter(top_entry))
+                                top_lp = top_entry[top_token]
+                                collected_logprobs.append((text, float(top_lp)))
 
                     micro_ts = f"{time.time():.6f}"
                     raw_file.write(f"{micro_ts}\t{text}\n")
@@ -164,6 +180,9 @@ class LLMThread(QThread):
                 execution_time=execution_time,
                 rag_context=self.retrieved_chunks
             )
+
+            if collected_logprobs:
+                self.token_logprobs_ready.emit(collected_logprobs)
 
             self.generation_finished.emit(parsed_thought, parsed_response, truncated, ended_in_thought)
 
