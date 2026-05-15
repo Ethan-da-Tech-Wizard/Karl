@@ -1,53 +1,145 @@
-# Karl — Scope Lock and Defined Milestones
+# Karl — Scope and Milestone Tracker
 
-## Scope Lock Statement (Version 1.1 — The Introspection Pivot)
-**Karl** will implement a self-contained, offline LLM graphical interface with an **explicit focus on introspective logging and cognitive manipulation**. It will separate thought traces from final outputs and log all generation variables to disk.
+## Scope Statement (v2 — Prompt Engineering Workbench)
+
+Karl is a privacy-first, offline Prompt Engineering Workbench. It provides a PyQt6 GUI for iterating on LLM behaviour with full introspection, reproducible evaluation, and a structured path to fine-tuning. The inference engine runs in-process via llama-cpp-python. No network calls. No external servers.
 
 ---
 
-## Defined Milestones & Success Criteria
+## Milestone Tracker
 
-### Milestone 1: The Headless Introspection Engine
-**Goal:** Prove the engine works and implement the raw logging infrastructure before any UI exists.
-- **Tasks:**
-  - Build `engine_test.py` (Completed).
-  - Create the `TraceLogger` class that takes a prompt, hyperparams, and response, and writes a highly structured `.jsonl` file to disk.
-  - Implement a basic `cognitive_parser.py` to extract `<think>` blocks from raw text.
-- **Success Criteria:** A Python script generates text, successfully splits the reasoning from the answer in the terminal, and writes a perfectly formatted log file to `data/logs/`.
+### Phase 0 — Foundation
 
-### Milestone 2: The Dual-Pane UI
-**Goal:** Build the PyQt6 framework that supports seeing the thoughts in real-time.
-- **Tasks:**
-  - Build `main_window.py` with the dark neutral theme.
-  - Implement the UI splitter with **three** sections: Chat, Thought Stream, and Config.
-  - Implement the `QThread` that uses `cognitive_parser` to stream text to two different UI windows simultaneously.
-- **Success Criteria:** User types a prompt, and the Thought Window populates with reasoning while the Chat window populates with the final answer.
+#### M1: Headless Introspection Engine ✅
+**Goal:** Prove the engine works and build the logging infrastructure before any UI.
+- `engine_test.py` — headless generation test
+- `TraceLogger` — JSONL logging of prompt, hyperparams, raw output, thought, response
+- `cognitive_parser.py` — `<think>` block extraction
+- **Success:** Script generates text, splits reasoning from answer, writes structured log
 
-### Milestone 3: Memory and Context Management (Completed)
-**Goal:** Implement session persistence and context window math.
-- **Tasks:**
-  - Serialize/deserialize the `chat_history`.
-  - Implement the System Prompt UI element.
-  - Implement a "Force Thought" UI button to inject fake reasoning into the context.
+#### M2: Dual-Pane Thought Stream UI ✅
+**Goal:** PyQt6 framework with live thought/response routing.
+- `main_window.py` with dark neutral theme and three-column layout
+- `LLMThread` streaming to two panels simultaneously
+- **Success:** User sees thought stream populate separately from the final answer in real time
 
-### Milestone 4: The Universal RAG Pipeline (Completed)
-**Goal:** Ingest documents and retrieve them locally.
-- **Tasks:**
-  - Integrate `sentence-transformers` and `faiss-cpu`.
-  - Ingest PDF, DOCX, TXT files via UI.
-  - Ensure retrieved RAG chunks are saved explicitly into the Trace Logger for that specific generation.
+#### M3: Memory and Context Management ✅
+**Goal:** Session persistence and context window safety.
+- JSON serialisation of chat history
+- System Prompt text field
+- `Force Thought` button — inject fake `<think>` blocks
+- Sliding window context trimming
+- **Success:** Sessions survive restart; context window never overflows
 
-### Milestone 5: The "Hackable" Decoupling (Completed)
-**Goal:** Finalize the "Code exposed" requirement.
-- **Tasks:**
-  - Abstract all conversational loop logic into `core/interaction_loop.py`.
-  - Implement `importlib.reload()` so users can modify the loop on the fly without restarting the app.
+#### M4: Universal RAG Pipeline ✅
+**Goal:** Local document ingestion and retrieval.
+- `sentence-transformers` + `faiss-cpu` pipeline
+- Ingest PDF, DOCX, TXT, PY, MD, CSV
+- Retrieved chunks logged in every trace entry
+- **Success:** Ingested document content appears in retrieved context during generation
 
-### Milestone 6: The Agentic Loop (Completed)
-**Goal:** Enable Karl to run autonomously, feeding its own output back in and iterating without user input.
-- **Tasks:**
-  - Build `core/agentic_loop.py` — the hackable stop condition and next-prompt injection logic.
-  - Build `app/engine/agentic_thread.py` — a `QThread` that loops generation, hot-reloads the agentic core on each iteration, and emits per-iteration signals.
-  - Wire a **"Run Agentic Loop"** button and **"Stop"** button into the UI.
-  - Track iteration count in the UI status bar.
-- **Success Criteria:** User sends an initial prompt, clicks "Run Agentic Loop", and Karl iterates autonomously — streaming each thought and response in the live panels — until the stop condition in `core/agentic_loop.py` is met.
+#### M5: Hackable Core Decoupling ✅
+**Goal:** Hot-reloadable interaction logic.
+- `core/interaction_loop.py` as the primary edit surface
+- `importlib.reload()` on every generation
+- Graceful exception handling from user modifications
+- **Success:** User edits `interaction_loop.py`, saves, clicks Generate — change applies immediately
+
+#### M6: Agentic Loop ✅
+**Goal:** Autonomous self-iterating generation.
+- `core/agentic_loop.py` — hackable stop condition and next-prompt injection
+- `AgenticThread` — loops generation, hot-reloads agentic core per iteration
+- UI: Run / Stop controls with iteration counter
+- **Success:** Karl iterates autonomously until stop condition is met
+
+---
+
+### Phase 1 — Workbench Infrastructure
+
+#### M7: Raw Token Archive ✅
+- Toggle panel showing raw token stream with microsecond timestamps
+- Written to `data/logs/raw/` simultaneously with trace log
+
+#### M8: Hardware-Aware Upgrade Manager ✅
+- `hardware_scout.py` reads RAM and VRAM
+- `data/model_registry.json` maps hardware tiers to model recommendations
+- `UpgradeCheckThread` runs at startup; notification + one-click download if upgrade available
+
+#### M9: Auto-Loop and Agentic Controls ✅
+- `Auto-Loop` checkbox for continuous self-feeding generation
+- Stop button halts at next iteration boundary
+- Send button label reflects loop state
+
+#### M10: Self-Upgrade via Model Registry ✅
+- `UpgradeDownloadThread` streams download progress
+- Model auto-registered on completion; restart prompt shown
+
+#### M11: Training Data Curator ✅
+- 👍 / 👎 rating buttons after each generation
+- 👎 opens correction editor; corrected response saved as SFT example
+- `data/training/curated.jsonl` — append-only JSONL
+- Export to Unsloth/HuggingFace ShareGPT format
+- Curator stats displayed in config panel
+
+#### M12: Prompt Template Registry ✅
+- `core/prompt_templates.py` — named templates with `{placeholder}` filling
+- Built-in: `reasoning_minimal`, `gpt_structured`, `json_extractor`, `grounded_answer`, `code_review`
+- Hot-reloaded; `get_template(name, **kwargs)` API
+- Template selector in UI
+
+#### M13: Workflow Engine ✅
+- `core/workflows.py` — named modes linking template + RAG config + eval grader
+- Built-in: `general_chat`, `document_extractor`, `grounded_answer`, `code_review`
+- Workflow selector syncs template and RAG top-k automatically
+- Workflow + template logged in every trace entry
+
+#### M14: Eval Harness and Graders ✅
+- `eval/graders.py` — pure scoring functions: `exact_match`, `json_valid`, `keyword_hit`, `groundedness`, `not_in_context`
+- `eval/harness.py` — `EvalHarness.run()` against any JSONL dataset
+- `eval/run_eval.py` — CLI with `--dry-run` support
+- Seed datasets: `document_extractor`, `grounded_answer`, `code_review`
+- `eval/benchmark_rag.py` — retrieval quality benchmark (Hit@k, MRR)
+
+#### M15: Hardened RAG Pipeline ✅
+- FAISS index persisted to `data/vector_db/` — survives restarts
+- Per-chunk metadata: `source_file`, `chunk_id`, `ingested_at`
+- Contextual chunk headers toggle: `[Source: file | Chunk N]`
+- `eval_retrieval()` for Hit@k and MRR measurement
+- Source filter on `retrieve()`
+
+---
+
+### Phase 2 — Measurement and Control
+
+#### M16: Session Branching ✅
+- `fork_session()` — clone to new branch file, switch immediately
+- `save_version()` — named snapshot (e.g. `_v_v2-with-rag.json`)
+- Session list sorted newest-first by mtime
+- Fork/Version buttons in UI
+
+#### M17: Prompt Diff Viewer ✅
+- `DiffViewerDialog` — loads all `data/logs/traces/` JSONL entries
+- Two-panel side-by-side: workflow, template, hyperparams, RAG chunks, thought, response
+- Line-level diff highlighting: differing response lines coloured red in both panels
+
+#### M18: Eval Results Dashboard ✅
+- `EvalDashboardDialog` history panel: `QTableWidget` of all past reports
+- Pass-rate colour coding: green ≥ 80%, amber ≥ 50%, red below
+- Per-case breakdown on row click
+
+#### M19: Live Eval Runner ✅
+- `EvalRunThread` runs `EvalHarness` off the UI thread
+- Dataset + workflow dropdowns, progress bar, live case-by-case status log
+- Report auto-saved; history panel auto-refreshes on completion
+- `📊 Eval` button in chat panel opens dashboard
+
+#### M20: Logit Bias Editor ✅
+- `QTextEdit` in config panel: `word: ±float` one per line
+- `_parse_logit_bias()` tokenises via loaded model → `{token_id: float}`
+- Passed as `logit_bias` kwarg to llama on every generation including continuations
+
+#### M21: Token Confidence Heatmap ✅
+- `logprobs=5` on every generation; `token_logprobs_ready` signal
+- Confidence bar: average logprob with green/amber/red colour coding
+- Heatmap panel: per-token HTML colour render (green→red, 0 to −5)
+- Heatmap renders from cache when toggled on mid-session

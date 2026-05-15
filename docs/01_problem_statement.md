@@ -1,23 +1,88 @@
-# Problem Statement: The Prompt Engineering Bottleneck
+# Problem Statement — Karl Prompt Engineering Workbench
+
+## Version History
+| Version | Scope |
+|---|---|
+| 1.0 | LLM introspection toy — see how a model thinks |
+| 1.1 | Introspection pivot — structured logging, thought/response split |
+| 2.0 | **Prompt Engineering Workbench** — measurable, reproducible, tool-first workflows |
+
+---
 
 ## 1. Executive Summary
-Prompt Engineers and AI application developers face a critical tooling gap. While consumer-facing LLM applications are abundant, professional-grade environments specifically designed for the rapid iteration, rigorous testing, and systematic optimization of LLM prompts are severely lacking. Current solutions force developers to choose between security compromises (cloud APIs), architectural opacity (black-box local daemons like Ollama or LM Studio), or excessive complexity (managing raw Python scripts without a GUI). There is an urgent requirement for a bespoke, hyper-local, and fundamentally transparent application.
+
+Prompt Engineers and AI application developers face a critical tooling gap. Consumer-facing LLM applications are abundant. Professional-grade environments designed for **rapid iteration, rigorous testing, and systematic optimisation** of LLM behaviour are not.
+
+Current solutions force developers to choose between:
+- **Security compromises** — cloud APIs that transmit proprietary data and prompts over the internet
+- **Architectural opacity** — local daemons (Ollama, LM Studio) that hide the interaction loop entirely
+- **Excessive friction** — raw Python scripts with no GUI, no logging, no measurement
+
+The deeper problem is not just tooling. It is **methodology**. Most practitioners treat prompt engineering as intuition — they iterate by feel, declare success when an output looks right, and have no reproducible way to measure whether a change actually improved behaviour.
+
+Karl exists to make prompt engineering a measurable, reproducible engineering discipline.
+
+---
 
 ## 2. Core Deficiencies in Existing Solutions
 
-### 2.1 Security and Privacy Compromises
-- **Cloud Dependency:** SaaS LLM providers (OpenAI, Anthropic) require transmitting proprietary data, sensitive intellectual property, and experimental prompt structures over the internet. This violates strict air-gapped security protocols and compliance requirements.
-- **Localhost Vulnerabilities:** Popular local solutions (Ollama, vLLM, LM Studio) operate by spinning up local web servers binding to `127.0.0.1` or `0.0.0.0`. In enterprise environments with strict endpoint security, opening local ports or running background daemons can trigger intrusion detection systems or violate local IT policies. 
-- **Telemetry and Shadow Data:** Many existing tools include hidden telemetry, crash reporting, or update checks that compromise a true "zero-telemetry" mandate.
+### 2.1 Security and Privacy
 
-### 2.2 Architectural Opacity and Inflexibility
-- **Black-Box Interaction:** Tools like LM Studio provide a polished UI but hide the interaction loop. Prompt Engineers cannot inspect the exact string concatenation, tokenization nuances, or system prompt injection methodology.
-- **Rigid Interaction Paradigms:** Current GUIs assume a strict User->AI->User turn-based chat. They do not natively support "Agentic" loops, self-reflection mechanisms (the "Ralph Wiggum" loop where the AI evaluates its own output iteratively), or complex branching chains.
-- **Opaque RAG Pipelines:** Built-in RAG features in existing apps abstract away the embedding, chunking, and retrieval algorithms. A Prompt Engineer optimizing a RAG system must be able to manipulate chunk size, overlap, embedding models, and distance metrics directly.
+- **Cloud dependency:** SaaS providers require transmitting proprietary data, sensitive documents, and experimental prompts over the internet — incompatible with air-gapped or compliance-sensitive environments
+- **Localhost exposure:** Ollama, vLLM, and LM Studio bind local web servers to `127.0.0.1` or `0.0.0.0`; in enterprise environments this triggers intrusion detection or violates IT policy
+- **Hidden telemetry:** Most existing tools include telemetry, crash reporting, or update checks that cannot be fully disabled
 
-### 2.3 The "Frankenstein" Workflow
-- Currently, developers must build temporary, messy Python scripts to test custom loops, losing the benefit of a GUI for reading long outputs and managing memory.
-- Switching between a terminal, a code editor, and a vector database inspector causes severe context switching and slows down the experimental cycle.
+### 2.2 No Measurement
 
-## 3. The Proposed Solution
-We require a natively compiled, offline-first application called **Karl** that embeds the inference engine directly within its own memory space. It must be built entirely in Python to allow the user—assumed to be technical—to open the application's source code and modify the core interaction loops and RAG logic directly. Karl must provide the UX of a polished application with the flexibility of a raw Python script.
+The most significant gap: existing tools have no evaluation infrastructure.
+
+A prompt engineer using LM Studio cannot:
+- Define what "correct" output looks like for a given task
+- Run the same prompt across a dataset and get a pass rate
+- Compare two prompt variants with a confidence-backed result
+- Detect whether a change regressed previous behaviour
+
+Without measurement, prompt engineering is guesswork with a polished UI.
+
+### 2.3 Opacity
+
+- Existing GUIs hide the exact string sent to the model, the tokenisation, the system prompt injection, and the retrieved RAG chunks
+- The reasoning process is either invisible or mixed into the final response
+- No audit trail of what was actually run — no reproducibility
+
+### 2.4 Rigid Workflows
+
+- Tools assume a strict User → AI → User turn paradigm
+- No support for agentic loops, self-reflection patterns, or structured output workflows
+- No way to define named prompt profiles and switch between them programmatically
+
+---
+
+## 3. The Solution
+
+**Karl** is a natively offline application that embeds the inference engine directly within its own process — no servers, no ports, no network calls. Built in Python so the interaction loop, prompt templates, and RAG logic are fully visible and modifiable.
+
+Beyond the original introspection goals, Karl v2 addresses the measurement gap:
+
+- **Workflow Engine** — named modes linking a prompt template, RAG config, and eval grader
+- **Eval Harness** — headless and UI-driven runner that scores outputs against defined criteria
+- **Prompt Diff Viewer** — side-by-side comparison of any two generation traces
+- **Training Pipeline** — curate → validate → export → train, with full DPO pair support
+- **Logit Bias Editor** — direct token-level inference control without prompt changes
+- **Session Branching** — fork and version sessions to explore variants without losing history
+- **Token Confidence Heatmap** — per-token logprob visualisation
+
+The result: "did this prompt change work?" has a number, not an opinion.
+
+---
+
+## 4. Target Persona
+
+**Primary: Prompt Engineer / AI Solutions Architect**
+- Python-proficient; understands tokenisation, embeddings, hyperparameters, fine-tuning
+- Needs reproducible experiments, not black-box interactions
+- Works in privacy-sensitive or air-gapped environments
+
+**Secondary: ML Engineer evaluating fine-tuning readiness**
+- Needs to determine whether a behaviour problem requires prompting, RAG, or fine-tuning
+- Needs structured training data collection and pre-flight validation before a training run
