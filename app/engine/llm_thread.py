@@ -86,7 +86,7 @@ class LLMThread(QThread):
                 top_p=self.hyperparams.get("top_p", 0.95),
                 repeat_penalty=1.15,
                 stream=True,
-                stop=["<|im_end|>", "</s>", "<|end|>", "[/INST]", "### Human:", "\nUser:"],
+                stop=["<|im_end|>", "<|im_start|>", "</s>", "<|end|>", "[/INST]", "### Human:", "\nUser:"],
             )
             if self.logit_bias:
                 call_kwargs["logit_bias"] = self.logit_bias
