@@ -469,6 +469,7 @@ class MainWindow(QMainWindow):
         self._last_user_msg = ""
         self._last_response = ""
         self._last_logprobs = []
+        self.workflow_combo.setCurrentIndex(0)  # reset to general_chat
 
     def _reset_hyperparams(self):
         self.temp_spin.setValue(0.7)
