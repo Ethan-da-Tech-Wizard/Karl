@@ -28,7 +28,8 @@ class LLMThread(QThread):
     token_logprobs_ready = pyqtSignal(list)
 
     def __init__(self, system_prompt, chat_history, hyperparams, retrieved_chunks=None,
-                 start_in_thought=False, logit_bias=None):
+                 start_in_thought=False, logit_bias=None,
+                 workflow="general_chat", template="reasoning_minimal"):
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = chat_history
@@ -36,6 +37,8 @@ class LLMThread(QThread):
         self.retrieved_chunks = retrieved_chunks or []
         self.start_in_thought = start_in_thought
         self.logit_bias = logit_bias or {}
+        self.workflow = workflow
+        self.template = template
         self.logger = TraceLogger()
 
     def _trim_history(self, history):
@@ -182,7 +185,9 @@ class LLMThread(QThread):
                 parsed_thought=parsed_thought,
                 parsed_response=parsed_response,
                 execution_time=execution_time,
-                rag_context=self.retrieved_chunks
+                rag_context=self.retrieved_chunks,
+                workflow=self.workflow,
+                template=self.template,
             )
 
             if collected_logprobs:

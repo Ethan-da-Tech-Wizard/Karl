@@ -72,6 +72,7 @@ class MainWindow(QMainWindow):
         self._last_latency = 0.0
         self._last_chunks_used: list = []
         self._last_logprobs: list = []
+        self._last_logit_bias: dict = {}
 
         self.setup_ui()
         self.refresh_session_list()
@@ -670,15 +671,18 @@ class MainWindow(QMainWindow):
             if retrieved:
                 sys_prompt += "\n\n# RELEVANT KNOWLEDGE:\n" + "".join(f"- {c}\n" for c in retrieved)
 
-        # Store tracking state
+        # Resolve and cache everything needed for this generation + any continuations
         self._last_workflow = wf_name
         self._last_template = tpl_name
         self._last_chunks_used = retrieved
+        self._last_logit_bias = self._parse_logit_bias()
         self._gen_start_time = _time.time()
 
         self.thread = LLMThread(
             sys_prompt, self.chat_history, self._get_hyperparams(), retrieved,
-            logit_bias=self._parse_logit_bias(),
+            logit_bias=self._last_logit_bias,
+            workflow=wf_name,
+            template=tpl_name,
         )
         self.thread.new_thought_token.connect(self.handle_thought_token)
         self.thread.new_chat_token.connect(self.handle_chat_token)
@@ -708,8 +712,13 @@ class MainWindow(QMainWindow):
         """Spin up a new LLMThread. history_override lets continuations bypass chat_history."""
         sys_prompt = self.system_prompt_input.toPlainText()
         history = history_override if history_override is not None else self.chat_history
-        self.thread = LLMThread(sys_prompt, history, self._get_hyperparams(),
-                                start_in_thought=start_in_thought)
+        self.thread = LLMThread(
+            sys_prompt, history, self._get_hyperparams(),
+            start_in_thought=start_in_thought,
+            logit_bias=getattr(self, "_last_logit_bias", {}),
+            workflow=getattr(self, "_last_workflow", "general_chat"),
+            template=getattr(self, "_last_template", "reasoning_minimal"),
+        )
         self.thread.new_thought_token.connect(self.handle_thought_token)
         self.thread.new_chat_token.connect(self.handle_chat_token)
         self.thread.new_raw_token.connect(self.handle_raw_token)

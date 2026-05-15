@@ -32,9 +32,13 @@ class MemoryManager:
         return data.get("system_prompt", ""), data.get("chat_history", [])
 
     def list_sessions(self):
-        return sorted(
-            [f for f in os.listdir(self.sessions_dir) if f.endswith(".json")]
-        )
+        """Return session filenames sorted newest-first, then alphabetically within same mtime."""
+        files = [f for f in os.listdir(self.sessions_dir) if f.endswith(".json")]
+        files.sort(key=lambda f: (
+            -os.path.getmtime(os.path.join(self.sessions_dir, f)),
+            f.lower(),
+        ))
+        return files
 
     # ── M16: Session Branching ────────────────────────────────────────────────
 
