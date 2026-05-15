@@ -373,6 +373,11 @@ class MainWindow(QMainWindow):
         self.tokens_spin = QSpinBox()
         self.tokens_spin.setRange(1, 4096); self.tokens_spin.setValue(512)
         tok_row.addWidget(self.tokens_spin); hl.addLayout(tok_row)
+
+        reset_btn = QPushButton("Reset to Defaults")
+        reset_btn.setStyleSheet("color: #9CA3AF; font-size: 9pt;")
+        reset_btn.clicked.connect(self._reset_hyperparams)
+        hl.addWidget(reset_btn)
         cfg.addWidget(hyper_group)
 
         # M8: Upgrade notification area
@@ -464,6 +469,11 @@ class MainWindow(QMainWindow):
         self._last_user_msg = ""
         self._last_response = ""
         self._last_logprobs = []
+
+    def _reset_hyperparams(self):
+        self.temp_spin.setValue(0.7)
+        self.top_p_spin.setValue(0.95)
+        self.tokens_spin.setValue(512)
 
     def _run_upgrade_check(self):
         self._upgrade_check_thread = UpgradeCheckThread()
