@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
         self._last_template = "reasoning_minimal"
         self._last_latency = 0.0
         self._last_chunks_used: list = []
+        self._last_logprobs: list = []
 
         self.setup_ui()
         self.refresh_session_list()
@@ -174,12 +175,16 @@ class MainWindow(QMainWindow):
         input_row.addWidget(self.send_button)
         cl.addLayout(input_row)
 
-        # Workflow report panel (collapsible)
+        # Workflow report + heatmap toggle row
         report_row = QHBoxLayout()
         self.report_toggle = QCheckBox("Workflow Report")
         self.report_toggle.setChecked(True)
         self.report_toggle.stateChanged.connect(self._toggle_report_panel)
         report_row.addWidget(self.report_toggle)
+        self.heatmap_toggle = QCheckBox("Confidence Heatmap")
+        self.heatmap_toggle.setChecked(False)
+        self.heatmap_toggle.stateChanged.connect(self._toggle_heatmap_panel)
+        report_row.addWidget(self.heatmap_toggle)
         report_row.addStretch()
         cl.addLayout(report_row)
 
@@ -191,6 +196,17 @@ class MainWindow(QMainWindow):
         )
         self.report_display.setPlaceholderText("Workflow report will appear here after each generation.")
         cl.addWidget(self.report_display)
+
+        # M21: Confidence Heatmap
+        self.heatmap_display = QTextBrowser()
+        self.heatmap_display.setMaximumHeight(100)
+        self.heatmap_display.setStyleSheet(
+            "background-color: #0A0A0A; font-family: 'Consolas'; font-size: 9pt; "
+            "border: 1px solid #1F2937; border-radius: 3px; padding: 4px;"
+        )
+        self.heatmap_display.setPlaceholderText("Token confidence heatmap appears here after generation.")
+        self.heatmap_display.setVisible(False)
+        cl.addWidget(self.heatmap_display)
 
         # M11: Rating row — appears after generation
         rating_row = QHBoxLayout()
@@ -231,6 +247,12 @@ class MainWindow(QMainWindow):
         diff_btn.setStyleSheet("font-size: 9pt; padding: 2px 8px;")
         diff_btn.clicked.connect(self._open_diff_viewer)
         conf_row.addWidget(diff_btn)
+
+        eval_btn = QPushButton("📊 Eval")
+        eval_btn.setToolTip("Open the Eval Dashboard — history and live runner (M18/M19)")
+        eval_btn.setStyleSheet("font-size: 9pt; padding: 2px 8px;")
+        eval_btn.clicked.connect(self._open_eval_dashboard)
+        conf_row.addWidget(eval_btn)
         conf_row.addStretch()
         cl.addLayout(conf_row)
 
@@ -362,6 +384,27 @@ class MainWindow(QMainWindow):
         dpo_export_btn.clicked.connect(self._export_dpo_data)
         cl2.addWidget(dpo_export_btn)
         cfg.addWidget(curator_group)
+
+        # M20: Logit Bias Editor
+        bias_group = QGroupBox("Logit Bias  (token: ±bias)")
+        bias_group.setStyleSheet("QGroupBox { font-weight: bold; color: #F472B6; }")
+        bl = QVBoxLayout(bias_group)
+        bias_hint = QLabel(
+            "<small>One entry per line: <code>word: +5.0</code> or <code>word: -10.0</code><br>"
+            "Boosts (+) or bans (-) tokens at inference time.</small>"
+        )
+        bias_hint.setWordWrap(True)
+        bias_hint.setStyleSheet("color: #6B7280; font-size: 8pt;")
+        bl.addWidget(bias_hint)
+        self.logit_bias_input = QTextEdit()
+        self.logit_bias_input.setMaximumHeight(80)
+        self.logit_bias_input.setPlaceholderText("Example:\njson: +3.0\nsorry: -5.0")
+        self.logit_bias_input.setStyleSheet(
+            "background: #0F172A; color: #F9A8D4; font-family: 'Consolas'; "
+            "font-size: 9pt; border: 1px solid #374151; border-radius: 3px;"
+        )
+        bl.addWidget(self.logit_bias_input)
+        cfg.addWidget(bias_group)
 
         hint = QLabel("<small><b>Agentic core:</b> edit <code>core/agentic_loop.py</code> — hot-reloaded per iteration.</small>")
         hint.setWordWrap(True)
@@ -633,7 +676,10 @@ class MainWindow(QMainWindow):
         self._last_chunks_used = retrieved
         self._gen_start_time = _time.time()
 
-        self.thread = LLMThread(sys_prompt, self.chat_history, self._get_hyperparams(), retrieved)
+        self.thread = LLMThread(
+            sys_prompt, self.chat_history, self._get_hyperparams(), retrieved,
+            logit_bias=self._parse_logit_bias(),
+        )
         self.thread.new_thought_token.connect(self.handle_thought_token)
         self.thread.new_chat_token.connect(self.handle_chat_token)
         self.thread.new_raw_token.connect(self.handle_raw_token)
@@ -724,26 +770,63 @@ class MainWindow(QMainWindow):
         self.agentic_status.setText("Agentic: Error")
 
     def handle_token_logprobs(self, logprobs: list):
-        """Update the confidence bar with mean logprob of response tokens."""
+        """Update the confidence bar and heatmap with per-token logprob data."""
         if not logprobs:
             return
         import math
+        self._last_logprobs = logprobs
         values = [lp for _, lp in logprobs if lp is not None and not math.isnan(lp)]
         if not values:
             return
         mean_lp = sum(values) / len(values)
-        # logprob range: 0 (certain) to -inf (impossible); map to colour
         if mean_lp >= -0.5:
-            colour = "#10B981"   # green — high confidence
+            colour = "#10B981"
         elif mean_lp >= -1.5:
-            colour = "#F59E0B"   # amber — moderate
+            colour = "#F59E0B"
         else:
-            colour = "#EF4444"   # red — low confidence
+            colour = "#EF4444"
         self.confidence_bar.setText(f"avg logprob {mean_lp:.3f}  ({len(logprobs)} tokens)")
         self.confidence_bar.setStyleSheet(
             f"color: {colour}; font-family: 'Consolas'; font-size: 9pt; "
             "background-color: #0F172A; padding: 2px 6px; border-radius: 3px;"
         )
+        if self.heatmap_display.isVisible():
+            self._render_heatmap(logprobs)
+
+    def _render_heatmap(self, logprobs: list):
+        """Render HTML spans coloured by token confidence into the heatmap display."""
+        import math
+        import html as _html
+
+        def _lp_to_colour(lp: float) -> str:
+            # Map logprob 0..−5 → green..red via linear interpolation
+            clamped = max(-5.0, min(0.0, lp))
+            t = -clamped / 5.0   # 0 = certain (green), 1 = uncertain (red)
+            r = int(16  + t * (239 - 16))
+            g = int(185 - t * (185 - 68))
+            b = int(129 - t * (129 - 68))
+            return f"#{r:02X}{g:02X}{b:02X}"
+
+        parts = []
+        for token_str, lp in logprobs:
+            if lp is None or math.isnan(lp):
+                parts.append(_html.escape(token_str))
+                continue
+            colour = _lp_to_colour(lp)
+            escaped = _html.escape(token_str).replace(" ", "&nbsp;")
+            tip = f"logprob={lp:.3f}"
+            parts.append(f'<span style="color:{colour}" title="{tip}">{escaped}</span>')
+
+        self.heatmap_display.setHtml(
+            '<div style="font-family:Consolas;font-size:9pt;line-height:1.6;">'
+            + "".join(parts)
+            + "</div>"
+        )
+
+    def _toggle_heatmap_panel(self, state):
+        self.heatmap_display.setVisible(bool(state))
+        if state and hasattr(self, "_last_logprobs") and self._last_logprobs:
+            self._render_heatmap(self._last_logprobs)
 
     # ── M17: Prompt Diff Viewer ───────────────────────────────────────────────
 
@@ -751,6 +834,53 @@ class MainWindow(QMainWindow):
         from app.ui.diff_viewer import DiffViewerDialog
         dlg = DiffViewerDialog(self)
         dlg.exec()
+
+    # ── M18/M19: Eval Dashboard ───────────────────────────────────────────────
+
+    def _open_eval_dashboard(self):
+        from app.ui.eval_dashboard import EvalDashboardDialog
+        dlg = EvalDashboardDialog(self)
+        dlg.exec()
+
+    # ── M20: Logit Bias ───────────────────────────────────────────────────────
+
+    def _parse_logit_bias(self) -> dict:
+        """
+        Parse the logit bias text area into {token_id: float}.
+
+        Format: one entry per line — "word: +5.0" or "word: -3.0".
+        Token strings are tokenised to their first token ID via the loaded model.
+        Lines that can't be parsed are silently skipped.
+        """
+        raw = self.logit_bias_input.toPlainText().strip()
+        if not raw:
+            return {}
+        try:
+            from app.engine.model_loader import ModelLoader
+            llm = ModelLoader.get_instance()
+        except Exception:
+            return {}
+
+        result = {}
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                continue
+            token_str, _, bias_str = line.partition(":")
+            token_str = token_str.strip()
+            try:
+                bias_val = float(bias_str.strip())
+            except ValueError:
+                continue
+            try:
+                token_ids = llm.tokenize(token_str.encode("utf-8"))
+                if token_ids:
+                    result[token_ids[0]] = bias_val
+            except Exception:
+                pass
+        return result
 
     # ── Agentic Loop ──────────────────────────────────────────────────────────
 

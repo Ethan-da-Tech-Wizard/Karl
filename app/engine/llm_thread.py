@@ -27,13 +27,15 @@ class LLMThread(QThread):
     # List of (token_str, logprob_float) for the top alternative at each step
     token_logprobs_ready = pyqtSignal(list)
 
-    def __init__(self, system_prompt, chat_history, hyperparams, retrieved_chunks=None, start_in_thought=False):
+    def __init__(self, system_prompt, chat_history, hyperparams, retrieved_chunks=None,
+                 start_in_thought=False, logit_bias=None):
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = chat_history
         self.hyperparams = hyperparams
         self.retrieved_chunks = retrieved_chunks or []
-        self.start_in_thought = start_in_thought  # True when continuing mid-thought
+        self.start_in_thought = start_in_thought
+        self.logit_bias = logit_bias or {}
         self.logger = TraceLogger()
 
     def _trim_history(self, history):
@@ -75,8 +77,7 @@ class LLMThread(QThread):
             raw_log_path = os.path.join(RAW_LOG_DIR, f"{ts}.tokens")
 
             start_time = time.time()
-            response_generator = llm(
-                prompt,
+            call_kwargs = dict(
                 max_tokens=self.hyperparams.get("max_tokens", 512),
                 temperature=self.hyperparams.get("temperature", 0.7),
                 top_p=self.hyperparams.get("top_p", 0.95),
@@ -85,6 +86,9 @@ class LLMThread(QThread):
                 stop=["<|im_end|>"],
                 logprobs=5,
             )
+            if self.logit_bias:
+                call_kwargs["logit_bias"] = self.logit_bias
+            response_generator = llm(prompt, **call_kwargs)
 
             raw_output = ""
             parsed_thought = ""
