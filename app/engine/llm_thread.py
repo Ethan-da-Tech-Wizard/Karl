@@ -87,11 +87,21 @@ class LLMThread(QThread):
                 repeat_penalty=1.15,
                 stream=True,
                 stop=["<|im_end|>"],
-                logprobs=5,
             )
             if self.logit_bias:
                 call_kwargs["logit_bias"] = self.logit_bias
-            response_generator = llm(prompt, **call_kwargs)
+
+            # Try with logprobs; some models require logits_all=True at load time
+            try:
+                response_generator = llm(prompt, logprobs=5, **call_kwargs)
+                # Consume one item to force any immediate exception before entering the loop
+                _first = next(iter(response_generator))
+                import itertools
+                response_generator = itertools.chain([_first], response_generator)
+                _logprobs_enabled = True
+            except Exception:
+                response_generator = llm(prompt, **call_kwargs)
+                _logprobs_enabled = False
 
             raw_output = ""
             parsed_thought = ""
