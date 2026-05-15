@@ -707,7 +707,7 @@ class MainWindow(QMainWindow):
         )
         self.chat_display.append(f"<b>User:</b> {text}")
         self.chat_display.append("<b>Assistant:</b> ")
-        self.thought_display.append(f"\n--- Generation for: '{text[:20]}...' ---")
+        self.thought_display.append(f"<font color='#4B5563'><i>── waiting for reasoning tokens ──</i></font>")
 
         self.chat_history.append({"role": "user", "content": text})
 
