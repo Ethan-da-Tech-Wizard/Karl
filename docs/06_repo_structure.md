@@ -1,47 +1,132 @@
-# Repository Structure & File Specifications
+# Repository Structure & File Specifications — Karl v2
 
-The repository is structured to separate the complex, volatile UI/Threading code from the simple, hackable ML logic.
+The repository separates the **application layer** (stable, threading-safe UI and engine code)
+from the **hackable core** (simple, hot-reloadable Python scripts the user edits freely).
 
-```text
-neat_llm_tool/
+---
+
+## Full Tree
+
+```
+Karl/
 │
-├── main.py                     # App Entry Point. Initializes QApplication and loads stylesheets.
-├── requirements.txt            # Strict dependency list (llama-cpp-python, pyqt6, faiss-cpu, etc.)
+├── AGENTS.md                   ← AI agent handoff document (read this first)
+├── README.md                   ← Human-readable quickstart
+├── main.py                     ← Entry point: boots QApplication, loads stylesheet
+├── engine_test.py              ← Headless engine test (no UI — validates model + trace logger)
+├── smoke_test.py               ← Import-level smoke test (no model required)
+├── download_test_model.py      ← Downloads DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M to data/models/
+├── requirements.txt            ← pip dependencies
 │
-├── core/                       # THE HACKABLE LAYER - Highly visible and documented.
-│   ├── interaction_loop.py     # Main hook. Takes UI state, builds prompt, calls LLM, yields to UI.
-│   ├── rag_pipeline.py         # Defines chunk size, overlap, embedding model, and FAISS queries.
-│   └── examples/               
-│       └── ralph_wiggum.py     # Example code showing an autonomous self-reflection loop.
+├── core/                       ← THE HACKABLE LAYER — edit these freely
+│   ├── interaction_loop.py     ← build_prompt(system_prompt, chat_history) → str
+│   │                              Hot-reloaded before every generation
+│   ├── agentic_loop.py         ← should_continue(i, response) + build_next_prompt(response, i)
+│   │                              Hot-reloaded between every agentic iteration
+│   ├── prompt_templates.py     ← TEMPLATES dict + get_template() + list_templates()
+│   │                              Hot-reloaded before every generation
+│   ├── workflows.py            ← WORKFLOWS dict + get_workflow() + list_workflows()
+│   │                              Read at UI startup and on combo-box change
+│   ├── cognitive_parser.py     ← parse_thought_stream(raw_text) → (thought, response)
+│   │                              Batch parser — used by engine_test.py and eval harness only
+│   └── hardware_scout.py       ← get_hardware_profile() → {ram_gb, vram_gb, storage_gb}
+│                                  Run once at startup via UpgradeCheckThread
 │
-├── app/                        # THE APPLICATION LAYER - Users generally do not edit this.
-│   ├── engine/                 
-│   │   ├── model_loader.py     # Singleton class managing the loaded Llama instance.
-│   │   └── llm_thread.py       # PyQt QThread wrapper that executes core/interaction_loop.py safely.
+├── app/
+│   ├── engine/
+│   │   ├── model_loader.py     ← ModelLoader singleton: get_instance() / reset_instance()
+│   │   │                          n_ctx=4096, verbose=False
+│   │   ├── llm_thread.py       ← LLMThread(QThread): single-shot streaming generation
+│   │   │                          Inline state machine: routes <think> tokens to thought panel
+│   │   │                          Handles truncation chaining (finish_reason == "length")
+│   │   ├── agentic_thread.py   ← AgenticThread(QThread): autonomous multi-turn loop
+│   │   │                          Hot-reloads agentic_loop.py between iterations
+│   │   └── upgrade_manager.py  ← check_for_upgrade() + perform_upgrade()
+│   │                              Compares hardware profile to model_registry.json tiers
+│   │                              Downloads GGUF + git commit + git push on upgrade
 │   │
-│   ├── ui/                     
-│   │   ├── main_window.py      # PyQt QMainWindow definition, splitters, and layout.
-│   │   ├── widgets/            
-│   │   │   ├── chat_view.py    # Custom widget for rendering markdown chat bubbles.
-│   │   │   ├── config_panel.py # Form for sliders (Temp, Top P) and System Prompt text area.
-│   │   │   └── memory_list.py  # Sidebar widget showing saved chat sessions.
+│   ├── ui/
+│   │   ├── main_window.py      ← MainWindow(QMainWindow): full UI v2
+│   │   │                          Three-column layout (Sessions | Center | Config)
+│   │   │                          Rich tooltips on every interactive element
+│   │   │                          Status bar with live state + latency
 │   │   └── styles/
-│   │       └── neutral.qss     # Highly optimized Qt StyleSheet for the dark neutral aesthetic.
+│   │       └── neutral.qss     ← Full Qt stylesheet: dark theme, hover states,
+│   │                              scrollbars, tooltips, button variants, comboboxes
 │   │
 │   └── utils/
-│       ├── memory_manager.py   # JSON serialization/deserialization for chat histories.
-│       └── error_handler.py    # Catches exceptions from `core/` and formats them nicely for the UI.
+│       ├── trace_logger.py     ← TraceLogger: writes JSONL to data/logs/traces/
+│       │                          Fields: timestamp, execution_time, workflow, template,
+│       │                          hyperparameters, rag_context_used, compiled_prompt,
+│       │                          raw_output, parsed_thought, parsed_response
+│       ├── memory_manager.py   ← MemoryManager: save/load/list sessions as JSON
+│       │                          Sessions stored in data/sessions/
+│       ├── rag_pipeline.py     ← RAGPipeline: ingest / retrieve / eval
+│       │                          FAISS flat L2 + all-MiniLM-L6-v2 embeddings
+│       │                          Persistent index in data/vector_db/
+│       │                          Supports PDF, DOCX, TXT, PY, MD, CSV
+│       └── training_curator.py ← save_example() / get_stats() / export_unsloth()
+│                                  Curated examples stored in data/training/curated.jsonl
 │
-└── data/                       # LOCAL STATE DIRECTORY (Added to .gitignore)
-    ├── models/                 # DeepSeek .gguf files placed here by the user.
-    ├── vector_store/           
-    │   ├── index.faiss         # The serialized float32 vectors.
-    │   └── meta.db             # SQLite DB linking vector IDs to text chunks.
-    └── sessions/               # Saved chat history JSON files.
+├── eval/
+│   ├── __init__.py
+│   ├── harness.py              ← EvalHarness: loads dataset, runs generations, applies graders
+│   ├── graders.py              ← 5 graders: keyword_hit, json_valid, groundedness,
+│   │                              json_schema, regex_match
+│   ├── run_eval.py             ← CLI: python eval/run_eval.py --workflow <name> --top_k <n>
+│   ├── benchmark_rag.py        ← Retrieval-only benchmark: hit@k and MRR
+│   └── datasets/
+│       ├── document_extractor.jsonl
+│       ├── grounded_answer.jsonl
+│       └── code_review.jsonl
+│
+├── training/
+│   ├── WHEN_TO_TUNE.md         ← Decision guide: prompt engineering vs. fine-tuning
+│   ├── qlora_config_template.yaml ← Ready-to-use QLoRA config for Unsloth
+│   └── validate_dataset.py     ← Validates curated.jsonl before a training run
+│
+├── data/                       ← Local state — partially gitignored
+│   ├── model_registry.json     ← Source-controlled: tier definitions for upgrade manager
+│   ├── active_model.json       ← Written at runtime: current model path + tier
+│   ├── models/                 ← GITIGNORED: GGUF model files (large binaries)
+│   ├── logs/
+│   │   ├── traces/             ← GITIGNORED: trace_YYYY-MM-DD.jsonl files
+│   │   └── raw/                ← GITIGNORED: *.tokens raw archive files
+│   ├── sessions/               ← GITIGNORED: saved conversation JSON files
+│   ├── training/               ← GITIGNORED: curated.jsonl + adapter checkpoints
+│   └── vector_db/              ← GITIGNORED: index.faiss + metadata.json
+│
+└── docs/
+    ├── 01_problem_statement.md
+    ├── 02_prd.md
+    ├── 03_frd.md
+    ├── 04_architecture.md
+    ├── 05_scope_and_milestones.md
+    ├── 06_repo_structure.md    ← THIS FILE
+    └── 07_risk_register.md
 ```
 
-## Architectural Decoupling
-The separation between `app/` and `core/` is the defining feature of this software. 
-- The `app/engine/llm_thread.py` file dynamically imports `core/interaction_loop.py` using Python's `importlib`. 
-- This means the UI is simply a "dumb terminal" passing data into the `core/` scripts. 
-- If a Prompt Engineer wants to test a "Chain of Thought" prompt strategy, they do not touch `main_window.py`. They open `core/interaction_loop.py`, write the logic to prompt the model, parse the reasoning, append it invisibly to history, and prompt again for the final answer. The UI will faithfully display whatever the script yields back to it.
+---
+
+## Architectural Principles
+
+### 1. The Hackable Core
+`core/` is the user's playground. Every file is hot-reloaded via `importlib.reload()` —
+the user edits the file, saves, and clicks Generate. No restart needed.
+
+### 2. Thread Safety
+All LLM work runs on `QThread` subclasses. The UI thread only processes signals.
+**Rule:** Never touch UI widgets from inside `run()`. Only emit signals.
+
+### 3. Singleton Model
+`ModelLoader` holds the `llama_cpp.Llama` instance as a class-level singleton.
+Loading happens once. `reset_instance()` forces a reload on the next call.
+
+### 4. Data Immutability
+Trace logs and raw token archives are append-only. They are never modified after writing.
+Even a crashed generation leaves a partially-written file that can be inspected.
+
+### 5. Gitignore Strategy
+Large binaries (`models/`), runtime artifacts (`logs/`, `sessions/`, `vector_db/`, `training/`)
+are gitignored. Configuration that affects reproducibility (`model_registry.json`) is
+source-controlled.
