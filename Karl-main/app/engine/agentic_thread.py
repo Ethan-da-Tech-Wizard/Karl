@@ -78,8 +78,7 @@ class AgenticThread(QThread):
             top_p=self.hyperparams.get("top_p", 0.95),
             repeat_penalty=1.15,
             stream=True,
-            stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>"],
-            echo=False
+            stop=["<|im_end|>"]
         )
 
         raw_output = ""
