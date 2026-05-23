@@ -95,17 +95,20 @@ Both threads contain an inline streaming state machine. It:
 
 ### The Model Singleton
 `ModelLoader` in `app/engine/model_loader.py` is a class-level singleton.
-- `get_instance()` loads the model once, returns the same object forever.
+- `get_instance(model_path=None)` checks `data/active_model.json` at runtime to load the upgraded GGUF file.
+- Falls back to `deepseek-r1-1.5b.gguf` automatically if the active model file is missing or points to a non-existent GGUF file.
 - `reset_instance()` sets `_instance = None` — forces reload on next `get_instance()`.
 - Current config: `n_ctx=4096`, `verbose=False`.
-- Model path: `data/models/deepseek-r1-1.5b.gguf`
 
-### Context Window Management (Agentic Only)
-`AgenticThread._trim_history()` prevents context overflow in long loops:
-- Walks history backwards, accumulates character count
-- Budget = `(4096 - 1024) * 3` chars (~conservative token estimate)
-- Always preserves the seed message (index 0)
-- Emits a notice to the Thought Stream when trimming occurs
+### Context Window Management (All Threads)
+`_trim_history()` prevents context overflow in long conversations:
+- Walks history backwards, accumulates character count.
+- Budget = `(4096 - 1024) * 3` chars (~conservative token estimate).
+- Always preserves the seed message (index 0).
+- Emits a notice to the Thought Stream when trimming occurs.
+
+### Auto-Continuation (M7)
+Both `LLMThread` and `AgenticThread` execute their generation generator inside an auto-continuation loop (up to 5 passes). If the model's output is truncated due to the token limit (`finish_reason == "length"`), the thread automatically appends the current raw generation to the prompt and queries the model again, seamlessly resuming the stream in the correct parsing state (`in_thought`). Redundant UI-driven continuation handlers have been completely removed.
 
 ### The Hardware Scout & Upgrade Manager (M8 + M10)
 On startup, `UpgradeCheckThread` (in `main_window.py`) runs off the UI thread:
