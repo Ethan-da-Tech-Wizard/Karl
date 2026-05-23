@@ -70,18 +70,7 @@ class AgenticThread(QThread):
         return kept
 
     def _run_single_generation(self, llm, prompt, raw_file):
-        """Runs one streaming generation. Returns (raw, thought, response)."""
-        response_gen = llm(
-            prompt,
-            max_tokens=self.hyperparams.get("max_tokens", 2048),
-            temperature=self.hyperparams.get("temperature", 0.7),
-            top_p=self.hyperparams.get("top_p", 0.95),
-            repeat_penalty=1.1,
-            stream=True,
-            stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"],
-            echo=False
-        )
-
+        """Runs streaming generation, continuing automatically if truncated."""
         raw_output = ""
         parsed_thought = ""
         parsed_response = ""
@@ -89,55 +78,89 @@ class AgenticThread(QThread):
         in_thought = True
         buffer = ""
 
-        for chunk in response_gen:
+        continuation_count = 0
+        max_continuations = 5
+
+        while continuation_count <= max_continuations:
+            response_gen = llm(
+                prompt + raw_output,
+                max_tokens=self.hyperparams.get("max_tokens", 2048),
+                temperature=self.hyperparams.get("temperature", 0.7),
+                top_p=self.hyperparams.get("top_p", 0.95),
+                repeat_penalty=1.1,
+                stream=True,
+                stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"],
+                echo=False
+            )
+
+            finish_reason = "stop"
+            has_tokens = False
+
+            for chunk in response_gen:
+                if self._stop_requested:
+                    break
+                if 'choices' not in chunk or not chunk['choices']:
+                    continue
+
+                choice = chunk['choices'][0]
+                fr = choice.get('finish_reason')
+                if fr is not None:
+                    finish_reason = fr
+
+                text = choice.get('text', '')
+                if not text:
+                    continue
+
+                has_tokens = True
+                raw_output += text
+                buffer += text
+
+                # M7: write raw token before parsing
+                micro_ts = f"{time.time():.6f}"
+                raw_file.write(f"{micro_ts}\t{text}\n")
+                raw_file.flush()
+                self.new_raw_token.emit(text)
+
+                if "<think>" in buffer and not in_thought:
+                    in_thought = True
+                    pre_think = buffer.split("<think>")[0]
+                    if pre_think:
+                        self.new_chat_token.emit(pre_think)
+                        parsed_response += pre_think
+                    buffer = buffer.split("<think>", 1)[1]
+
+                if in_thought and "</think>" in buffer:
+                    in_thought = False
+                    parts = buffer.split("</think>", 1)
+                    if parts[0]:
+                        self.new_thought_token.emit(parts[0])
+                        parsed_thought += parts[0]
+                    buffer = parts[1]
+
+                _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
+                _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
+
+                if in_thought:
+                    if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
+                        self.new_thought_token.emit(buffer)
+                        parsed_thought += buffer
+                        buffer = ""
+                else:
+                    if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
+                        self.new_chat_token.emit(buffer)
+                        parsed_response += buffer
+                        buffer = ""
+
             if self._stop_requested:
                 break
-            if 'choices' not in chunk or not chunk['choices']:
-                continue
-            text = chunk['choices'][0].get('text', '')
-            if not text:
-                continue
 
-            raw_output += text
-            buffer += text
+            if finish_reason != "length" or not has_tokens:
+                break
 
-            # M7: write raw token before parsing
-            micro_ts = f"{time.time():.6f}"
-            raw_file.write(f"{micro_ts}\t{text}\n")
-            raw_file.flush()
-            self.new_raw_token.emit(text)
+            self.new_thought_token.emit("\n[continuing...]\n")
+            continuation_count += 1
 
-            if "<think>" in buffer and not in_thought:
-                in_thought = True
-                pre_think = buffer.split("<think>")[0]
-                if pre_think:
-                    self.new_chat_token.emit(pre_think)
-                    parsed_response += pre_think
-                buffer = buffer.split("<think>", 1)[1]
-
-            if in_thought and "</think>" in buffer:
-                in_thought = False
-                parts = buffer.split("</think>", 1)
-                if parts[0]:
-                    self.new_thought_token.emit(parts[0])
-                    parsed_thought += parts[0]
-                buffer = parts[1]
-
-            _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
-            _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
-
-            if in_thought:
-                if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
-                    self.new_thought_token.emit(buffer)
-                    parsed_thought += buffer
-                    buffer = ""
-            else:
-                if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
-                    self.new_chat_token.emit(buffer)
-                    parsed_response += buffer
-                    buffer = ""
-
-        # flush
+        # flush remainder
         if buffer:
             if in_thought:
                 self.new_thought_token.emit(buffer)

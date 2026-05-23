@@ -73,18 +73,6 @@ class LLMThread(QThread):
             raw_log_path = os.path.join(RAW_LOG_DIR, f"{ts}.tokens")
 
             start_time = time.time()
-            response_generator = llm(
-                prompt,
-                max_tokens=self.hyperparams.get("max_tokens", 2048),
-                temperature=self.hyperparams.get("temperature", 0.7),
-                top_p=self.hyperparams.get("top_p", 0.95),
-                repeat_penalty=1.1,
-                stream=True,
-                # <|im_start|> stops the model from hallucinating a new conversation turn
-                stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"],
-                echo=False
-            )
-
             raw_output = ""
             parsed_thought = ""
             parsed_response = ""
@@ -94,56 +82,82 @@ class LLMThread(QThread):
             buffer = ""
             finish_reason = "stop"
 
+            continuation_count = 0
+            max_continuations = 5
+
             with open(raw_log_path, "w", encoding="utf-8") as raw_file:
-                for chunk in response_generator:
-                    if 'choices' not in chunk or not chunk['choices']:
-                        continue
+                while continuation_count <= max_continuations:
+                    response_generator = llm(
+                        prompt + raw_output,
+                        max_tokens=self.hyperparams.get("max_tokens", 2048),
+                        temperature=self.hyperparams.get("temperature", 0.7),
+                        top_p=self.hyperparams.get("top_p", 0.95),
+                        repeat_penalty=1.1,
+                        stream=True,
+                        # <|im_start|> stops the model from hallucinating a new conversation turn
+                        stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"],
+                        echo=False
+                    )
 
-                    choice = chunk['choices'][0]
+                    finish_reason = "stop"
+                    has_tokens = False
 
-                    # Track finish_reason from every chunk (last non-None wins)
-                    fr = choice.get('finish_reason')
-                    if fr is not None:
-                        finish_reason = fr
+                    for chunk in response_generator:
+                        if 'choices' not in chunk or not chunk['choices']:
+                            continue
 
-                    text = choice.get('text', '')
-                    if not text:
-                        continue
+                        choice = chunk['choices'][0]
 
-                    micro_ts = f"{time.time():.6f}"
-                    raw_file.write(f"{micro_ts}\t{text}\n")
-                    raw_file.flush()
-                    self.new_raw_token.emit(text)
+                        # Track finish_reason from every chunk (last non-None wins)
+                        fr = choice.get('finish_reason')
+                        if fr is not None:
+                            finish_reason = fr
 
-                    raw_output += text
-                    buffer += text
+                        text = choice.get('text', '')
+                        if not text:
+                            continue
 
-                    if "<think>" in buffer and not in_thought:
-                        in_thought = True
-                        pre_think = buffer.split("<think>")[0]
-                        if pre_think:
-                            self.new_chat_token.emit(pre_think)
-                            parsed_response += pre_think
-                        buffer = buffer.split("<think>", 1)[1]
+                        has_tokens = True
+                        micro_ts = f"{time.time():.6f}"
+                        raw_file.write(f"{micro_ts}\t{text}\n")
+                        raw_file.flush()
+                        self.new_raw_token.emit(text)
 
-                    if in_thought and "</think>" in buffer:
-                        in_thought = False
-                        parts = buffer.split("</think>", 1)
-                        if parts[0]:
-                            self.new_thought_token.emit(parts[0])
-                            parsed_thought += parts[0]
-                        buffer = parts[1]
+                        raw_output += text
+                        buffer += text
 
-                    if in_thought:
-                        if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
-                            self.new_thought_token.emit(buffer)
-                            parsed_thought += buffer
-                            buffer = ""
-                    else:
-                        if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
-                            self.new_chat_token.emit(buffer)
-                            parsed_response += buffer
-                            buffer = ""
+                        if "<think>" in buffer and not in_thought:
+                            in_thought = True
+                            pre_think = buffer.split("<think>")[0]
+                            if pre_think:
+                                self.new_chat_token.emit(pre_think)
+                                parsed_response += pre_think
+                            buffer = buffer.split("<think>", 1)[1]
+
+                        if in_thought and "</think>" in buffer:
+                            in_thought = False
+                            parts = buffer.split("</think>", 1)
+                            if parts[0]:
+                                self.new_thought_token.emit(parts[0])
+                                parsed_thought += parts[0]
+                            buffer = parts[1]
+
+                        if in_thought:
+                            if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
+                                self.new_thought_token.emit(buffer)
+                                parsed_thought += buffer
+                                buffer = ""
+                        else:
+                            if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
+                                self.new_chat_token.emit(buffer)
+                                parsed_response += buffer
+                                buffer = ""
+
+                    if finish_reason != "length" or not has_tokens:
+                        break
+
+                    self.new_thought_token.emit("\n[continuing...]\n")
+                    continuation_count += 1
 
             # Flush remainder
             if buffer:
