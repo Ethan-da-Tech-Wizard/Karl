@@ -176,7 +176,7 @@ class MainWindow(QMainWindow):
             self.nav_theme.addItem(name)
         self.nav_theme.setCurrentText("Midnight")
         self.nav_theme.setToolTip("Switch color theme. 30 palettes available.")
-        self.nav_theme.currentTextChanged.connect(self._apply_theme)
+        self.nav_theme.currentTextChanged.connect(self._apply_theme_from_navbar)
         hl.addWidget(theme_lbl)
         hl.addWidget(self.nav_theme)
 
@@ -480,7 +480,7 @@ class MainWindow(QMainWindow):
             self.config_theme.addItem(name)
         self.config_theme.setCurrentText("Midnight")
         self.config_theme.setToolTip("Select a color theme.")
-        self.config_theme.currentTextChanged.connect(self._apply_theme_and_sync)
+        self.config_theme.currentTextChanged.connect(self._apply_theme_from_config)
         col1.addWidget(self.config_theme)
         col1.addStretch()
 
@@ -649,10 +649,16 @@ class MainWindow(QMainWindow):
         self._current_theme = name
         QApplication.instance().setStyleSheet(generate_stylesheet(name))
 
-    def _apply_theme_and_sync(self, name: str):
-        """Config page theme picker -- also syncs nav bar picker."""
+    def _apply_theme_from_navbar(self, name: str):
         self._apply_theme(name)
-        if self.nav_theme.currentText() != name:
+        if hasattr(self, "config_theme") and self.config_theme.currentText() != name:
+            self.config_theme.blockSignals(True)
+            self.config_theme.setCurrentText(name)
+            self.config_theme.blockSignals(False)
+
+    def _apply_theme_from_config(self, name: str):
+        self._apply_theme(name)
+        if hasattr(self, "nav_theme") and self.nav_theme.currentText() != name:
             self.nav_theme.blockSignals(True)
             self.nav_theme.setCurrentText(name)
             self.nav_theme.blockSignals(False)
