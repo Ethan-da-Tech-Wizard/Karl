@@ -349,8 +349,6 @@ class MainWindow(QMainWindow):
         # Theme
         l.addWidget(_cap_label("Theme"))
 
-        self.theme_combo = QComboBox() if True else None  # noqa
-        from PyQt6.QtWidgets import QComboBox
         self.theme_combo = QComboBox()
         for name in sorted(THEMES.keys()):
             self.theme_combo.addItem(name)
@@ -840,5 +838,4 @@ class MainWindow(QMainWindow):
                 self.upgrade_btn.setEnabled(True)
 
 
-# Fix missing import
-from PyQt6.QtWidgets import QComboBox  # noqa: E402 (already imported above but guard it)
+
