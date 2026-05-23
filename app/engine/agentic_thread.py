@@ -73,19 +73,20 @@ class AgenticThread(QThread):
         """Runs one streaming generation. Returns (raw, thought, response)."""
         response_gen = llm(
             prompt,
-            max_tokens=self.hyperparams.get("max_tokens", 1024),
+            max_tokens=self.hyperparams.get("max_tokens", 2048),
             temperature=self.hyperparams.get("temperature", 0.7),
             top_p=self.hyperparams.get("top_p", 0.95),
-            repeat_penalty=1.15,
+            repeat_penalty=1.1,
             stream=True,
-            stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>"],
+            stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"],
             echo=False
         )
 
         raw_output = ""
         parsed_thought = ""
         parsed_response = ""
-        in_thought = False
+        # Prompt pre-seeds <think>\n -- always start in thought mode
+        in_thought = True
         buffer = ""
 
         for chunk in response_gen:

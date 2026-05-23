@@ -75,19 +75,22 @@ class LLMThread(QThread):
             start_time = time.time()
             response_generator = llm(
                 prompt,
-                max_tokens=self.hyperparams.get("max_tokens", 512),  # 512 default — chain if needed
+                max_tokens=self.hyperparams.get("max_tokens", 2048),
                 temperature=self.hyperparams.get("temperature", 0.7),
                 top_p=self.hyperparams.get("top_p", 0.95),
-                repeat_penalty=1.15,
+                repeat_penalty=1.1,
                 stream=True,
-                stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>"],
+                # <|im_start|> stops the model from hallucinating a new conversation turn
+                stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"],
                 echo=False
             )
 
             raw_output = ""
             parsed_thought = ""
             parsed_response = ""
-            in_thought = self.start_in_thought  # resume state from previous chunk if continuing
+            # Prompt pre-seeds <think>\n so we ALWAYS start inside the thought block.
+            # start_in_thought only used for continuation chains.
+            in_thought = True if not self.start_in_thought else self.start_in_thought
             buffer = ""
             finish_reason = "stop"
 
