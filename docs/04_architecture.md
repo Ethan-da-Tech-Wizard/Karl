@@ -24,21 +24,21 @@
        ├── ModelLoader.get_instance() (singleton)
        │      └── llama_cpp.Llama("data/models/deepseek-r1-1.5b.gguf")
        │
-       ├── Streaming loop:
-       │   token → buffer → state machine →
-       │     new_thought_token(str)  →  thought_display
-       │     new_chat_token(str)     →  chat_display
-       │     new_raw_token(str)      →  raw_display + .tokens file
-       │
-       ├── TraceLogger.log_generation() → data/logs/traces/*.jsonl
-       └── generation_finished(thought, response, truncated, in_thought)
-                     │
-             MainWindow.handle_generation_finished()
-               ├── append to chat_history
-               ├── enable rating buttons
-               ├── update workflow report panel
-               ├── update status bar
-               └── if truncated → fire continuation LLMThread
+        ├── Streaming loop:
+        │   token → buffer → state machine →
+        │     new_thought_token(str)  →  thought_display
+        │     new_chat_token(str)     →  chat_display
+        │     new_raw_token(str)      →  raw_display + .tokens file
+        │   If truncated by length: auto-extends prompt and continues (up to 5 passes)
+        │
+        ├── TraceLogger.log_generation() → data/logs/traces/*.jsonl
+        └── generation_finished(thought, response, truncated, in_thought)
+                      │
+              MainWindow.handle_generation_finished()
+                ├── append to chat_history
+                ├── enable rating buttons
+                ├── update workflow report panel
+                └── update status bar
 ```
 
 ---
@@ -113,17 +113,19 @@ User types prompt → send_message()
   │
   └── LLMThread.run():
         ├── importlib.reload(core.interaction_loop)
-        ├── ModelLoader.get_instance()         # singleton — loads once
+        ├── ModelLoader.get_instance()         # singleton — loads active model
         ├── _trim_history(chat_history)        # context budget enforcement
         ├── build_prompt(system_prompt, trimmed_history)
-        ├── llm(prompt, stream=True, …)
-        ├── Streaming loop:
-        │     for chunk in response_generator:
-        │       raw_file.write(token)          # .tokens archive
-        │       emit new_raw_token(token)
-        │       state_machine(buffer, token)   # routes to thought/chat
-        └── TraceLogger.log_generation(…)
-              emit generation_finished(…)
+        ├── while continuation_count <= max_continuations:
+        │     ├── llm(prompt + raw_output, stream=True, …)
+        │     ├── Streaming loop:
+        │     │     for chunk in response_generator:
+        │     │       raw_file.write(token)          # .tokens archive
+        │     │       emit new_raw_token(token)
+        │     │       state_machine(buffer, token)   # routes to thought/chat
+        │     └── if finish_reason != "length": break
+        ├── TraceLogger.log_generation(…)
+        └── emit generation_finished(…)
 ```
 
 ---
