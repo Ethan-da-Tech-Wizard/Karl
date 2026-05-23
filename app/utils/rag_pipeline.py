@@ -37,7 +37,13 @@ class RAGPipeline:
             contextual_headers:  If True, prepend "[Source: file | Chunk N]" to
                                  each retrieved chunk — aids model citation.
         """
-        self.encoder = SentenceTransformer(model_name)
+        # Load the embedding model quietly -- suppress "Loading weights" progress
+        # bar and the "BertModel LOAD REPORT" table that sentence-transformers
+        # prints to stdout/stderr on every cold start.
+        import io, contextlib
+        _sink = io.StringIO()
+        with contextlib.redirect_stdout(_sink), contextlib.redirect_stderr(_sink):
+            self.encoder = SentenceTransformer(model_name)
         self.index_path = index_path
         self.contextual_headers = contextual_headers
 
