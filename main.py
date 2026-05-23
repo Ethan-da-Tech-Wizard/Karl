@@ -7,7 +7,7 @@ def main():
     
     # Load stylesheet
     try:
-        with open("app/ui/styles/neutral.qss", "r") as f:
+        with open("app/ui/styles/neutral.qss", "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
     except FileNotFoundError:
         pass
