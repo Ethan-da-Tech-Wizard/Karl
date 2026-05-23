@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QTextBrowser, QLineEdit, QPushButton, QSplitter,
     QTextEdit, QLabel, QDoubleSpinBox, QSpinBox,
     QListWidget, QFileDialog, QCheckBox, QMessageBox,
-    QFrame, QStatusBar, QApplication, QSizePolicy,
+    QComboBox, QFrame, QStatusBar, QApplication, QSizePolicy,
     QDialog, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
