@@ -1,27 +1,29 @@
-# QLoRA Fine-Tuning Config Template — Karl Workbench
+# QLoRA fine-tuning config template for Karl
 #
-# Use this template with Unsloth or HuggingFace TRL for local adapter training.
-# Run `python training/validate_dataset.py` first to verify your dataset.
-# Then export: python -c "from app.utils.training_curator import export_unsloth; export_unsloth()"
+# This is a starter configuration for adapter training outside the Karl app.
+# Run `python training/validate_dataset.py` before training.
+# Export data with:
 #
-# Tested configuration for DeepSeek-R1-Distill-Qwen-1.5B on CPU (Intel 12th Gen).
-# Training time estimate: ~20-60 min for 100 examples, 3 epochs.
+#   python -c "from app.utils.training_curator import export_unsloth; export_unsloth()"
 #
-# See training/WHEN_TO_TUNE.md before deciding to tune.
+# The exported file uses JSONL records shaped as:
+#
+#   {"messages": [{"role": "...", "content": "..."}, ...]}
+#
+# The GGUF used by Karl is an inference artifact. For training, start from the
+# HuggingFace base model, train/merge adapters, then convert back to GGUF.
 
-# ── Model ─────────────────────────────────────────────────────────────────────
-model_name: "unsloth/DeepSeek-R1-Distill-Qwen-1.5B"   # HF base (not GGUF)
-# Alternative for faster experimentation:
-# model_name: "Qwen/Qwen2-1.5B-Instruct"
+# Model
+model_name: "unsloth/DeepSeek-R1-Distill-Qwen-1.5B"
 
-# ── Quantization ──────────────────────────────────────────────────────────────
-load_in_4bit: true        # QLoRA: 4-bit NF4 quantization
+# Quantization
+load_in_4bit: true
 bnb_4bit_quant_type: "nf4"
 bnb_4bit_compute_dtype: "bfloat16"
 
-# ── LoRA Adapter ──────────────────────────────────────────────────────────────
-lora_r: 16                # Rank — higher = more capacity, more VRAM
-lora_alpha: 32            # Scaling factor (usually 2x lora_r)
+# LoRA adapter
+lora_r: 16
+lora_alpha: 32
 lora_dropout: 0.05
 target_modules:
   - "q_proj"
@@ -31,48 +33,47 @@ target_modules:
 bias: "none"
 task_type: "CAUSAL_LM"
 
-# ── Data ──────────────────────────────────────────────────────────────────────
+# Data
 dataset: "data/training/export_unsloth.jsonl"
-dataset_format: "sharegpt"   # messages: [{role, content}, ...]
+dataset_format: "messages"
 max_seq_length: 2048
-# If your examples exceed 512 tokens (validate_dataset.py will warn you),
-# increase max_seq_length and reduce batch size accordingly.
 
-# ── Training ──────────────────────────────────────────────────────────────────
+# Training
 output_dir: "data/training/adapters/"
 num_train_epochs: 3
 per_device_train_batch_size: 2
-gradient_accumulation_steps: 4   # effective batch = 2 * 4 = 8
+gradient_accumulation_steps: 4
 learning_rate: 2.0e-4
 lr_scheduler_type: "cosine"
 warmup_ratio: 0.05
 weight_decay: 0.01
 max_grad_norm: 1.0
-fp16: false               # Use bf16 instead if your CPU/GPU supports it
-bf16: false               # Set true for Ampere GPU or newer
+fp16: false
+bf16: false
 
-# ── Logging & Saving ──────────────────────────────────────────────────────────
+# Logging and saving
 logging_steps: 10
 save_strategy: "epoch"
 save_total_limit: 2
-evaluation_strategy: "no"   # No eval split — all data used for training
-report_to: "none"           # Disable wandb/mlflow for local use
+evaluation_strategy: "no"
+report_to: "none"
 
-# ── Merge & Export (post-training) ────────────────────────────────────────────
-# After training, merge adapter into base model for GGUF export:
+# Local hardware notes
 #
-#   from peft import PeftModel
-#   from transformers import AutoModelForCausalLM
-#   base = AutoModelForCausalLM.from_pretrained(model_name)
-#   model = PeftModel.from_pretrained(base, "data/training/adapters/")
-#   model = model.merge_and_unload()
-#   model.save_pretrained("data/training/merged_model/")
+# CPU-only:
+#   per_device_train_batch_size: 1
+#   gradient_accumulation_steps: 8
 #
-# Then convert to GGUF with llama.cpp:
-#   python convert.py data/training/merged_model/ --outtype q4_K_M
-#   cp ggml-model-q4_K_M.gguf data/models/karl-finetuned-1.5b.gguf
+# 8GB VRAM:
+#   the defaults above are a reasonable starting point
+#
+# 4GB VRAM:
+#   reduce lora_r to 8 and batch size to 1
 
-# ── Notes ─────────────────────────────────────────────────────────────────────
-# CPU-only: set per_device_train_batch_size: 1, gradient_accumulation_steps: 8
-# GPU (8GB VRAM): settings above should work
-# GPU (4GB VRAM): reduce lora_r to 8, batch to 1
+# Post-training outline
+#
+# 1. Merge the adapter into the base HuggingFace model.
+# 2. Save the merged model.
+# 3. Convert the merged model to GGUF with llama.cpp tooling.
+# 4. Put the GGUF in data/models/.
+# 5. Add or update a registry entry in data/model_registry.json.

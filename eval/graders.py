@@ -12,7 +12,6 @@ run in CI, in the headless eval harness, or interactively.
 
 import json
 import re
-from typing import Any
 
 
 # ── exact_match ───────────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ def get_hardware_profile():
     """
     import psutil
 
-    ram_gb = psutil.virtual_memory().available / (1024 ** 3)
+    ram_gb = psutil.virtual_memory().total / (1024 ** 3)
 
     vram_gb = 0.0
     try:

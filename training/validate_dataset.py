@@ -20,6 +20,13 @@ import json
 import os
 import sys
 import argparse
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,7 +50,7 @@ def validate(path: str) -> bool:
     Returns True if no ERRORs found.
     """
     print(f"\n{'─'*60}")
-    print(f"  Karl Dataset Validator")
+    print("  Karl Dataset Validator")
     print(f"  Path: {path}")
     print(f"{'─'*60}\n")
 
@@ -119,8 +126,8 @@ def validate(path: str) -> bool:
     long_examples = []
     for i, rec in enumerate(records):
         messages = rec.get("messages", [])
-        total_chars = sum(len(m.get("content", "")) for m in messages)
-        est_tokens = estimate_tokens(total_chars)
+        combined_text = "".join(m.get("content", "") for m in messages)
+        est_tokens = estimate_tokens(combined_text)
         if est_tokens > MAX_TOKENS_ESTIMATE:
             long_examples.append((i + 1, est_tokens))
 
@@ -138,9 +145,9 @@ def validate(path: str) -> bool:
 
     # ── Check 5: Source distribution ──────────────────────────────────────────
     sources = Counter(rec.get("source", "unknown") for rec in records)
-    thumbs_up = sources.get("thumbs_up", 0)
+    approved = sources.get("approved", 0) + sources.get("thumbs_up", 0)
     corrected  = sources.get("corrected", 0)
-    other      = total - thumbs_up - corrected
+    other      = total - approved - corrected
 
     corrected_pct = corrected / total if total else 0
     if corrected_pct < 0.20 and corrected < 10:
@@ -150,7 +157,7 @@ def validate(path: str) -> bool:
         )
     else:
         _pass(
-            f"Distribution: {thumbs_up} thumbs_up | {corrected} corrected ({corrected_pct:.0%}) | {other} other"
+            f"Distribution: {approved} approved | {corrected} corrected ({corrected_pct:.0%}) | {other} other"
         )
 
     # ── Check 6: Duplicates ───────────────────────────────────────────────────
@@ -168,7 +175,7 @@ def validate(path: str) -> bool:
         seen.add(key)
 
     if dupes == 0:
-        _pass(f"Duplicates: none found")
+        _pass("Duplicates: none found")
     else:
         _warn(f"Duplicates: {dupes} near-duplicate records detected — consider deduplicating")
 

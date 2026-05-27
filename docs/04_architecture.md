@@ -1,204 +1,157 @@
-# Karl — System Architecture & Data Flow
+# Karl Architecture
 
-## 1. High-Level Component Diagram
+## High-Level Components
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Main UI Thread (PyQt6)                                             │
-│                                                                     │
-│  MainWindow                                                         │
-│    ├── Left Panel: MemoryManager + RAGPipeline                      │
-│    ├── Center: thought_display + chat_display + raw_display         │
-│    └── Right: system_prompt + workflow/template combos + spinners   │
-└────────────────────┬────────────────────────────────────────────────┘
-                     │ spawns QThread
-       ┌─────────────┴─────────────┐
-       │                           │
-  LLMThread                 AgenticThread
-  (single shot)             (autonomous loop)
-       │                           │
-       ├── importlib.reload()      ├── importlib.reload()
-       │   core/interaction_loop   │   core/interaction_loop
-       │                           │   core/agentic_loop
-       │                           │
-       ├── ModelLoader.get_instance() (singleton)
-       │      └── llama_cpp.Llama("data/models/deepseek-r1-1.5b.gguf")
-       │
-        ├── Streaming loop:
-        │   token → buffer → state machine →
-        │     new_thought_token(str)  →  thought_display
-        │     new_chat_token(str)     →  chat_display
-        │     new_raw_token(str)      →  raw_display + .tokens file
-        │   If truncated by length: auto-extends prompt and continues (up to 5 passes)
-        │
-        ├── TraceLogger.log_generation() → data/logs/traces/*.jsonl
-        └── generation_finished(thought, response, truncated, in_thought)
-                      │
-              MainWindow.handle_generation_finished()
-                ├── append to chat_history
-                ├── enable rating buttons
-                ├── update workflow report panel
-                └── update status bar
+```text
+PyQt6 MainWindow
+  |
+  |-- Chat page
+  |     |-- MemoryManager
+  |     |-- RAGPipeline
+  |     |-- reasoning QTextBrowser
+  |     |-- response QTextBrowser
+  |
+  |-- Configure page
+  |     |-- workflow selector
+  |     |-- system prompt editor
+  |     |-- hyperparameter controls
+  |     |-- reflect-loop controls
+  |
+  |-- Tuning page
+        |-- dataset stats
+        |-- export and validation guidance
+
+Worker threads
+  |
+  |-- LLMThread
+  |     |-- ModelLoader singleton
+  |     |-- core.interaction_loop hot reload
+  |     |-- streaming parser
+  |     |-- TraceLogger
+  |
+  |-- AgenticThread
+        |-- ModelLoader singleton
+        |-- core.interaction_loop hot reload
+        |-- core.agentic_loop hot reload
+        |-- streaming parser
+        |-- TraceLogger
 ```
 
----
+## Data Flow: Single Generation
 
-## 2. The Hackable Core
-
-```
-core/
-├── interaction_loop.py    ← HOT-RELOADED every generation
-│   └── build_prompt(system_prompt, chat_history) -> str
-│       Returns the full ChatML-formatted prompt string.
-│       Modify this to change prompt format, add prefix injections,
-│       or implement custom history manipulation.
-│
-├── agentic_loop.py        ← HOT-RELOADED every agentic iteration
-│   ├── should_continue(iteration, last_response) -> bool
-│   │   Stop condition. Return False to end the loop.
-│   └── build_next_prompt(last_response, iteration) -> str
-│       Content of the next USER turn injected into history.
-│
-├── prompt_templates.py    ← HOT-RELOADED every generation
-│   ├── TEMPLATES: dict[str, str]   Named system prompt templates
-│   ├── get_template(name, **kwargs) -> str
-│   └── list_templates() -> list[str]
-│
-├── workflows.py           ← Read at startup + on combo change
-│   ├── WORKFLOWS: dict[str, dict]  Named workflow configurations
-│   ├── get_workflow(name) -> dict
-│   └── list_workflows() -> list[tuple[str, str]]
-│
-├── cognitive_parser.py    ← Used by engine_test.py (batch mode only)
-│   └── parse_thought_stream(raw_text) -> (thought, response)
-│
-└── hardware_scout.py      ← Run once at startup via UpgradeCheckThread
-    └── get_hardware_profile() -> {ram_gb, vram_gb, storage_gb}
+```text
+User sends message
+  |
+  |-- MainWindow appends user turn to chat_history
+  |-- RAGPipeline.retrieve() if top_k > 0
+  |-- MainWindow renders system prompt
+  |     |-- custom prompt: append formatted RAG context
+  |     |-- workflow prompt: get_template(template, rag_context, schema, code)
+  |-- LLMThread starts
+        |
+        |-- reload core.interaction_loop
+        |-- ModelLoader.get_instance()
+        |-- token-aware history trim
+        |-- build_prompt(system_prompt, trimmed_history)
+        |-- clamp generation tokens to context window
+        |-- stream llama-cpp chunks
+        |-- write raw .tokens archive
+        |-- route chunks through thought/response parser
+        |-- log JSONL trace
+        |-- emit generation_finished
 ```
 
-All files in `core/` are reloaded via `importlib.reload()` — save the file
-and click Generate. No restart required.
+## Data Flow: Reflect Loop
 
----
-
-## 3. Threading Model
-
-| Thread | Class | Signals emitted |
-|---|---|---|
-| UI | `MainWindow` | — (receives signals, updates widgets) |
-| Single generation | `LLMThread(QThread)` | `new_thought_token`, `new_chat_token`, `new_raw_token`, `generation_finished`, `error_occurred` |
-| Agentic loop | `AgenticThread(QThread)` | same as above + `iteration_finished`, `loop_finished` |
-| Upgrade check | `UpgradeCheckThread(QThread)` | `upgrade_available`, `no_upgrade` |
-| Upgrade download | `UpgradeDownloadThread(QThread)` | `progress`, `finished`, `error` |
-
-**Thread safety rule:** Never access UI widgets directly from inside `run()`. Only emit signals.
-
----
-
-## 4. Data Flow: Single Generation
-
-```
-User types prompt → send_message()
-  │
-  ├── 1. Retrieve RAG chunks (if top_k > 0)
-  │      RAGPipeline.retrieve(query, top_k) → list[str]
-  │
-  ├── 2. Build system prompt
-  │      If workflow ≠ general_chat: get_template(tpl_name, rag_context=…)
-  │      Else: system_prompt_input.toPlainText() + appended chunks
-  │
-  ├── 3. Append user message to chat_history
-  │
-  ├── 4. Spawn LLMThread(system_prompt, chat_history, hyperparams, chunks)
-  │
-  └── LLMThread.run():
-        ├── importlib.reload(core.interaction_loop)
-        ├── ModelLoader.get_instance()         # singleton — loads active model
-        ├── _trim_history(chat_history)        # context budget enforcement
-        ├── build_prompt(system_prompt, trimmed_history)
-        ├── while continuation_count <= max_continuations:
-        │     ├── llm(prompt + raw_output, stream=True, …)
-        │     ├── Streaming loop:
-        │     │     for chunk in response_generator:
-        │     │       raw_file.write(token)          # .tokens archive
-        │     │       emit new_raw_token(token)
-        │     │       state_machine(buffer, token)   # routes to thought/chat
-        │     └── if finish_reason != "length": break
-        ├── TraceLogger.log_generation(…)
-        └── emit generation_finished(…)
+```text
+User clicks reflect
+  |
+  |-- MainWindow injects first loop prompt if last turn is assistant
+  |-- AgenticThread starts
+        |
+        |-- reload core.interaction_loop
+        |-- reload core.agentic_loop
+        |-- loop:
+              |-- trim history
+              |-- build prompt
+              |-- clamp generation tokens
+              |-- stream and parse one generation
+              |-- log iteration trace
+              |-- append assistant response
+              |-- emit iteration_finished
+              |-- reload core.agentic_loop
+              |-- should_continue(iteration, response)
+              |-- build_next_prompt(response, iteration)
+              |-- append next user prompt
+        |-- emit loop_finished
 ```
 
----
+## Hot-Reload Layer
 
-## 5. Data Flow: Agentic Loop
+`core/` is the user-editable control plane.
 
-```
-start_agentic_loop() → AgenticThread(system_prompt, chat_history, hyperparams)
-  │
-  AgenticThread.run():
-    ├── importlib.reload(core.interaction_loop)
-    ├── importlib.reload(core.agentic_loop)
-    ├── ModelLoader.get_instance()
-    │
-    └── while not stop_requested:
-          ├── _trim_history()
-          ├── build_prompt()
-          ├── _run_single_generation()         # same streaming logic as LLMThread
-          ├── TraceLogger.log_generation()
-          ├── chat_history.append(response)
-          ├── emit iteration_finished(i, thought, response)
-          │
-          ├── importlib.reload(core.agentic_loop)   # hot-reload stop condition
-          ├── if not should_continue(i, response): break
-          │
-          └── next_prompt = build_next_prompt(response, i)
-                chat_history.append({"role": "user", "content": next_prompt})
+| File | Runtime role |
+|---|---|
+| `interaction_loop.py` | Converts system prompt plus chat history into final ChatML. |
+| `agentic_loop.py` | Decides whether reflect mode continues and what user turn to inject next. |
+| `prompt_templates.py` | Stores named workflow templates and placeholder replacement. |
+| `workflows.py` | Stores workflow metadata used by the UI and eval harness. |
+| `cognitive_parser.py` | Batch parser used by headless tests. |
+| `hardware_scout.py` | Hardware profile for model upgrade suggestions. |
 
-    emit loop_finished(total_iterations)
-```
+The engine threads reload `interaction_loop.py` before generation. The reflect
+thread reloads `agentic_loop.py` between iterations.
 
----
+## Model Loader
 
-## 6. RAG Data Flow
+`app/engine/model_loader.py` owns a class-level singleton:
 
-```
-User clicks "Ingest Document" → ingest_document()
-  │
-  RAGPipeline.ingest_file(filepath):
-    ├── extract_text(filepath)         # format-specific extractor
-    ├── chunk_text(text, 200, 50)      # 200-word chunks, 50-word overlap
-    ├── encoder.encode(chunks)         # all-MiniLM-L6-v2 → float32 vectors
-    ├── index.add(embeddings)          # FAISS flat L2 index
-    ├── documents.append(metadata)    # {text, source_file, chunk_id, ingested_at}
-    └── save_index()                   # faiss.write_index() + JSON metadata
+- default model: `data/models/deepseek-r1-1.5b.gguf`
+- active model config: `data/active_model.json`
+- context size: `n_ctx=4096`
+- `reset_instance()` unloads the current singleton reference
 
-On each generation (top_k > 0):
-  RAGPipeline.retrieve(query, top_k):
-    ├── encoder.encode([query])
-    ├── index.search(query_vector, fetch_k)
-    └── return list[str]               # with optional [Source: file | Chunk N] headers
+## Context Window Strategy
+
+Both `LLMThread` and `AgenticThread` use token counts from `llm.tokenize()`:
+
+- cap very long individual messages
+- preserve the first seed message when possible
+- drop older middle turns until prompt fits
+- reserve room for generation
+- clamp `max_tokens` before calling llama-cpp
+
+## RAG Storage
+
+```text
+data/vector_db/
+  index.faiss
+  metadata.json
 ```
 
----
+Each metadata record contains:
 
-## 7. File System Layout
+- `text`
+- `source_file`
+- `chunk_id`
+- `ingested_at`
 
+## Logs and Artifacts
+
+```text
+data/logs/traces/trace_YYYY-MM-DD.jsonl
+data/logs/raw/*.tokens
+data/sessions/*.json
+data/training/curated.jsonl
+data/training/export_unsloth.jsonl
+eval/results/*.jsonl
 ```
-data/
-├── models/
-│   └── deepseek-r1-1.5b.gguf     # ~1GB GGUF model (gitignored)
-├── model_registry.json            # Tier definitions (source-controlled)
-├── active_model.json              # Written at runtime on upgrade
-├── logs/
-│   ├── traces/
-│   │   └── trace_YYYY-MM-DD.jsonl  # One JSONL log per day (gitignored)
-│   └── raw/
-│       └── *.tokens                 # One file per generation (gitignored)
-├── sessions/
-│   └── *.json                       # Saved conversations (gitignored)
-├── training/
-│   └── curated.jsonl                # Training curator output (gitignored)
-└── vector_db/
-    ├── index.faiss                  # Persisted FAISS index (gitignored)
-    └── metadata.json                # Chunk metadata (gitignored)
-```
+
+Most runtime artifacts are gitignored. `data/model_registry.json` is
+source-controlled. `data/active_model.json` may be committed by the upgrade
+manager when the model tier changes.
+
+## Thread Safety
+
+Worker threads must never mutate UI widgets directly. They emit PyQt signals,
+and `MainWindow` slots update the visible widgets.

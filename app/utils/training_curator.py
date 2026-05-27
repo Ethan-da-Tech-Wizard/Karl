@@ -2,7 +2,7 @@
 Training Data Curator — M11
 
 Captures Karl's generations as fine-tuning examples.
-Every thumbs-up (or corrected thumbs-down) is appended to
+Every approved response (or teach correction) is appended to
 data/training/curated.jsonl in Unsloth/HuggingFace chat format.
 
 Export via export_unsloth() to get a ready-to-train JSONL file.
@@ -18,15 +18,15 @@ def _ensure_dir():
     os.makedirs(os.path.dirname(CURATED_PATH), exist_ok=True)
 
 
-def save_example(system_prompt: str, user_msg: str, good_response: str, source: str = "thumbs_up"):
+def save_example(system_prompt: str, user_msg: str, good_response: str, source: str = "approved"):
     """
     Append one training example to the curated dataset.
 
     Args:
         system_prompt: The system prompt active at generation time.
         user_msg:      The user's input that triggered the response.
-        good_response: The accepted/corrected assistant response (no <think> block).
-        source:        'thumbs_up' | 'corrected'
+        good_response: The approved/corrected assistant response (no <think> block).
+        source:        'approved' | 'corrected'
     """
     _ensure_dir()
     record = {
@@ -61,12 +61,12 @@ def get_all_examples() -> list:
 def get_stats() -> dict:
     """Return quick stats about the curated dataset."""
     examples = get_all_examples()
-    thumbs_up  = sum(1 for e in examples if e.get("source") == "thumbs_up")
-    corrected  = sum(1 for e in examples if e.get("source") == "corrected")
+    approved  = sum(1 for e in examples if e.get("source") in ("approved", "thumbs_up"))  # legacy compat
+    corrected = sum(1 for e in examples if e.get("source") == "corrected")
     return {
-        "total":      len(examples),
-        "thumbs_up":  thumbs_up,
-        "corrected":  corrected,
+        "total":     len(examples),
+        "approved":  approved,
+        "corrected": corrected,
     }
 
 

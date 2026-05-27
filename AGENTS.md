@@ -1,248 +1,226 @@
-# AGENTS.md — Handoff Document for AI Agents
+# AGENTS.md - Handoff Document for AI Coding Agents
 
-> **This file is written for AI coding agents.**
-> It is your primary context for continuing work on Karl.
-> Read this before touching any code.
+Read this before touching code in Karl.
 
----
+## What Karl Is
 
-## What Is Karl?
+Karl is a privacy-first, offline LLM Introspection Environment for prompt engineers.
+It is a PyQt6 desktop application that runs DeepSeek-R1 locally through
+`llama-cpp-python`, exposes the model's `<think>` stream in real time, logs
+every generation, and lets the user steer the prompt and loop logic through
+hot-reloadable Python files.
 
-Karl is a privacy-first, offline LLM **Introspection Environment** for Prompt Engineers.
-It is a PyQt6 desktop application that runs DeepSeek-R1 locally via `llama-cpp-python`
-(compiled from source, no pre-built binaries). Karl exposes the model's raw reasoning
-process in real time, logs every generation immutably, and allows the user to manipulate
-how the model thinks via hot-reloadable Python scripts.
+Philosophy: **UI for convenience, code for control, introspection for insight.**
 
-**Philosophy:** "UI for convenience, Code for control, Introspection for insight."
+## Current Product State
 
----
+The app currently has three pages:
 
-## Current State (as of last commit)
+- **Chat:** saved sessions, knowledge-base ingestion, reasoning pane, response pane, input row, stop/send controls, approve/teach training buttons.
+- **Configure:** workflow selector, system prompt editor, theme picker, RAG top-k, temperature/top-p/max-tokens, manual reflect-loop controls, model upgrade prompt.
+- **Tuning:** dataset stats, ShareGPT export button, validation guidance, QLoRA notes, and links to hackable core files.
 
-### ✅ Milestones Completed
+Important clarification: raw token chunks are archived to disk through the
+`new_raw_token` signal and `.tokens` files. The current UI does not show a live
+raw-token panel.
 
-| # | Milestone | Key Files |
-|---|-----------|-----------|
-| 1 | Headless Introspection Engine | `engine_test.py`, `core/cognitive_parser.py`, `app/utils/trace_logger.py` |
-| 2 | Dual-Pane Thought Stream UI | `app/ui/main_window.py`, `app/engine/llm_thread.py` |
-| 3 | Memory & Context Management | `app/utils/memory_manager.py`, Force Thought button |
-| 4 | Universal RAG Pipeline | `app/utils/rag_pipeline.py` — PDF, DOCX, TXT, PY, MD, CSV |
-| 5 | Hackable Decoupling | `core/interaction_loop.py` + `importlib.reload()` on every generation |
-| 6 | Agentic Loop | `core/agentic_loop.py`, `app/engine/agentic_thread.py`, UI buttons |
-| 7 | Raw Token Archive | `new_raw_token` signal, `data/logs/raw/*.tokens` files, toggleable UI panel |
-| 8 | Hardware Scout & Model Registry | `core/hardware_scout.py`, `data/model_registry.json`, `app/engine/upgrade_manager.py` |
-| 9 | Auto-Loop Mode | "Auto-Loop" checkbox in UI — generation_finished → start_agentic_loop() |
-| 10 | Self-Upgrade Git Push | `upgrade_manager.perform_upgrade()` → git commit + push on model upgrade |
-| 11 | Training Data Curator | `app/utils/training_curator.py` — 👍/👎 rating row, correction dialog, Unsloth JSONL export |
-| 12 | Eval Harness | `eval/harness.py`, `eval/graders.py`, `eval/run_eval.py` — dataset runner, 5 graders, CLI |
-| 13 | Three Workflow Modes | `core/prompt_templates.py`, `core/workflows.py` — document_extractor, grounded_answer, code_review |
-| 14 | RAG Hardening | `app/utils/rag_pipeline.py` — persistent FAISS index, file metadata, contextual headers, retrieval eval metrics |
-| 15 | Training Path Formalization | `training/validate_dataset.py`, `training/qlora_config_template.yaml`, `training/WHEN_TO_TUNE.md` |
+## Milestones Implemented
 
-### 🔵 Next Milestones (Planned, No Code Written Yet)
+| # | Milestone | Key files |
+|---|---|---|
+| 1 | Headless introspection engine | `engine_test.py`, `core/cognitive_parser.py`, `app/utils/trace_logger.py` |
+| 2 | Dual-pane thought stream UI | `app/ui/main_window.py`, `app/engine/llm_thread.py` |
+| 3 | Session and context management | `app/utils/memory_manager.py`, token-accurate trim logic in engine threads |
+| 4 | Universal RAG pipeline | `app/utils/rag_pipeline.py` |
+| 5 | Hackable decoupling | `core/interaction_loop.py`, `importlib.reload()` |
+| 6 | Manual agentic reflect loop | `core/agentic_loop.py`, `app/engine/agentic_thread.py` |
+| 7 | Raw token archive | `new_raw_token`, `data/logs/raw/*.tokens` |
+| 8 | Hardware scout and model registry | `core/hardware_scout.py`, `data/model_registry.json`, `app/engine/upgrade_manager.py` |
+| 9 | Opt-in reflect mode | Configure page `reflect` and `halt loop` buttons |
+| 10 | Self-upgrade git record | `app/engine/upgrade_manager.py` |
+| 11 | Training data curator | `app/utils/training_curator.py`, approve/teach UI |
+| 12 | Eval harness | `eval/harness.py`, `eval/graders.py`, `eval/run_eval.py` |
+| 13 | Workflow modes | `core/prompt_templates.py`, `core/workflows.py` |
+| 14 | RAG hardening | persistent FAISS index, metadata, hybrid rerank, eval metrics |
+| 15 | Training path formalization | `training/validate_dataset.py`, `training/qlora_config_template.yaml`, `training/WHEN_TO_TUNE.md` |
 
-- **Tokenizer Visualization:** Display actual token IDs and probabilities alongside the raw stream.
-  Requires `llama_cpp` logprobs support (set `logprobs=5` in the generation call).
-- **Session Branching:** Let the user fork a session at any point and explore alternate prompt paths.
-- **Prompt Diff Tool:** Side-by-side comparison of two trace logs to see how a prompt change affected reasoning.
-  The `workflow` + `template` fields now in every trace make this tractable.
-- **DPO Export:** The training curator currently exports SFT format only. DPO needs rejected text stored
-  at rating time — `_last_response` must be saved alongside the correction in `_rate_thumbs_down()`.
+## Planned Next Milestones
 
----
+- **Tokenizer visualization:** show token IDs and log probabilities next to raw stream. Requires llama-cpp logprobs support.
+- **Session branching:** fork a saved conversation at any turn.
+- **Prompt diff tool:** compare trace logs by workflow/template/prompt/output.
+- **DPO export:** store rejected response text alongside corrected response to export chosen/rejected pairs.
 
-## Architecture — What You Need to Know
+## Hackable Core
 
-### The Extension Points (Hackable Core)
-These files are hot-reloaded on every generation via `importlib.reload()`.
-The user is expected to edit them directly. Do NOT add complex dependencies here.
+These files are intentionally simple and should stay dependency-light:
 
-| File | What It Controls |
-|------|-----------------|
-| `core/interaction_loop.py` | Prompt string construction. `build_prompt(system, history) -> str` |
-| `core/prompt_templates.py` | Named prompt templates. `get_template(name, **kwargs) -> str`. Add new templates here. |
-| `core/workflows.py` | Workflow mode definitions (template, RAG config, schema, grader). |
-| `core/cognitive_parser.py` | Batch parsing of thought vs. response. Used by `engine_test.py` only. |
-| `core/agentic_loop.py` | Stop condition and next-prompt injection for the agentic loop. |
+| File | Purpose |
+|---|---|
+| `core/interaction_loop.py` | Builds the final ChatML prompt: `build_prompt(system, history) -> str`. Hot-reloaded before generation. |
+| `core/prompt_templates.py` | Stores named system prompt templates and placeholder rendering. |
+| `core/workflows.py` | Stores workflow definitions: template, RAG top-k, schema, grader. |
+| `core/agentic_loop.py` | Controls reflect-loop stop condition and next-prompt injection. Hot-reloaded between iterations. |
+| `core/cognitive_parser.py` | Batch parsing for `engine_test.py`; live UI parsing is inline in the engine threads. |
+| `core/hardware_scout.py` | Hardware profile for upgrade eligibility. |
 
-### The Threading Model
-- `LLMThread(QThread)` — single-shot generation. Lives in `app/engine/llm_thread.py`.
-- `AgenticThread(QThread)` — autonomous loop. Lives in `app/engine/agentic_thread.py`.
-- Both emit `new_thought_token(str)`, `new_chat_token(str)`, and `new_raw_token(str)` PyQt signals.
-- The UI connects these signals to cursor-insert methods on `QTextBrowser`.
-- **Thread safety:** Never touch UI widgets directly from inside `run()`. Only emit signals.
+Do not add complex dependencies to `core/` unless the user explicitly asks.
 
-### The Raw Token Archive (M7)
-Every raw token is emitted via `new_raw_token(str)` **before** the parser sees it.
-Each generation also writes a timestamped `.tokens` file:
-- Path: `data/logs/raw/<YYYYMMDD_HHMMSS_microseconds>.tokens`
-- Format: one line per chunk — `{unix_float_timestamp}\t{raw_text}`
-- The UI has a "Raw Token Archive" panel (hidden by default, toggle via checkbox).
-- Even if a generation is killed mid-thought, everything written so far is on disk.
+## Threading Model
 
-### The Streaming Parser (Critical — Read This)
-Both threads contain an inline streaming state machine. It:
-1. Accumulates tokens into a `buffer` string
-2. Watches for `<think>` → sets `in_thought = True`, routes to `new_thought_token`
-3. Watches for `</think>` → sets `in_thought = False`, routes to `new_chat_token`
-4. Uses a suffix-guard to avoid flushing when a tag might be split across chunks:
-   ```python
-   if not any(buffer.endswith(s) for s in ["<", "</", "</t", ...]):
-       self.new_thought_token.emit(buffer); buffer = ""
-   ```
-5. Always flushes the remainder after the generation loop ends.
+- `LLMThread(QThread)` in `app/engine/llm_thread.py` handles one generation.
+- `AgenticThread(QThread)` in `app/engine/agentic_thread.py` handles autonomous reflect iterations.
+- Both emit `new_thought_token(str)`, `new_chat_token(str)`, and `new_raw_token(str)`.
+- The UI updates widgets only from signal handlers in `MainWindow`.
 
-### The Model Singleton
-`ModelLoader` in `app/engine/model_loader.py` is a class-level singleton.
-- `get_instance(model_path=None)` checks `data/active_model.json` at runtime to load the upgraded GGUF file.
-- Falls back to `deepseek-r1-1.5b.gguf` automatically if the active model file is missing or points to a non-existent GGUF file.
-- `reset_instance()` sets `_instance = None` — forces reload on next `get_instance()`.
-- Current config: `n_ctx=4096`, `verbose=False`.
+Thread safety rule: never touch UI widgets directly from inside `run()`.
 
-### Context Window Management (All Threads)
-`_trim_history()` prevents context overflow in long conversations:
-- Walks history backwards, accumulates character count.
-- Budget = `(4096 - 1024) * 3` chars (~conservative token estimate).
-- Always preserves the seed message (index 0).
-- Emits a notice to the Thought Stream when trimming occurs.
+## Streaming Parser
 
-### Auto-Continuation (M7)
-Both `LLMThread` and `AgenticThread` execute their generation generator inside an auto-continuation loop (up to 5 passes). If the model's output is truncated due to the token limit (`finish_reason == "length"`), the thread automatically appends the current raw generation to the prompt and queries the model again, seamlessly resuming the stream in the correct parsing state (`in_thought`). Redundant UI-driven continuation handlers have been completely removed.
+Both generation threads use an inline state machine:
 
-### The Hardware Scout & Upgrade Manager (M8 + M10)
-On startup, `UpgradeCheckThread` (in `main_window.py`) runs off the UI thread:
-1. `core/hardware_scout.py` → `get_hardware_profile()` returns `{ram_gb, vram_gb, storage_gb}`
-2. `app/engine/upgrade_manager.py` → `check_for_upgrade()` compares profile to `data/model_registry.json`
-3. If a higher tier is eligible, the UI shows a notification + "Upgrade Karl" button
-4. On user approval: `perform_upgrade()` downloads GGUF, calls `ModelLoader.reset_instance()`,
-   updates `data/active_model.json`, then runs `git commit + git push`
+1. Append each streaming chunk to a buffer.
+2. Detect `<think>` and route subsequent text to the reasoning pane.
+3. Detect `</think>` and route subsequent text to the response pane.
+4. Use suffix guards so split tags such as `<thi` or `</th` are not flushed early.
+5. Flush any remaining buffer after streaming ends.
 
-### Auto-Loop Mode (M9)
-A `QCheckBox` "Auto-Loop" in the config panel.
-- When ON: `handle_generation_finished()` calls `start_agentic_loop()` instead of re-enabling controls.
-- The Send button label changes to "Send + Loop".
-- Stop via the "■ Stop" button or the stop condition in `core/agentic_loop.py`.
+The prompt builder pre-seeds `<think>\n` at the assistant turn so DeepSeek-R1 starts in reasoning mode.
 
-### The Trace Logger
-Every generation writes a JSONL entry to `data/logs/traces/trace_YYYY-MM-DD.jsonl`.
-Fields: `timestamp`, `execution_time_seconds`, `workflow`, `template`, `hyperparameters`,
-`rag_context_used`, `compiled_prompt`, `raw_output`, `parsed_thought`, `parsed_response`.
-The `workflow` and `template` fields enable prompt diff analysis across trace files.
+## Model Loading
 
----
+`ModelLoader` is a class-level singleton in `app/engine/model_loader.py`.
 
-## Key Gotchas
+- Reads `data/active_model.json` when present.
+- Falls back to `data/models/deepseek-r1-1.5b.gguf`.
+- Uses `n_ctx=4096`, `verbose=False`.
+- `reset_instance()` forces reload on next `get_instance()`.
 
-1. **`llama-cpp-python` must be compiled from source** for the user's Intel 12th Gen CPU.
-   Pre-built wheels will throw `Illegal Instruction (0xc000001d)`.
-   Compile command: `$env:CMAKE_ARGS="-DGGML_NATIVE=ON"; pip install llama-cpp-python --no-binary llama-cpp-python`
-
-2. **`HF_TOKEN` warning on startup** — `sentence-transformers` tries to contact HuggingFace
-   even in offline mode. This is a warning only; it does not break anything. To silence it,
-   set `HF_HUB_OFFLINE=1` in the environment before launching.
-
-3. **`get_sentence_embedding_dimension()` FutureWarning** — already fixed in `rag_pipeline.py`
-   to use `get_embedding_dimension()`. If a future `sentence-transformers` update breaks this,
-   check the `SentenceTransformer` API for the current method name.
-
-4. **The model singleton holds state between agentic iterations.** The KV cache is NOT cleared
-   between iterations by default. This is intentional — it makes the loop faster. If you need
-   a clean slate, call `llm.reset()` before each generation (this will slow things down).
-
-5. **Git remote is already configured.** Do not re-init the repo. The remote is:
-   `https://github.com/Ethan-da-Tech-Wizard/Karl.git` on branch `main`.
-
-6. **GPUtil is optional.** If no discrete GPU is detected, `vram_gb` returns `0.0` gracefully.
-   The model registry tiers 1–2 require zero VRAM so the upgrade logic still works on CPU-only machines.
-
-7. **`data/model_registry.json` is NOT gitignored.** It is source-controlled. Edit it to add
-   new model tiers. `data/active_model.json` IS written at runtime and committed by the upgrade manager.
-
----
-
-## How to Run
+`llama-cpp-python` must be compiled from source on this Intel 12th Gen target:
 
 ```powershell
-# Activate venv
-.\venv\Scripts\activate
-
-# Run Karl
-python main.py
-
-# Run headless engine test (no UI)
-python engine_test.py
-
-# Download/re-download the model
-python download_test_model.py
-
-# Check your hardware profile
-python -c "from core.hardware_scout import get_hardware_profile; print(get_hardware_profile())"
+$env:CMAKE_ARGS="-DGGML_NATIVE=ON"
+pip install llama-cpp-python --no-binary llama-cpp-python
 ```
 
----
+## Context Management
 
-## Repo Structure
+Both engine threads use token-aware prompt trimming with `llm.tokenize()`.
+They preserve the first seed message when possible, drop older middle turns,
+cap long individual messages, and clamp generation tokens so prompt plus output
+fits the 4096-token context window.
 
+## RAG
+
+`RAGPipeline` supports PDF, DOCX, TXT, PY, MD, CSV, XLSX, and XLS. It stores a
+persistent FAISS index and JSON metadata in `data/vector_db/`.
+
+Retrieval uses semantic over-fetch plus keyword reranking so exact strings such
+as IDs and table values have a better chance of surfacing.
+
+## Workflows
+
+Workflow definitions live in `core/workflows.py`:
+
+- `general_chat`
+- `document_extractor`
+- `grounded_answer`
+- `code_review`
+
+The UI renders selected workflow templates through `core.prompt_templates.get_template()`
+and passes workflow/template names into trace logs.
+
+## Trace and Raw Logs
+
+Trace files:
+
+```text
+data/logs/traces/trace_YYYY-MM-DD.jsonl
 ```
-Karl/
-├── AGENTS.md              ← YOU ARE HERE
-├── README.md              ← Human-readable overview
-├── main.py                ← Entry point
-├── engine_test.py         ← Headless inference test (uses deepseek-r1-1.5b.gguf)
-├── download_test_model.py ← Model downloader
-├── requirements.txt       ← pip dependencies
-├── core/                  ← HACKABLE — user edits these
-│   ├── interaction_loop.py
-│   ├── prompt_templates.py  ← Named prompt templates (M13)
-│   ├── workflows.py         ← Workflow mode definitions (M13)
-│   ├── cognitive_parser.py
-│   ├── agentic_loop.py
-│   └── hardware_scout.py
-├── app/
-│   ├── engine/
-│   │   ├── model_loader.py
-│   │   ├── llm_thread.py
-│   │   ├── agentic_thread.py
-│   │   └── upgrade_manager.py
-│   ├── ui/
-│   │   ├── main_window.py
-│   │   └── styles/neutral.qss
-│   └── utils/
-│       ├── trace_logger.py    ← now logs workflow + template
-│       ├── memory_manager.py
-│       ├── rag_pipeline.py    ← persistent index, metadata (M14)
-│       └── training_curator.py
-├── eval/                  ← Eval harness (M12)
-│   ├── harness.py
-│   ├── graders.py
-│   ├── run_eval.py
-│   ├── benchmark_rag.py
-│   ├── datasets/
-│   │   ├── document_extractor.jsonl
-│   │   ├── grounded_answer.jsonl
-│   │   └── code_review.jsonl
-│   └── results/           ← gitignored (run artifacts)
-├── training/              ← Training path (M15)
-│   ├── validate_dataset.py
-│   ├── qlora_config_template.yaml
-│   └── WHEN_TO_TUNE.md
-├── data/                  ← partially gitignored
-│   ├── model_registry.json   ← source controlled
-│   ├── active_model.json     ← written at runtime, committed on upgrade
-│   ├── models/               ← gitignored (large binaries)
-│   ├── logs/                 ← gitignored
-│   │   ├── traces/           ← JSONL trace logs (workflow+template fields added)
-│   │   └── raw/              ← .tokens raw archive files
-│   ├── sessions/             ← gitignored
-│   ├── training/             ← gitignored (curated.jsonl, adapters)
-│   └── vector_db/            ← gitignored (index.faiss, metadata.json)
-└── docs/
-    ├── 01_problem_statement.md
-    ├── 02_prd.md
-    ├── 03_frd.md
-    ├── 04_architecture.md
-    ├── 05_scope_and_milestones.md
-    ├── 06_repo_structure.md
-    └── 07_risk_register.md
+
+Each record includes timestamp, execution time, workflow, template, hyperparameters,
+RAG context, compiled prompt, raw output, parsed thought, and parsed response.
+
+Raw token files:
+
+```text
+data/logs/raw/<timestamp>.tokens
+data/logs/raw/agentic_<timestamp>_iter<N>.tokens
 ```
+
+Each line is `{unix_float_timestamp}\t{raw_text}`.
+
+## Training Path
+
+Approve/teach buttons save examples through `app/utils/training_curator.py`:
+
+- `source="approved"` for approve.
+- `source="corrected"` for teach.
+- Dataset path: `data/training/curated.jsonl`.
+- Export path: `data/training/export_unsloth.jsonl`.
+- Export format: `{"messages": [...]}`.
+
+Validate before tuning:
+
+```powershell
+python training/validate_dataset.py
+```
+
+The validator intentionally exits nonzero with too few examples. At the time of
+this handoff, the local dataset has only a couple examples and is not tuning-ready.
+
+## Eval Harness
+
+Graders currently implemented:
+
+- `exact_match`
+- `json_valid`
+- `keyword_hit`
+- `groundedness`
+- `not_in_context`
+
+Useful commands:
+
+```powershell
+python smoke_test.py
+python eval/run_eval.py --workflow code_review --dataset eval/datasets/code_review.jsonl --dry-run --no-save
+python eval/benchmark_rag.py
+```
+
+## Git and Runtime State
+
+The remote is already configured:
+
+```text
+https://github.com/Ethan-da-Tech-Wizard/Karl.git
+```
+
+Do not reinitialize the repo.
+
+Source-controlled:
+
+- `data/model_registry.json`
+- application code
+- docs
+- eval datasets
+- training templates
+
+Runtime/user state:
+
+- `data/models/`
+- `data/logs/`
+- `data/sessions/`
+- `data/training/`
+- `data/vector_db/`
+- `data/active_theme.json`
+
+`data/active_model.json` is written by the upgrade manager and intentionally may
+be committed when a model upgrade is performed.
+
+## Known Completion Gaps
+
+- No live raw-token panel in the current UI; only disk archive exists.
+- DPO export is not implemented because rejected responses are not stored.
+- Prompt diffing is not implemented, but trace metadata now supports it.
+- Session branching is not implemented.
+- Full training readiness requires a larger curated dataset.

@@ -69,7 +69,7 @@ class EvalReport:
         """Print a human-readable summary table to stdout."""
         bar = "─" * 60
         print(f"\n{bar}")
-        print(f"  Karl Eval Report")
+        print("  Karl Eval Report")
         print(f"{bar}")
         print(f"  Workflow  : {self.workflow}")
         print(f"  Template  : {self.template}")
@@ -83,7 +83,7 @@ class EvalReport:
         print(f"  Avg score   : {self.avg_score:.3f}")
         print(f"  Avg latency : {self.avg_latency_s:.2f}s")
         print(f"{bar}")
-        print(f"  Per-case results:")
+        print("  Per-case results:")
         for c in self.cases:
             status = "✓" if c.grade.get("passed") else ("E" if c.error else "✗")
             score = c.grade.get("score", 0.0)

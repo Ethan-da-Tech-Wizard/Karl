@@ -1,218 +1,218 @@
-# Functional Requirements Document (FRD) — Karl v2
+# Functional Requirements Document - Karl
 
-## 1. User Interface Architecture (PyQt6)
+## 1. UI Requirements
 
-### 1.1 Three-Column Layout
+### 1.1 Navigation
 
-```
-┌─────────────────┬──────────────────────────────────┬──────────────────┐
-│  LEFT (240px)   │  CENTER (flexible)               │  RIGHT (340px)   │
-│                 │                                  │                  │
-│  Saved Sessions │  [Raw Token Archive — hidden]    │  System Prompt   │
-│  ─────────────  │  ─────────────────────────────── │  ─────────────── │
-│  Knowledge Base │  Diagnostic Lane (thought stream)│  Workflow Mode   │
-│  (RAG)          │  ─────────────────────────────── │  Template        │
-│                 │  Final Response + Input Row       │  RAG top-k       │
-│                 │  Workflow Report                  │  ─────────────── │
-│                 │  Rating Row                       │  Hyperparameters │
-│                 │  Agentic Controls                 │  ─────────────── │
-│                 │                                   │  Curator         │
-└─────────────────┴───────────────────────────────────┴──────────────────┘
-                              Status Bar
-```
+The main window has a persistent top navigation bar with:
 
-All three columns are separated by resizable `QSplitter` handles.
-The Raw Token Archive panel is collapsed by default (toggled via checkbox).
+- `chat`
+- `configure`
+- `tuning`
+- theme picker
 
-### 1.2 Panel Responsibilities
+### 1.2 Chat Page
 
-| Panel | Widget | Purpose |
-|---|---|---|
-| Left | `QListWidget` (sessions) | Double-click to reload a saved conversation |
-| Left | `QListWidget` (KB) | Shows ingested document names and chunk counts |
-| Left | `QPushButton` × 3 | New session, Save session, Ingest document |
-| Center top | `QTextBrowser` (raw) | Pre-parser token stream — toggleable |
-| Center mid | `QTextBrowser` (thought) | Live `<think>` stream from streaming parser |
-| Center bot | `QTextBrowser` (chat) | Cleaned final response |
-| Center bot | `QLineEdit` + buttons | Prompt input + Generate + Force Thought |
-| Center bot | `QTextBrowser` (report) | Post-generation workflow report |
-| Center bot | Rating buttons | 👍 Good / ✏️ Fix — feeds training curator |
-| Center bot | Agentic controls | Auto-Loop checkbox, Run, Stop, status label |
-| Right | `QTextEdit` | System prompt (editable, sticky across turns) |
-| Right | `QComboBox` × 2 | Workflow and template selectors |
-| Right | `QSpinBox` + `QCheckBox` | RAG top-k and contextual headers toggle |
-| Right | `QDoubleSpinBox` × 2 | Temperature and Top-P |
-| Right | `QSpinBox` | Max new tokens |
-| Right | Upgrade area | Hardware upgrade notification + button |
-| Right | Curator stats + export | Training example count and export button |
-| Bottom | `QStatusBar` | Live state + last generation latency |
+The Chat page must provide:
 
-### 1.3 Rich Tooltips
-Every interactive element carries a `setToolTip()` with:
-- A bold title
-- A full description of what the control does
-- Where the relevant code lives (e.g., `core/interaction_loop.py`)
-- Practical usage tips
+- Saved session list.
+- New thread button.
+- Save session button.
+- Knowledge-base file list.
+- Ingest context button.
+- Reasoning pane receiving streamed thought text.
+- Hide/show control for the reasoning pane.
+- Response pane receiving final answer text.
+- Prompt input.
+- Stop button.
+- Send button.
+- Approve button.
+- Teach button.
 
----
+### 1.3 Configure Page
 
-## 2. Introspection & Logging
+The Configure page must provide:
 
-### 2.1 Streaming Parser (Inline State Machine)
+- Workflow mode selector.
+- System prompt editor.
+- Theme selector.
+- RAG top-k selector.
+- Temperature control.
+- Top-p control.
+- Max-token control.
+- Manual reflect button.
+- Halt-loop button.
+- Loop status label.
+- Model-upgrade notification/button when applicable.
 
-Both `LLMThread` and `AgenticThread` implement the same inline streaming state machine:
+### 1.4 Tuning Page
 
-```
-token arrives → append to buffer
-                    │
-          ┌─────────▼──────────┐
-          │  buffer contains   │
-          │  <think> ?         │
-          └─────────┬──────────┘
-          YES       │ NO
-          │         ▼
-          │   emit new_chat_token
-          │         │
-          ▼         │
-   in_thought=True  │
-          │         │
-   buffer contains  │
-   </think> ?       │
-          │ YES     │
-          ▼         │
-   emit new_thought_token
-   in_thought=False
-   emit remainder as new_chat_token
+The Tuning page must provide:
+
+- Curated dataset count.
+- Approved/corrected example counts.
+- ShareGPT/Unsloth export button.
+- Validation guidance.
+- QLoRA notes.
+- Links to hackable Python files.
+
+## 2. Generation Requirements
+
+### 2.1 Prompt Assembly
+
+`core/interaction_loop.py` must build ChatML prompts with:
+
+```text
+<|im_start|>system
+...
+<|im_end|>
+<|im_start|>user
+...
+<|im_end|>
+<|im_start|>assistant
+<think>
 ```
 
-A suffix guard prevents flushing when a tag might be split across chunks:
+### 2.2 Worker Thread
+
+`LLMThread` must:
+
+- hot-reload `core.interaction_loop`
+- load the model through `ModelLoader`
+- trim history token-accurately
+- clamp max generation tokens to fit context
+- stream with `echo=False`
+- archive raw chunks before parsing
+- route thought and response tokens through signals
+- log a trace when complete
+- emit `generation_finished`
+
+### 2.3 Stop Tokens
+
+Generation calls must include stop tokens for ChatML and Qwen-derived models:
+
 ```python
-_OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
-_CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
-if not any(buffer.endswith(s) for s in guards):
-    emit(buffer); buffer = ""
+["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"]
 ```
 
-### 2.2 Trace Logger (`app/utils/trace_logger.py`)
+### 2.4 Auto-Continuation
 
-Every generation appends one JSON object to `data/logs/traces/trace_YYYY-MM-DD.jsonl`:
+When `finish_reason == "length"`, the engine threads continue internally for
+up to five passes by appending current raw output to the prompt. Continuation
+must preserve the parser's thought/response state.
+
+## 3. Streaming Parser Requirements
+
+The streaming parser must:
+
+- start in thought mode when the prompt ends with `<think>`
+- detect `<think>` and `</think>` even when tags arrive across chunks
+- emit thought text to `new_thought_token`
+- emit final answer text to `new_chat_token`
+- always flush the final buffer
+
+Guard suffixes:
+
+```python
+_OPEN_GUARDS = ["<", "<t", "<th", "<thi", "<thin", "<think"]
+_CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
+```
+
+## 4. Agentic Reflect Loop Requirements
+
+`AgenticThread` must:
+
+- hot-reload `core.interaction_loop`
+- hot-reload `core.agentic_loop`
+- run until stop is requested or `should_continue()` returns false
+- trim history token-accurately
+- clamp generation tokens to context window
+- archive raw chunks per iteration
+- log every iteration
+- emit `iteration_finished`
+- emit `loop_finished`
+
+`MainWindow` must update visible chat history and loop prompt markers when
+iterations complete.
+
+## 5. RAG Requirements
+
+`RAGPipeline` must:
+
+- lazily load the sentence-transformer encoder
+- persist FAISS index and metadata
+- ingest PDF, DOCX, text/code/markdown, CSV, XLSX, and XLS files
+- chunk regular text by words
+- chunk tabular files by rows
+- support `retrieve(query, top_k, source_filter=None)`
+- support `retrieve_with_metadata()`
+- support `eval_retrieval()`
+
+Retrieval must over-fetch candidates and rerank by keyword overlap.
+
+## 6. Trace Logging Requirements
+
+`TraceLogger.log_generation()` must write JSONL records with:
+
+- `timestamp`
+- `execution_time_seconds`
+- `workflow`
+- `template`
+- `hyperparameters`
+- `rag_context_used`
+- `compiled_prompt`
+- `raw_output`
+- `parsed_thought`
+- `parsed_response`
+
+## 7. Training Curator Requirements
+
+Training examples must be stored as JSONL records with:
 
 ```json
 {
-  "timestamp": "2026-05-22T19:00:00Z",
-  "execution_time_seconds": 4.21,
-  "workflow": "general_chat",
-  "template": "reasoning_minimal",
-  "hyperparameters": {"temperature": 0.7, "top_p": 0.95, "max_tokens": 512},
-  "rag_context_used": ["chunk text 1", "chunk text 2"],
-  "compiled_prompt": "<|im_start|>system\n…",
-  "raw_output": "<think>…</think>The answer is…",
-  "parsed_thought": "…",
-  "parsed_response": "The answer is…"
+  "timestamp": "...",
+  "source": "approved",
+  "messages": [
+    {"role": "system", "content": "..."},
+    {"role": "user", "content": "..."},
+    {"role": "assistant", "content": "..."}
+  ]
 }
 ```
 
-### 2.3 Raw Token Archive (`data/logs/raw/*.tokens`)
+The exporter must write one JSON object per line:
 
-Each generation writes a micro-timestamped `.tokens` file:
-```
-1716408000.123456    <think>
-1716408000.124100    Let me consider
-1716408000.125000    this carefully.
-```
-Format: `{unix_float}\t{token_text}` — one line per streaming chunk.
-
----
-
-## 3. Generation Engine
-
-### 3.1 Model Loader (`app/engine/model_loader.py`)
-
-`ModelLoader` is a class-level singleton:
-- `get_instance()` — loads model once, returns same object forever
-- `reset_instance()` — forces reload on next `get_instance()` call
-- Config: `n_ctx=4096`, `verbose=False`
-- Default model: `data/models/deepseek-r1-1.5b.gguf`
-
-### 3.2 Generation Call Parameters
-
-```python
-llm(
-    prompt,
-    max_tokens=512,         # from UI spinner
-    temperature=0.7,        # from UI spinner
-    top_p=0.95,             # from UI spinner
-    repeat_penalty=1.15,    # fixed — reduces repetition loops
-    stream=True,            # enables token-by-token streaming
-    stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>"],
-    echo=False              # prevents prompt echo in output
-)
+```json
+{"messages": [...]}
 ```
 
-### 3.3 Context Window Management
+The validator must:
 
-Both threads implement `_trim_history()`:
-- Budget: `(4096 - 1024) * 3` chars (~9216 chars, conservative 3 chars/token)
-- Walks history newest-first, accumulating char count
-- Stops when budget exceeded, always preserves seed message (index 0)
-- Emits a notice to the Diagnostic Lane when trimming occurs
+- require file existence
+- require a non-empty dataset
+- warn/error on low example counts
+- validate roles and non-empty content
+- estimate token length
+- report corrected-example balance
+- detect near-duplicates
 
-### 3.4 Truncation Chaining
+## 8. Eval Requirements
 
-If `finish_reason == "length"`:
-- `LLMThread` emits `generation_finished(truncated=True)`
-- `MainWindow` appends `{"role": "user", "content": "Continue."}` and fires a new `LLMThread`
-- This repeats until the model stops naturally
+The eval harness must:
 
----
+- load JSONL cases
+- resolve context from RAG, context file, or inline context
+- render workflow templates
+- run the local model unless `--dry-run` is selected
+- apply a named grader
+- print a summary
+- optionally save reports to `eval/results/`
 
-## 4. Cognitive Manipulation Pathways
+Supported graders:
 
-### 4.1 Editing `core/interaction_loop.py`
-- `build_prompt(system_prompt, chat_history) -> str` — returns the full ChatML prompt string
-- Hot-reloaded via `importlib.reload()` before every generation
-- Default: ChatML format (`<|im_start|>` / `<|im_end|>`)
-
-### 4.2 Force Thought Button
-- Takes text from the prompt input box
-- Appends `{"role": "assistant", "content": "<think>\n{text}\n</think>"}` to `chat_history`
-- The model's next generation continues from this seeded reasoning premise
-
-### 4.3 Editing `core/agentic_loop.py`
-- `should_continue(iteration, last_response) -> bool` — stop condition
-- `build_next_prompt(last_response, iteration) -> str` — next user turn content
-- Both hot-reloaded between every agentic iteration
-
----
-
-## 5. RAG Pipeline (`app/utils/rag_pipeline.py`)
-
-| Step | Implementation |
-|---|---|
-| Text extraction | `fitz` (PDF), `docx` (DOCX), `open()` (all others) |
-| Chunking | Word-based, 200 words/chunk, 50-word overlap |
-| Embedding | `SentenceTransformer("all-MiniLM-L6-v2")` |
-| Indexing | `faiss.IndexFlatL2(384)` |
-| Persistence | `faiss.write_index()` + JSON metadata to `data/vector_db/` |
-| Retrieval | Top-k L2 search, optional source filter, optional contextual headers |
-| Eval metrics | `hit@1`, `hit@3`, `hit@k`, reciprocal rank via `eval_retrieval()` |
-
----
-
-## 6. Training Data Curator (`app/utils/training_curator.py`)
-
-- `save_example(system_prompt, user_msg, good_response, source)` — appends to `data/training/curated.jsonl`
-- `get_stats()` — returns `{total, thumbs_up, corrected}`
-- `export_unsloth(path)` — writes Unsloth-formatted JSONL with `conversations` field
-
----
-
-## 7. Eval Harness (`eval/`)
-
-| File | Purpose |
-|---|---|
-| `harness.py` | Loads datasets, runs generations, calls graders |
-| `graders.py` | `keyword_hit`, `json_valid`, `groundedness`, `json_schema`, `regex_match` |
-| `run_eval.py` | CLI: `python eval/run_eval.py --workflow grounded_answer --top_k 5` |
-| `benchmark_rag.py` | Retrieval-only benchmark, outputs hit@k and MRR |
-| `datasets/*.jsonl` | One dataset per workflow mode |
+- `exact_match`
+- `json_valid`
+- `keyword_hit`
+- `groundedness`
+- `not_in_context`

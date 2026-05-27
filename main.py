@@ -3,10 +3,18 @@ Karl -- entry point.
 All library noise is suppressed here, before any third-party import runs.
 """
 
+# ruff: noqa: E402
+
 # ── 1. Environment variables ──────────────────────────────────────────────────
 import os
 import sys
-import io
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 
 # Silence HuggingFace network calls and telemetry
 os.environ["HF_HUB_OFFLINE"]               = "1"

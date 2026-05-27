@@ -15,6 +15,13 @@ ingest them first via the UI and run with --live flag to query the live index.
 import os
 import sys
 import time
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 import textwrap
 from dataclasses import dataclass
 
@@ -66,7 +73,7 @@ class QueryResult:
 
 def run_benchmark(top_k: int = 3, contextual_headers: bool = False) -> list[QueryResult]:
     print(f"\n{'─'*60}")
-    print(f"  Karl RAG Retrieval Benchmark")
+    print("  Karl RAG Retrieval Benchmark")
     print(f"  top_k={top_k} | contextual_headers={contextual_headers}")
     print(f"{'─'*60}")
 
@@ -79,8 +86,6 @@ def run_benchmark(top_k: int = 3, contextual_headers: bool = False) -> list[Quer
     print(f"\n  Ingesting {len(CORPUS)} synthetic chunks...")
     for source, text in CORPUS:
         # Ingest as single-chunk items (don't split these short sentences further)
-        from sentence_transformers import SentenceTransformer
-        import numpy as np
         vec = rag.encoder.encode([text]).astype("float32")
         rag.index.add(vec)
         rag.documents.append({

@@ -1,132 +1,142 @@
-# Repository Structure & File Specifications — Karl v2
+# Repository Structure
 
-The repository separates the **application layer** (stable, threading-safe UI and engine code)
-from the **hackable core** (simple, hot-reloadable Python scripts the user edits freely).
+Karl separates stable application code from user-editable control files.
 
----
+## Top Level
 
-## Full Tree
-
-```
+```text
 Karl/
-│
-├── AGENTS.md                   ← AI agent handoff document (read this first)
-├── README.md                   ← Human-readable quickstart
-├── main.py                     ← Entry point: boots QApplication, loads stylesheet
-├── engine_test.py              ← Headless engine test (no UI — validates model + trace logger)
-├── smoke_test.py               ← Import-level smoke test (no model required)
-├── download_test_model.py      ← Downloads DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M to data/models/
-├── requirements.txt            ← pip dependencies
-│
-├── core/                       ← THE HACKABLE LAYER — edit these freely
-│   ├── interaction_loop.py     ← build_prompt(system_prompt, chat_history) → str
-│   │                              Hot-reloaded before every generation
-│   ├── agentic_loop.py         ← should_continue(i, response) + build_next_prompt(response, i)
-│   │                              Hot-reloaded between every agentic iteration
-│   ├── prompt_templates.py     ← TEMPLATES dict + get_template() + list_templates()
-│   │                              Hot-reloaded before every generation
-│   ├── workflows.py            ← WORKFLOWS dict + get_workflow() + list_workflows()
-│   │                              Read at UI startup and on combo-box change
-│   ├── cognitive_parser.py     ← parse_thought_stream(raw_text) → (thought, response)
-│   │                              Batch parser — used by engine_test.py and eval harness only
-│   └── hardware_scout.py       ← get_hardware_profile() → {ram_gb, vram_gb, storage_gb}
-│                                  Run once at startup via UpgradeCheckThread
-│
-├── app/
-│   ├── engine/
-│   │   ├── model_loader.py     ← ModelLoader singleton: get_instance() / reset_instance()
-│   │   │                          n_ctx=4096, verbose=False
-│   │   ├── llm_thread.py       ← LLMThread(QThread): single-shot streaming generation
-│   │   │                          Inline state machine: routes <think> tokens to thought panel
-│   │   │                          Handles truncation chaining (finish_reason == "length")
-│   │   ├── agentic_thread.py   ← AgenticThread(QThread): autonomous multi-turn loop
-│   │   │                          Hot-reloads agentic_loop.py between iterations
-│   │   └── upgrade_manager.py  ← check_for_upgrade() + perform_upgrade()
-│   │                              Compares hardware profile to model_registry.json tiers
-│   │                              Downloads GGUF + git commit + git push on upgrade
-│   │
-│   ├── ui/
-│   │   ├── main_window.py      ← MainWindow(QMainWindow): full UI v2
-│   │   │                          Three-column layout (Sessions | Center | Config)
-│   │   │                          Rich tooltips on every interactive element
-│   │   │                          Status bar with live state + latency
-│   │   └── styles/
-│   │       └── neutral.qss     ← Full Qt stylesheet: dark theme, hover states,
-│   │                              scrollbars, tooltips, button variants, comboboxes
-│   │
-│   └── utils/
-│       ├── trace_logger.py     ← TraceLogger: writes JSONL to data/logs/traces/
-│       │                          Fields: timestamp, execution_time, workflow, template,
-│       │                          hyperparameters, rag_context_used, compiled_prompt,
-│       │                          raw_output, parsed_thought, parsed_response
-│       ├── memory_manager.py   ← MemoryManager: save/load/list sessions as JSON
-│       │                          Sessions stored in data/sessions/
-│       ├── rag_pipeline.py     ← RAGPipeline: ingest / retrieve / eval
-│       │                          FAISS flat L2 + all-MiniLM-L6-v2 embeddings
-│       │                          Persistent index in data/vector_db/
-│       │                          Supports PDF, DOCX, TXT, PY, MD, CSV
-│       └── training_curator.py ← save_example() / get_stats() / export_unsloth()
-│                                  Curated examples stored in data/training/curated.jsonl
-│
-├── eval/
-│   ├── __init__.py
-│   ├── harness.py              ← EvalHarness: loads dataset, runs generations, applies graders
-│   ├── graders.py              ← 5 graders: keyword_hit, json_valid, groundedness,
-│   │                              json_schema, regex_match
-│   ├── run_eval.py             ← CLI: python eval/run_eval.py --workflow <name> --top_k <n>
-│   ├── benchmark_rag.py        ← Retrieval-only benchmark: hit@k and MRR
-│   └── datasets/
-│       ├── document_extractor.jsonl
-│       ├── grounded_answer.jsonl
-│       └── code_review.jsonl
-│
-├── training/
-│   ├── WHEN_TO_TUNE.md         ← Decision guide: prompt engineering vs. fine-tuning
-│   ├── qlora_config_template.yaml ← Ready-to-use QLoRA config for Unsloth
-│   └── validate_dataset.py     ← Validates curated.jsonl before a training run
-│
-├── data/                       ← Local state — partially gitignored
-│   ├── model_registry.json     ← Source-controlled: tier definitions for upgrade manager
-│   ├── active_model.json       ← Written at runtime: current model path + tier
-│   ├── models/                 ← GITIGNORED: GGUF model files (large binaries)
-│   ├── logs/
-│   │   ├── traces/             ← GITIGNORED: trace_YYYY-MM-DD.jsonl files
-│   │   └── raw/                ← GITIGNORED: *.tokens raw archive files
-│   ├── sessions/               ← GITIGNORED: saved conversation JSON files
-│   ├── training/               ← GITIGNORED: curated.jsonl + adapter checkpoints
-│   └── vector_db/              ← GITIGNORED: index.faiss + metadata.json
-│
-└── docs/
-    ├── 01_problem_statement.md
-    ├── 02_prd.md
-    ├── 03_frd.md
-    ├── 04_architecture.md
-    ├── 05_scope_and_milestones.md
-    ├── 06_repo_structure.md    ← THIS FILE
-    └── 07_risk_register.md
+  AGENTS.md
+  README.md
+  main.py
+  engine_test.py
+  raw_test.py
+  smoke_test.py
+  download_test_model.py
+  requirements.txt
+  core/
+  app/
+  eval/
+  training/
+  docs/
+  data/
 ```
 
----
+## Root Scripts
 
-## Architectural Principles
+| File | Purpose |
+|---|---|
+| `main.py` | Sets offline/noise-suppression environment and starts the PyQt6 app. |
+| `download_test_model.py` | Downloads the default DeepSeek-R1 1.5B GGUF. |
+| `raw_test.py` | Minimal direct llama-cpp generation test. |
+| `engine_test.py` | Headless generation plus parser and trace test. |
+| `smoke_test.py` | No-model smoke test for templates, workflows, and graders. |
 
-### 1. The Hackable Core
-`core/` is the user's playground. Every file is hot-reloaded via `importlib.reload()` —
-the user edits the file, saves, and clicks Generate. No restart needed.
+## `core/`
 
-### 2. Thread Safety
-All LLM work runs on `QThread` subclasses. The UI thread only processes signals.
-**Rule:** Never touch UI widgets from inside `run()`. Only emit signals.
+The hackable layer:
 
-### 3. Singleton Model
-`ModelLoader` holds the `llama_cpp.Llama` instance as a class-level singleton.
-Loading happens once. `reset_instance()` forces a reload on the next call.
+| File | Purpose |
+|---|---|
+| `interaction_loop.py` | Builds ChatML prompts and pre-seeds `<think>`. |
+| `prompt_templates.py` | Stores named system templates and placeholder filling. |
+| `workflows.py` | Stores workflow definitions used by UI and evals. |
+| `agentic_loop.py` | Controls reflect-loop stop and next-prompt logic. |
+| `cognitive_parser.py` | Batch parser used by headless tests. |
+| `hardware_scout.py` | Reports RAM, VRAM, and free storage. |
 
-### 4. Data Immutability
-Trace logs and raw token archives are append-only. They are never modified after writing.
-Even a crashed generation leaves a partially-written file that can be inspected.
+## `app/engine/`
 
-### 5. Gitignore Strategy
-Large binaries (`models/`), runtime artifacts (`logs/`, `sessions/`, `vector_db/`, `training/`)
-are gitignored. Configuration that affects reproducibility (`model_registry.json`) is
-source-controlled.
+| File | Purpose |
+|---|---|
+| `model_loader.py` | Singleton wrapper around `llama_cpp.Llama`. |
+| `llm_thread.py` | Single generation worker thread. |
+| `agentic_thread.py` | Reflect-loop worker thread. |
+| `upgrade_manager.py` | Hardware-based model upgrade logic. |
+
+## `app/ui/`
+
+| File | Purpose |
+|---|---|
+| `main_window.py` | Main PyQt6 UI: Chat, Configure, Tuning. |
+| `themes.py` | Theme palette registry and stylesheet generation. |
+| `styles/neutral.qss` | Static Qt stylesheet assets. |
+
+## `app/utils/`
+
+| File | Purpose |
+|---|---|
+| `trace_logger.py` | Writes generation traces to JSONL. |
+| `memory_manager.py` | Saves and loads session JSON. |
+| `rag_pipeline.py` | Extracts, chunks, embeds, stores, retrieves, and evaluates document chunks. |
+| `training_curator.py` | Saves approved/corrected examples and exports ShareGPT JSONL. |
+
+## `eval/`
+
+| File | Purpose |
+|---|---|
+| `harness.py` | Runs JSONL eval cases through the local model. |
+| `graders.py` | Implements `exact_match`, `json_valid`, `keyword_hit`, `groundedness`, `not_in_context`. |
+| `run_eval.py` | CLI for eval runs and dry runs. |
+| `benchmark_rag.py` | Retrieval-only benchmark. |
+| `datasets/*.jsonl` | Example datasets for workflow testing. |
+| `results/` | Eval run artifacts; gitignored. |
+
+## `training/`
+
+| File | Purpose |
+|---|---|
+| `validate_dataset.py` | Checks curated dataset readiness. |
+| `qlora_config_template.yaml` | Starter QLoRA configuration notes. |
+| `WHEN_TO_TUNE.md` | Decision guide for prompt/RAG/tuning choices. |
+
+## `docs/`
+
+| File | Purpose |
+|---|---|
+| `01_problem_statement.md` | Why Karl exists. |
+| `02_prd.md` | Product requirements and current scope. |
+| `03_frd.md` | Functional requirements. |
+| `04_architecture.md` | System architecture and data flow. |
+| `05_scope_and_milestones.md` | Implemented and planned milestones. |
+| `06_repo_structure.md` | This file. |
+| `07_risk_register.md` | Risks, mitigations, and open issues. |
+
+## `data/`
+
+`data/` is local runtime state.
+
+```text
+data/
+  model_registry.json      source-controlled model tier registry
+  active_model.json        written by upgrade manager
+  active_theme.json        runtime UI preference
+  models/                  GGUF files, gitignored
+  logs/
+    traces/                trace JSONL, gitignored
+    raw/                   raw token archives, gitignored
+  sessions/                saved chats, gitignored
+  training/                curated/exported datasets and adapters, gitignored
+  vector_db/               FAISS index and metadata, gitignored
+```
+
+## Gitignore Policy
+
+Source-controlled:
+
+- application code
+- docs
+- eval datasets
+- training templates
+- `data/model_registry.json`
+
+Ignored runtime state:
+
+- model binaries
+- traces
+- raw token archives
+- saved sessions
+- vector indexes
+- curated/exported training data
+- theme preference
+- eval results

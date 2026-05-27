@@ -10,11 +10,9 @@ import core.agentic_loop
 
 RAW_LOG_DIR = "data/logs/raw"
 
-# Reserve this many tokens for the next generation's output.
-# The rest of the budget is used for history.
 _CONTEXT_BUDGET = 4096
-_RESPONSE_RESERVE = 1024  # max_tokens headroom
-_HISTORY_CHAR_LIMIT = (_CONTEXT_BUDGET - _RESPONSE_RESERVE) * 3  # ~1 token ≈ 3 chars (conservative)
+_RESPONSE_RESERVE = 1024
+_MAX_MSG_CHARS  = 1500   # hard-cap on any single message before tokenising
 
 class AgenticThread(QThread):
     """
@@ -29,62 +27,90 @@ class AgenticThread(QThread):
     loop_finished = pyqtSignal(int)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, system_prompt, initial_history, hyperparams):
+    def __init__(
+        self,
+        system_prompt,
+        initial_history,
+        hyperparams,
+        workflow="general_chat",
+        template="custom_prompt",
+    ):
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = list(initial_history)   # copy so we can mutate safely
         self.hyperparams = hyperparams
+        self.workflow = workflow
+        self.template = template
         self.logger = TraceLogger()
         self._stop_requested = False
 
     def request_stop(self):
         self._stop_requested = True
 
-    def _trim_history(self, history, system_prompt):
+    def _trim_history_exact(self, llm, system_prompt, history, max_tokens, n_ctx):
         """
-        Trims the chat history so the compiled prompt stays inside the context budget.
-        Always keeps the first user message (the seed) and the most recent turns.
+        Token-accurate trimmer: uses llm.tokenize() to count real tokens and
+        removes the oldest messages (preserving the seed at index 0) until
+        the compiled prompt fits within (n_ctx - max_tokens).
         """
-        base_len = len(system_prompt)
-        budget = _HISTORY_CHAR_LIMIT - base_len
+        def _cap(msg):
+            content = msg.get("content", "")
+            if len(content) > _MAX_MSG_CHARS:
+                content = "[...truncated...] " + content[-_MAX_MSG_CHARS:]
+            return {**msg, "content": content}
 
-        # Walk backwards through history accumulating character count.
-        # Always keep at least the first message (index 0) as the seed.
-        kept = []
-        running = 0
-        for msg in reversed(history):
-            entry_len = len(msg.get("content", ""))
-            if running + entry_len > budget and kept:
-                break  # Stop adding older messages
-            kept.insert(0, msg)
-            running += entry_len
+        capped = [_cap(m) for m in history]
 
-        # Always preserve seed (first message)
-        if history and history[0] not in kept:
-            kept.insert(0, history[0])
+        def get_token_count(hist):
+            compiled = core.interaction_loop.build_prompt(system_prompt, hist)
+            return len(llm.tokenize(compiled.encode("utf-8"), special=True))
 
-        if len(kept) < len(history):
+        target = n_ctx - min(max(256, max_tokens), n_ctx - 256)
+        current = list(capped)
+        count = get_token_count(current)
+
+        while count > target and len(current) > 2:
+            current.pop(1)   # drop oldest non-seed message
+            count = get_token_count(current)
+
+        if len(current) < len(history):
             self.new_thought_token.emit(
-                f"\n[Context Trim: kept {len(kept)}/{len(history)} messages to fit context window]\n"
+                f"\n[Context Trim: kept {len(current)}/{len(history)} messages]\n"
             )
-        return kept
+        return current, count
 
     def _run_single_generation(self, llm, prompt, raw_file):
         """Runs streaming generation, continuing automatically if truncated."""
         raw_output = ""
         parsed_thought = ""
         parsed_response = ""
-        # Prompt pre-seeds <think>\n -- always start in thought mode
-        in_thought = True
+        # Automatically detect if we should start in thought mode based on prompt ending
+        in_thought = False
+        if prompt.endswith("<think>") or prompt.endswith("<think>\n"):
+            in_thought = True
         buffer = ""
 
         continuation_count = 0
         max_continuations = 5
 
         while continuation_count <= max_continuations:
+            prompt_tokens = len(llm.tokenize((prompt + raw_output).encode("utf-8"), special=True))
+            available_for_gen = _CONTEXT_BUDGET - prompt_tokens
+            if available_for_gen < 64:
+                self.error_occurred.emit(
+                    f"The agentic loop context is too large for this model's "
+                    f"{_CONTEXT_BUDGET}-token window "
+                    f"(prompt: {prompt_tokens} tokens). "
+                    f"Try lowering max tokens or starting a shorter loop seed."
+                )
+                break
+
+            requested_max_tokens = self.hyperparams.get("max_tokens", _RESPONSE_RESERVE)
+            actual_max_tokens = min(requested_max_tokens, max(64, available_for_gen - 10))
+
             response_gen = llm(
                 prompt + raw_output,
-                max_tokens=self.hyperparams.get("max_tokens", 2048),
+                max_tokens=actual_max_tokens,
                 temperature=self.hyperparams.get("temperature", 0.7),
                 top_p=self.hyperparams.get("top_p", 0.95),
                 repeat_penalty=1.1,
@@ -184,8 +210,11 @@ class AgenticThread(QThread):
                 self.new_thought_token.emit(f"\n{'='*40}\n[AGENTIC LOOP — Iteration {iteration + 1}]\n{'='*40}\n")
                 self.new_chat_token.emit(f"\n[Iteration {iteration + 1}]\n")
 
-                # Trim history to fit context before building prompt
-                trimmed_history = self._trim_history(self.chat_history, self.system_prompt)
+                # Token-accurate trim before building prompt
+                max_tokens = self.hyperparams.get("max_tokens", 512)
+                trimmed_history, _ = self._trim_history_exact(
+                    llm, self.system_prompt, self.chat_history, max_tokens, _CONTEXT_BUDGET
+                )
                 prompt = core.interaction_loop.build_prompt(self.system_prompt, trimmed_history)
 
                 start = time.time()
@@ -208,7 +237,9 @@ class AgenticThread(QThread):
                     parsed_thought=thought,
                     parsed_response=response,
                     execution_time=elapsed,
-                    rag_context=[f"agentic_iteration_{iteration}"]
+                    rag_context=[f"agentic_iteration_{iteration}"],
+                    workflow=self.workflow,
+                    template=self.template,
                 )
 
                 # Store only the response — not the think block — to keep context lean

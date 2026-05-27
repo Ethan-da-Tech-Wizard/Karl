@@ -6,7 +6,6 @@
 # interaction_loop.py wraps the chosen template in ChatML formatting.
 # The {placeholders} are filled by the caller before the template is used.
 
-from typing import Optional
 
 
 TEMPLATES: dict[str, str] = {
@@ -16,14 +15,14 @@ TEMPLATES: dict[str, str] = {
     # Do NOT micromanage the chain-of-thought — the model handles that internally.
     "reasoning_minimal": (
         "You are a precise analytical assistant.\n"
-        "Think carefully before answering. Be concise in your final response."
+        "Think carefully before answering. Respond in English. Be concise in your final response."
     ),
 
     # ── GPT-style structured prompt ───────────────────────────────────────────
     # For steerable chat models: clear sections with delimiters.
     "gpt_structured": (
         "## Identity\n"
-        "You are a professional AI assistant specialized in careful, accurate analysis.\n\n"
+        "You are a professional AI assistant specialized in careful, accurate analysis. You must respond in English.\n\n"
         "## Instructions\n"
         "- Answer the user's question directly and completely.\n"
         "- If you are uncertain, say so explicitly.\n"
@@ -40,7 +39,7 @@ TEMPLATES: dict[str, str] = {
     "json_extractor": (
         "You are a structured data extraction engine.\n\n"
         "## Task\n"
-        "Extract the requested information from the provided context and return it as valid JSON.\n\n"
+        "Extract the requested information from the provided context in English and return it as valid JSON.\n\n"
         "## Rules\n"
         "- Output ONLY a valid JSON object. No markdown fences, no explanation.\n"
         "- Use null for fields that are not found in the context.\n"
@@ -58,6 +57,7 @@ TEMPLATES: dict[str, str] = {
     "grounded_answer": (
         "You are a grounded question-answering assistant.\n\n"
         "## Rules\n"
+        "- Respond in English.\n"
         "- Answer ONLY using the information in the Context section below.\n"
         "- If the answer is not present in the context, respond with exactly:\n"
         "  'NOT IN CONTEXT: This question cannot be answered from the provided documents.'\n"
@@ -71,7 +71,7 @@ TEMPLATES: dict[str, str] = {
     # Returns structured findings as a JSON array.
     # Used by the code_review workflow.
     "code_review": (
-        "You are a senior software engineer performing a code review.\n\n"
+        "You are a senior software engineer performing a code review. Respond in English.\n\n"
         "## Task\n"
         "Review the provided code and return a JSON array of findings.\n\n"
         "## Output Format\n"

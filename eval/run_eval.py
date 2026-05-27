@@ -24,6 +24,13 @@ import json
 import os
 import sys
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.workflows import list_workflows, get_workflow
@@ -108,8 +115,7 @@ def dry_run_mode(dataset_path: str, workflow_name: str):
     Grader-only test: reads dataset, uses the 'expected' field as the model
     output, and grades it. Should always pass. Useful for CI or grader testing.
     """
-    print(f"\n  DRY RUN — grading 'expected' values as outputs (no model loaded)")
-    from eval.graders import run_grader
+    print("\n  DRY RUN — grading 'expected' values as outputs (no model loaded)")
 
     cases = []
     with open(dataset_path, "r", encoding="utf-8") as f:

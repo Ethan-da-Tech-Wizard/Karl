@@ -1,5 +1,13 @@
 import os
+import sys
 import time
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 from llama_cpp import Llama
 from app.utils.trace_logger import TraceLogger
 from core.cognitive_parser import parse_thought_stream
@@ -68,7 +76,7 @@ def test_introspection_engine():
         execution_time=execution_time
     )
     
-    print(f"\n--- LOG WRITTEN ---")
+    print("\n--- LOG WRITTEN ---")
     print(f"Trace fully logged to: {log_file}")
 
 if __name__ == "__main__":

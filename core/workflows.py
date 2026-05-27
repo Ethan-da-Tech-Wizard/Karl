@@ -7,7 +7,6 @@
 # The UI reads WORKFLOWS to populate the mode selector.
 # The eval harness reads WORKFLOWS to know which grader to apply.
 
-from typing import Optional
 
 
 WORKFLOWS: dict[str, dict] = {

@@ -1,50 +1,76 @@
 # Problem Statement: The Prompt Engineering Bottleneck
 
-## 1. Executive Summary
+## Executive Summary
 
-Prompt Engineers and AI application developers face a critical tooling gap. While consumer-facing
-LLM applications are abundant, professional-grade environments for rapid iteration, rigorous
-testing, and systematic optimisation of LLM prompts are severely lacking.
+Prompt engineers and AI application developers need a way to inspect, test,
+and refine local LLM behavior without surrendering prompts, documents, or
+trace data to external services.
 
-Current solutions force developers to choose between:
-- **Security compromises** — cloud APIs that transmit proprietary data
-- **Architectural opacity** — black-box local daemons like Ollama or LM Studio
-- **Excessive complexity** — managing raw Python scripts with no GUI
+Existing tools often force a tradeoff:
 
-**Karl** solves this by embedding a compiled inference engine directly inside its own process —
-no servers, no telemetry, no compromises.
+- Cloud APIs are powerful but move private prompts and documents off-machine.
+- Local daemons are convenient but hide prompt assembly, parsing, retrieval, and telemetry details.
+- Raw Python scripts are controllable but slow down interactive exploration.
 
----
+Karl addresses that gap with an offline desktop workbench that combines a
+usable PyQt6 interface with editable Python control points and full trace logs.
 
-## 2. Core Deficiencies in Existing Solutions
+## Current Tooling Gaps
 
-### 2.1 Security and Privacy Compromises
-- **Cloud Dependency:** SaaS providers (OpenAI, Anthropic) require transmitting prompts over the internet, violating air-gapped security protocols.
-- **Localhost Vulnerabilities:** Ollama, vLLM, and LM Studio open local network ports or run background daemons that can trigger endpoint-security alerts.
-- **Telemetry:** Many tools include hidden crash reporting or update checks that violate a true zero-telemetry mandate.
+### Privacy and Isolation
 
-### 2.2 Architectural Opacity and Inflexibility
-- **Black-Box Interaction:** Tools like LM Studio provide polished UIs but hide the exact prompt string, tokenisation logic, and system-prompt injection.
-- **Rigid Chat Paradigm:** Consumer GUIs assume a strict User → AI → User turn sequence. They do not natively support agentic loops, self-reflection chains, or branching prompt trees.
-- **Opaque RAG:** Built-in RAG features abstract away chunk size, overlap, embedding model selection, and distance metrics.
+Prompt engineering often involves proprietary code, contracts, policies,
+incident reports, internal datasets, or experimental prompts. Cloud workflows
+can be unacceptable when data must stay local.
 
-### 2.3 The "Frankenstein" Workflow
-- Developers currently patch together terminal scripts, code editors, and vector DB inspectors — severe context-switching that slows the experimental cycle.
+Karl runs inference in-process through `llama-cpp-python`. It does not require
+a localhost model server. Inference itself is offline. Network access is limited
+to explicit user-triggered actions such as model download or model-upgrade git
+push.
 
----
+### Prompt and Reasoning Opacity
 
-## 3. The Proposed Solution
+Prompt behavior is hard to improve when the tool hides the compiled prompt,
+the workflow template, the retrieved chunks, and the model's reasoning markers.
 
-**Karl** is a natively compiled, offline-first application that embeds `llama-cpp-python`
-C-bindings directly within its process. It provides:
+Karl exposes the important pieces:
 
-- A polished **PyQt6 GUI** with full keyboard and mouse navigation
-- A **live Diagnostic Lane** that streams the model's `<think>` reasoning trace in real time
-- A **hackable core** (`core/`) that is hot-reloaded on every generation — no restarts
-- **Universal RAG** via FAISS + `sentence-transformers` — PDF, DOCX, TXT, PY, MD, CSV
-- **Agentic loops** — autonomous multi-turn self-reflection with user-defined stop conditions
-- **Training data curation** — rate generations and export Unsloth-ready JSONL for fine-tuning
-- **Immutable JSONL trace logs** — every generation is captured for audit and diff analysis
+- The compiled ChatML prompt is logged.
+- Retrieved RAG chunks are logged.
+- `<think>...</think>` reasoning is streamed separately from final response text.
+- Raw streaming chunks are archived before parsing.
 
-Karl is designed for technical users who want the UX of a polished application with the
-flexibility of a raw Python script.
+### Slow Experiment Loops
+
+Professional prompt work usually bounces between GUI chat tools, scripts,
+logs, vector database experiments, and spreadsheets of eval results.
+
+Karl keeps the loop inside one local project:
+
+1. Ingest documents.
+2. Select or edit a workflow.
+3. Generate and inspect reasoning.
+4. Save traces.
+5. Approve or correct outputs into a training dataset.
+6. Run evals to decide whether to prompt, retrieve, tune, or upgrade.
+
+## Proposed Solution
+
+Karl is an offline LLM introspection workbench for technical users.
+
+It provides:
+
+- A PyQt6 GUI with Chat, Configure, and Tuning pages.
+- Local DeepSeek-R1 GGUF inference through `llama-cpp-python`.
+- A reasoning pane that receives streamed `<think>` content.
+- A response pane for final answer content.
+- A hackable `core/` layer that is hot-reloaded during generation.
+- Persistent FAISS-based RAG over local files.
+- Immutable JSONL trace logs and raw token archives.
+- Dataset curation and ShareGPT/Unsloth export.
+- Eval harnesses for output and retrieval quality.
+
+## Product Position
+
+Karl is not meant to be a general consumer chat app. It is a prompt engineering
+instrument: local, inspectable, editable, and traceable.

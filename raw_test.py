@@ -3,6 +3,15 @@ Quick raw model test -- bypasses all UI/threading.
 Run: python raw_test.py
 """
 import os
+import sys
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
+
 os.environ["HF_HUB_OFFLINE"] = "1"
 
 from llama_cpp import Llama

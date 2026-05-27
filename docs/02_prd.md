@@ -1,121 +1,176 @@
-# Product Requirements Document (PRD) — Karl v2
+# Product Requirements Document - Karl
 
-## 1. Product Vision & Philosophy
+## Product Vision
 
-**Karl** is a surgical instrument for Prompt Engineers. It is not designed for the general
-public — it is designed for professionals who need absolute control over the LLM generation
-lifecycle.
+Karl is a local LLM introspection environment for prompt engineers.
 
-> "UI for convenience, Code for control, Introspection for insight."
+It should feel like a polished desktop app while preserving the control of a
+plain Python workbench. The user should be able to inspect what the model was
+asked, what it retrieved, what it reasoned, what it answered, and how that
+output should feed future evals or tuning.
 
-Karl provides a polished PyQt6 GUI for interacting with the model, but critically, it
-completely exposes the model's internal monologue and gives the user direct access to the
-prompt construction, parsing, and agentic loop logic via hot-reloadable Python scripts.
+Philosophy: **UI for convenience, code for control, introspection for insight.**
 
----
+## Target User
 
-## 2. Target Persona
+- Prompt engineers
+- AI solution architects
+- Local model researchers
+- Developers building RAG and evaluation workflows
 
-- **Role:** Prompt Engineer / AI Solutions Architect / AI Researcher
-- **Skills:** Proficient in Python, understands tokenisation, embeddings, vector mathematics, and LLM hyperparameters
-- **Needs:** Rapid iteration, absolute privacy, deterministic traceability, explicit pathways to manipulate model reasoning, and a direct path from experimentation to fine-tuning
+The user is expected to be comfortable with Python, local models, prompts,
+datasets, and the idea of editing files under `core/`.
 
----
+## Product Constraints
 
-## 3. Strict Constraints & Acceptance Criteria
+### Privacy
 
-### 3.1 Network & Privacy Isolation
-- **AC1:** The inference engine runs in-process via `llama-cpp-python` C-bindings — zero localhost servers.
-- **AC2:** No outbound network requests are made during inference. The only network calls allowed are: model download (manual, user-triggered) and the optional GitHub push on model upgrade.
-- **AC3:** `HF_HUB_OFFLINE=1` can be set to silence the `sentence-transformers` HuggingFace token warning without affecting functionality.
+- Inference must run locally in the Karl process.
+- No localhost model server is required.
+- No outbound network calls should occur during ordinary inference.
+- Allowed network operations are explicit model download and optional git push during model upgrade.
 
-### 3.2 The Introspection Engine
-- **AC1:** The streaming parser intercepts `<think>` … `</think>` tokens in real time and routes them to the **Diagnostic Lane** panel, separate from the Final Response panel.
-- **AC2:** Every generation writes an immutable JSONL trace to `data/logs/traces/trace_YYYY-MM-DD.jsonl` containing: timestamp, workflow, template, hyperparameters, compiled prompt, raw output, parsed thought, parsed response, latency, and RAG context used.
-- **AC3:** Every generation also writes a timestamped `.tokens` raw archive file to `data/logs/raw/`.
+### Inspectability
 
-### 3.3 The Hackable Core
-- **AC1:** `core/interaction_loop.py` — prompt string builder. Hot-reloaded via `importlib.reload()` before every generation.
-- **AC2:** `core/agentic_loop.py` — stop condition and next-prompt injection. Hot-reloaded between every agentic iteration.
-- **AC3:** `core/prompt_templates.py` — named system prompt templates. Hot-reloaded on every generation.
-- **AC4:** `core/workflows.py` — workflow mode definitions. Read at UI startup and on combo-box change.
-- **AC5:** Python exceptions from user modifications are caught and displayed in the Final Response panel with a red error label — Karl never crashes on bad user code.
+Karl must record enough information to reproduce and compare runs:
 
-### 3.4 Generation Quality
-- **AC1:** Stop tokens include `<|im_end|>`, `<|endoftext|>`, and `<|end_of_text|>` to prevent early truncation on Qwen-derived models.
-- **AC2:** `echo=False` is set on all generation calls to prevent the prompt being echoed back into the output stream.
-- **AC3:** Context overflow is handled by `_trim_history()` in both `LLMThread` and `AgenticThread` — the seed message is always preserved.
-- **AC4:** If a generation hits `max_tokens` with `finish_reason == "length"`, Karl automatically chains a `Continue.` turn to complete the response.
+- timestamp
+- workflow
+- template
+- hyperparameters
+- retrieved RAG context
+- compiled prompt
+- raw output
+- parsed thought
+- parsed response
+- latency
 
----
+### Hackability
 
-## 4. Feature Specifications (All Implemented)
+The user must be able to modify key behavior without restarting the app:
 
-### 4.1 Session & Memory Management
-- Conversations are saved as JSON to `data/sessions/` via `MemoryManager`.
-- Sessions store full chat history + system prompt.
-- Double-clicking a session in the left panel reloads it completely, replaying thoughts into the Diagnostic Lane and responses into the Final Response panel.
-- **Force Thought** — injects a fake `<think>` block into the context window to seed or steer the model's reasoning chain.
+- `core/interaction_loop.py`
+- `core/agentic_loop.py`
+- prompt templates and workflows through `core/prompt_templates.py` and `core/workflows.py`
 
-### 4.2 Agentic Loop ("Ralph Wiggum" Loop)
-- `AgenticThread` runs autonomously: generate → parse → check `should_continue()` → inject `build_next_prompt()` → repeat.
-- Both functions are in `core/agentic_loop.py` and are hot-reloaded between iterations.
-- Hard cap: `MAX_ITERATIONS = 5` by default (user editable).
-- Stop signals: `[DONE]`, `[END]`, `[STOP]`, `FINAL ANSWER:` in the last response.
-- **Auto-Loop Mode** — checkbox that feeds each single generation directly into the agentic loop automatically.
+### Thread Safety
 
-### 4.3 Universal RAG Pipeline
-- Supported formats: PDF (PyMuPDF), DOCX (python-docx), TXT, PY, MD, CSV (plain-text fallback).
-- Chunking: 200-word chunks with 50-word overlap (configurable).
-- Embedding: `all-MiniLM-L6-v2` via `sentence-transformers`.
-- Index: FAISS flat L2 index, persisted to `data/vector_db/`.
-- Retrieval: top-k configurable (0–10), with optional source-filter and contextual chunk headers.
-- Retrieval eval metrics: `hit@1`, `hit@3`, `hit@k`, reciprocal rank via `eval_retrieval()`.
+All LLM work must run outside the UI thread. Worker threads communicate through
+PyQt signals only.
 
-### 4.4 Workflow Modes
-Four named workflow modes, each bundling a template + RAG config + output schema + eval grader:
+## Implemented Feature Set
+
+### Chat and Introspection
+
+- Chat page with saved sessions, RAG file ingestion, reasoning stream, response stream, and prompt input.
+- Streaming parser separates `<think>` content from final response text.
+- Reasoning pane can be hidden or shown.
+- Stop button can terminate a single generation or request reflect-loop stop.
+
+### Trace and Raw Token Logging
+
+- Structured JSONL traces are written to `data/logs/traces/`.
+- Raw pre-parser chunks are written to `data/logs/raw/*.tokens`.
+- Raw chunks are archived on disk; they are not currently shown in a live UI panel.
+
+### RAG
+
+Supported file types:
+
+- PDF
+- DOCX
+- TXT
+- PY
+- MD
+- CSV
+- XLSX
+- XLS
+
+RAG implementation:
+
+- `all-MiniLM-L6-v2` sentence-transformer embeddings
+- FAISS flat L2 index
+- persistent `data/vector_db/index.faiss`
+- persistent `data/vector_db/metadata.json`
+- semantic over-fetch plus keyword reranking
+- optional contextual headers
+- retrieval eval metrics
+
+### Workflow Modes
+
+Implemented workflows:
+
 | Workflow | Template | RAG | Output |
 |---|---|---|---|
-| General Chat | `reasoning_minimal` | Optional | Free text |
-| Document Extractor | `json_extractor` | Required (top-5) | Valid JSON |
-| Grounded Answer | `grounded_answer` | Required (top-5) | Cited text or NOT IN CONTEXT |
-| Code Review | `code_review` | Off | JSON array of findings |
+| `general_chat` | `reasoning_minimal` | Optional top-3 | Free text |
+| `document_extractor` | `json_extractor` | Required top-5 by convention | JSON object |
+| `grounded_answer` | `grounded_answer` | Required top-5 by convention | Grounded answer or NOT IN CONTEXT |
+| `code_review` | `code_review` | Off | JSON array |
 
-### 4.5 Hardware Scout & Model Upgrade
-- `core/hardware_scout.py` → `get_hardware_profile()` returns `{ram_gb, vram_gb, storage_gb}`.
-- `app/engine/upgrade_manager.py` → `check_for_upgrade()` compares profile to `data/model_registry.json` tiers.
-- On user approval: downloads GGUF, resets `ModelLoader` singleton, updates `data/active_model.json`, runs `git commit + git push`.
+The UI renders selected workflow templates through `get_template()` so
+placeholders such as `{rag_context}`, `{schema}`, and `{code}` are filled before
+generation.
 
-### 4.6 Training Data Curator
-- 👍 / ✏️ rating buttons appear after every completed generation.
-- 👍 saves the exchange as a positive example.
-- ✏️ opens a correction dialog — user rewrites the ideal response.
-- All data stored in `data/training/curated.jsonl`.
-- Export via **Export for Unsloth** button → writes Unsloth-formatted JSONL for QLoRA fine-tuning.
-- See `training/qlora_config_template.yaml` and `training/WHEN_TO_TUNE.md` for the full training pipeline.
+### Agentic Reflect Loop
 
-### 4.7 Eval Harness
-- `eval/harness.py` — dataset runner across all workflow modes.
-- `eval/graders.py` — 5 graders: `keyword_hit`, `json_valid`, `groundedness`, `json_schema`, `regex_match`.
-- `eval/run_eval.py` — CLI entry point.
-- `eval/benchmark_rag.py` — retrieval-only benchmark with hit@k and MRR metrics.
-- Datasets in `eval/datasets/*.jsonl` (one per workflow mode).
+- Manual `reflect` button starts the loop after a seed conversation exists.
+- `halt loop` requests stop.
+- `core/agentic_loop.py` controls `should_continue()` and `build_next_prompt()`.
+- Default hard cap is `MAX_ITERATIONS = 20`.
+- Completion signals include `FINAL ANSWER:`, `[DONE]`, `[END]`, and `[STOP]`.
+- Automatic post-generation looping is intentionally disabled; reflect is opt-in.
 
-### 4.8 UI Design
-- Three-column layout: Sessions/RAG | Diagnostic+Chat | Config
-- **Diagnostic Lane** — `<think>` tokens streamed live in monospace
-- **Final Response** — cleaned answer in readable prose font
-- **Raw Token Archive** — toggled panel showing pre-parser token stream + `.tokens` file
-- **Workflow Report** — one-line post-generation diagnostic (workflow, template, chunks, latency)
-- **Status bar** — live generation state + last latency
-- **Rich tooltips** — every interactive element has a detailed hover description
-- Fully resizable via QSplitter handles
+### Training Data Curator
 
----
+- `approve` saves the current prompt and response as an approved example.
+- `teach` opens a correction dialog and saves the corrected answer.
+- Stored path: `data/training/curated.jsonl`.
+- Export path: `data/training/export_unsloth.jsonl`.
+- Export format: HuggingFace/ShareGPT-style `{"messages": [...]}`.
+- Tuning page shows dataset stats and export controls.
 
-## 5. Out of Scope (Planned Next Milestones)
+### Eval Harness
 
-- **Tokenizer Visualization** — token IDs and per-token log-probabilities alongside raw stream
-- **Session Branching** — fork a conversation at any point and explore alternate paths
-- **Prompt Diff Tool** — side-by-side comparison of two trace logs
-- **DPO Export** — direct preference optimisation dataset format (requires rejected-text storage at rating time)
+Implemented graders:
+
+- `exact_match`
+- `json_valid`
+- `keyword_hit`
+- `groundedness`
+- `not_in_context`
+
+CLI:
+
+```powershell
+python eval/run_eval.py --workflow code_review --dataset eval/datasets/code_review.jsonl
+python eval/run_eval.py --workflow code_review --dataset eval/datasets/code_review.jsonl --dry-run --no-save
+```
+
+### Model Upgrade
+
+- Startup hardware check reads RAM, VRAM, and free storage.
+- Upgrade manager compares hardware against `data/model_registry.json`.
+- If a better tier is eligible, the Configure page can show an upgrade prompt.
+- User-approved upgrade downloads a GGUF, resets the model singleton, writes `data/active_model.json`, commits it, and pushes.
+
+## Out of Scope for Current Completion
+
+- Live raw-token UI panel.
+- Token ID/logprob visualization.
+- Session branching.
+- Prompt diff UI.
+- DPO export.
+- Full training run automation.
+
+## Completion Criteria
+
+Karl is completion-ready when:
+
+1. The app launches with the local model installed.
+2. Chat generation streams thought and response correctly.
+3. RAG ingestion and retrieval work for representative files.
+4. Workflow templates render without unresolved placeholders.
+5. Traces include workflow and template metadata.
+6. Training data can be approved, corrected, validated, and exported.
+7. Smoke tests and dry-run evals pass.
+8. Documentation matches the actual code surface.

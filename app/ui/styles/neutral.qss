@@ -148,28 +148,38 @@ QPushButton#btn_force_thought:hover {
     color: #FFFFFF;
 }
 
-/* Accept */
-QPushButton#btn_thumbs_up {
+/* Approve */
+QPushButton#btn_accept {
     background-color: #052E16;
     border-color: #14532D;
     color: #86EFAC;
 }
-QPushButton#btn_thumbs_up:hover {
+QPushButton#btn_accept:hover {
     background-color: #14532D;
     border-color: #16A34A;
     color: #FFFFFF;
 }
+QPushButton#btn_accept:disabled {
+    background-color: #111113;
+    border-color: #1E1E21;
+    color: #3F3F46;
+}
 
-/* Correct */
-QPushButton#btn_thumbs_down {
+/* Teach */
+QPushButton#btn_correct {
     background-color: #1C1206;
     border-color: #78350F;
     color: #FCD34D;
 }
-QPushButton#btn_thumbs_down:hover {
+QPushButton#btn_correct:hover {
     background-color: #78350F;
     border-color: #D97706;
     color: #FFFFFF;
+}
+QPushButton#btn_correct:disabled {
+    background-color: #111113;
+    border-color: #1E1E21;
+    color: #3F3F46;
 }
 
 /* -- Checkboxes ------------------------------------------------- */

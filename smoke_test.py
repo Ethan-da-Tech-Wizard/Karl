@@ -1,9 +1,18 @@
+import json
 import sys
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
+
 sys.path.insert(0, '.')
 
-from core.prompt_templates import get_template, list_templates, TEMPLATES
-from core.workflows import get_workflow, list_workflows, WORKFLOWS
-from eval.graders import run_grader, GRADER_REGISTRY
+from core.prompt_templates import get_template, list_templates
+from core.workflows import get_workflow, list_workflows
+from eval.graders import run_grader
 
 # Template substitution
 tpl = get_template('json_extractor', rag_context='test context', schema='{}')
@@ -25,7 +34,6 @@ assert any(n == 'code_review' for n, _ in workflows)
 print('OK  list_templates / list_workflows')
 
 # json_valid grader — valid JSON with required key
-import json
 payload = json.dumps({"invoice_number": "INV-001"})
 r = run_grader('json_valid', payload, schema_keys=['invoice_number'])
 assert r['passed'], f"json_valid FAIL: {r}"
@@ -33,14 +41,14 @@ print('OK  graders.json_valid (pass case)')
 
 # json_valid grader — missing key
 r2 = run_grader('json_valid', payload, schema_keys=['invoice_number', 'total'])
-assert not r2['passed'], f"json_valid should FAIL on missing key"
+assert not r2['passed'], "json_valid should FAIL on missing key"
 print('OK  graders.json_valid (fail on missing key)')
 
 # not_in_context grader
 r3 = run_grader('not_in_context', 'NOT IN CONTEXT: no evidence found')
 assert r3['passed'], f"not_in_context FAIL: {r3}"
 r4 = run_grader('not_in_context', 'The answer is 42')
-assert not r4['passed'], f"not_in_context should FAIL on real answer"
+assert not r4['passed'], "not_in_context should FAIL on real answer"
 print('OK  graders.not_in_context')
 
 # keyword_hit grader
