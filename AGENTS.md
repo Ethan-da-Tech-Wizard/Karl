@@ -394,7 +394,7 @@ Global pass (review all workspaces together):
 
 ---
 
-### 🔨 Phase 3.3 — LoRA / QLoRA Training Thread  ← YOU ARE HERE
+### ✅ Phase 3.3 — LoRA / QLoRA Training Thread *(completed)*
 **One commit. Highest-risk phase. Isolated for safety.**
 Do not mix with 3.1 or 3.2 changes.
 
@@ -414,7 +414,7 @@ Exit criterion: training runs on a 5-example dataset, loss curve visible, adapte
 
 ---
 
-### ⬚ Phase 3.4 — System Config Model Registry Browser
+### ✅ Phase 3.4 — System Config Model Registry Browser *(completed)*
 **One commit. Self-contained workspace enhancement. Low risk.**
 
 1. Read `data/model_registry.json`; render tier table (name, RAM req, n_ctx, file size)
@@ -424,7 +424,7 @@ Exit criterion: training runs on a 5-example dataset, loss curve visible, adapte
 
 ---
 
-### ⬚ Phase 4.1 — Tokenizer Visualization
+### ✅ Phase 4.1 — Tokenizer Visualization *(completed)*
 **One commit. Self-contained display feature. Low risk.**
 
 1. Add tokenizer panel to Prompt Lab (or collapsible drawer in Workbench)
@@ -434,7 +434,7 @@ Exit criterion: training runs on a 5-example dataset, loss curve visible, adapte
 
 ---
 
-### ⬚ Phase 4.2 — DPO Export Completion
+### ✅ Phase 4.2 — DPO Export Completion *(completed)*
 **One commit. Depends on Phase 2.2 (thumbs-down) being complete.**
 
 1. `training_curator.export_dpo(path)`: pair thumbs_up (chosen) with thumbs_down
@@ -444,7 +444,7 @@ Exit criterion: training runs on a 5-example dataset, loss curve visible, adapte
 
 ---
 
-### ⬚ Phase 4.3 — Session Branching
+### 🔨 Phase 4.3 — Session Branching  ← YOU ARE HERE
 **One commit. Highest architectural risk. Must be fully isolated.**
 Read the R18 risk entry in `docs/07_risk_register.md` before touching this.
 

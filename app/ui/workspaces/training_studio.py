@@ -475,29 +475,10 @@ class TrainingStudioWorkspace(QWidget):
             if mode == "sft":
                 out_path = self.state.curator.export_unsloth(path)
             else:
-                out_path = self._export_dpo(path)
+                out_path = self.state.curator.export_dpo(path)
             self._export_status.setText(f"saved: {out_path}")
         except Exception as e:
             self._export_status.setText(f"error: {e}")
-
-    def _export_dpo(self, path: str) -> str:
-        examples = self.state.curator.get_all_examples()
-        chosen   = [e for e in examples if e.get("source") == "thumbs_up"]
-        rejected = [e for e in examples if e.get("source") == "thumbs_down"]
-
-        pairs = []
-        for c, r in zip(chosen, rejected):
-            pairs.append({
-                "prompt":   c.get("instruction", ""),
-                "chosen":   c.get("output", ""),
-                "rejected": r.get("output", ""),
-            })
-
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            for p in pairs:
-                f.write(json.dumps(p, ensure_ascii=False) + "\n")
-        return path
 
     def _get_hf_model_path(self) -> tuple[str | None, str]:
         from app.engine.model_loader import ModelLoader

@@ -84,6 +84,70 @@ def export_unsloth(output_path: str = "data/training/export_unsloth.jsonl"):
     return output_path
 
 
+def export_dpo(output_path: str = "data/training/export_unsloth_dpo.jsonl") -> str:
+    """
+    Pairs thumbs_up/corrected (chosen) with thumbs_down (rejected) on the same prompt.
+    Writes to JSONL in standard HuggingFace/Unsloth DPO format:
+    {
+      "prompt": [{"role": "system", "content": ...}, {"role": "user", "content": ...}],
+      "chosen": [{"role": "assistant", "content": chosen_content}],
+      "rejected": [{"role": "assistant", "content": rejected_content}]
+    }
+    """
+    _ensure_dir()
+    examples = get_all_examples()
+    
+    # Group examples by prompt key: (system_prompt, user_msg)
+    groups = {}
+    for ex in examples:
+        messages = ex.get("messages", [])
+        if len(messages) < 3:
+            continue
+        
+        system_prompt = messages[0].get("content", "")
+        user_msg = messages[1].get("content", "")
+        response = messages[2].get("content", "")
+        source = ex.get("source", "unknown")
+        
+        key = (system_prompt, user_msg)
+        if key not in groups:
+            groups[key] = {"chosen": [], "rejected": []}
+            
+        if source in ("thumbs_up", "corrected"):
+            groups[key]["chosen"].append(response)
+        elif source == "thumbs_down":
+            groups[key]["rejected"].append(response)
+            
+    # Generate DPO pairs
+    pairs = []
+    for (system_prompt, user_msg), group in groups.items():
+        chosen_list = group["chosen"]
+        rejected_list = group["rejected"]
+        
+        # If we have at least one chosen and one rejected response for this prompt, pair them
+        for c_resp in chosen_list:
+            for r_resp in rejected_list:
+                pairs.append({
+                    "prompt": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_msg}
+                    ],
+                    "chosen": [
+                        {"role": "assistant", "content": c_resp}
+                    ],
+                    "rejected": [
+                        {"role": "assistant", "content": r_resp}
+                    ]
+                })
+                
+    # Write to file
+    with open(output_path, "w", encoding="utf-8") as f:
+        for pair in pairs:
+            f.write(json.dumps(pair, ensure_ascii=False) + "\n")
+            
+    return output_path
+
+
 def delete_example(index: int):
     """Delete example at given 0-based index."""
     examples = get_all_examples()
@@ -114,6 +178,9 @@ class TrainingCurator:
 
     def export_unsloth(self, output_path: str = "data/training/export_unsloth.jsonl"):
         return export_unsloth(output_path)
+
+    def export_dpo(self, output_path: str = "data/training/export_unsloth_dpo.jsonl"):
+        return export_dpo(output_path)
 
     def delete_example(self, index: int):
         return delete_example(index)
