@@ -319,7 +319,7 @@ Tasks:
 
 ---
 
-### 🔨 Phase 2.5b — UX Polish: Knowledge Base + Prompt Lab  ← YOU ARE HERE
+### ✅ Phase 2.5b — UX Polish: Knowledge Base + Prompt Lab
 **One commit. Two workspaces, similar visual language.**
 
 Knowledge Base:
@@ -337,7 +337,7 @@ Prompt Lab:
 
 ---
 
-### ⬚ Phase 2.5c — UX Polish: Training Studio + Eval Suite
+### 🔨 Phase 2.5c — UX Polish: Training Studio + Eval Suite  ← YOU ARE HERE
 **One commit. Both are data-heavy tabbed workspaces.**
 
 Training Studio:

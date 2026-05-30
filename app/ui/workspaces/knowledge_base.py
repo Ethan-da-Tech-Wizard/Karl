@@ -7,6 +7,7 @@ Right: chunk inspector + search tester
 
 from __future__ import annotations
 
+import html
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QLineEdit, QLabel,
@@ -35,14 +36,16 @@ class _IngestThread(QThread):
     done = pyqtSignal(str, int)   # filename, chunk_count
     error = pyqtSignal(str)
 
-    def __init__(self, rag, filepath: str):
+    def __init__(self, rag, filepath: str, chunk_size: int = 200, overlap: int = 50):
         super().__init__()
         self.rag = rag
         self.filepath = filepath
+        self.chunk_size = chunk_size
+        self.overlap = overlap
 
     def run(self):
         try:
-            n = self.rag.ingest_file(self.filepath)
+            n = self.rag.ingest_file(self.filepath, chunk_size=self.chunk_size, overlap=self.overlap)
             import os
             self.done.emit(os.path.basename(self.filepath), n)
         except Exception as e:
@@ -93,35 +96,72 @@ class KnowledgeBaseWorkspace(QWidget):
         self._source_list.currentTextChanged.connect(self._on_source_selected)
         layout.addWidget(self._source_list, 1)
 
-        # ingest controls
+        # Ingest container
         layout.addWidget(_hline())
         layout.addWidget(_section("INGEST"))
 
+        ingest_box = QWidget()
+        ingest_box.setObjectName("panel")
+        ib_layout = QVBoxLayout(ingest_box)
+        ib_layout.setContentsMargins(10, 10, 10, 10)
+        ib_layout.setSpacing(10)
+
+        # Chunk size & overlap row
+        chunk_row = QWidget()
+        chunk_layout = QHBoxLayout(chunk_row)
+        chunk_layout.setContentsMargins(0, 0, 0, 0)
+        chunk_layout.setSpacing(6)
+
+        chunk_layout.addWidget(QLabel("size"))
+        self._chunk_size_spin = QSpinBox()
+        self._chunk_size_spin.setRange(50, 2000)
+        self._chunk_size_spin.setSingleStep(50)
+        self._chunk_size_spin.setValue(200)
+        self._chunk_size_spin.setFixedWidth(65)
+        chunk_layout.addWidget(self._chunk_size_spin)
+
+        chunk_layout.addSpacing(5)
+
+        chunk_layout.addWidget(QLabel("overlap"))
+        self._overlap_spin = QSpinBox()
+        self._overlap_spin.setRange(0, 1000)
+        self._overlap_spin.setSingleStep(10)
+        self._overlap_spin.setValue(50)
+        self._overlap_spin.setFixedWidth(60)
+        chunk_layout.addWidget(self._overlap_spin)
+        chunk_layout.addStretch()
+        ib_layout.addWidget(chunk_row)
+
+        # Add file button
         ingest_btn = QPushButton("+ add file")
         ingest_btn.setObjectName("btn-primary")
         ingest_btn.clicked.connect(self._ingest_file)
-        layout.addWidget(ingest_btn)
+        ib_layout.addWidget(ingest_btn)
 
+        # Progress indicator
         self._progress = QProgressBar()
         self._progress.setVisible(False)
         self._progress.setRange(0, 0)  # indeterminate
-        layout.addWidget(self._progress)
+        ib_layout.addWidget(self._progress)
 
+        # Status text
         self._ingest_status = QLabel("")
         self._ingest_status.setObjectName("lbl-muted")
         self._ingest_status.setWordWrap(True)
-        layout.addWidget(self._ingest_status)
+        ib_layout.addWidget(self._ingest_status)
 
+        layout.addWidget(ingest_box)
         layout.addWidget(_hline())
 
-        # retrieval threshold
+        # Retrieval settings row
         layout.addWidget(_section("RETRIEVAL"))
 
-        thresh_row = QWidget()
-        tr_layout = QHBoxLayout(thresh_row)
-        tr_layout.setContentsMargins(0, 0, 0, 0)
-        tr_layout.setSpacing(8)
-        tr_layout.addWidget(QLabel("threshold"))
+        ret_row = QWidget()
+        ret_layout = QHBoxLayout(ret_row)
+        ret_layout.setContentsMargins(0, 4, 0, 4)
+        ret_layout.setSpacing(8)
+
+        ret_layout.addWidget(QLabel("threshold"))
         self._threshold_spin = QDoubleSpinBox()
         self._threshold_spin.setRange(0.0, 2.0)
         self._threshold_spin.setSingleStep(0.05)
@@ -129,25 +169,22 @@ class KnowledgeBaseWorkspace(QWidget):
         self._threshold_spin.setToolTip(
             "Max L2 distance. 0 = no filter (return all top-k)."
         )
-        self._threshold_spin.setFixedWidth(80)
+        self._threshold_spin.setFixedWidth(65)
         self._threshold_spin.valueChanged.connect(self._on_threshold_changed)
-        tr_layout.addWidget(self._threshold_spin)
-        tr_layout.addStretch()
-        layout.addWidget(thresh_row)
+        ret_layout.addWidget(self._threshold_spin)
 
-        topk_row = QWidget()
-        tk_layout = QHBoxLayout(topk_row)
-        tk_layout.setContentsMargins(0, 0, 0, 0)
-        tk_layout.setSpacing(8)
-        tk_layout.addWidget(QLabel("top-k"))
+        ret_layout.addSpacing(10)
+
+        ret_layout.addWidget(QLabel("top-k"))
         self._topk_spin = QSpinBox()
         self._topk_spin.setRange(1, 20)
         self._topk_spin.setValue(self.state.rag_top_k)
-        self._topk_spin.setFixedWidth(80)
+        self._topk_spin.setFixedWidth(50)
         self._topk_spin.valueChanged.connect(self._on_topk_changed)
-        tk_layout.addWidget(self._topk_spin)
-        tk_layout.addStretch()
-        layout.addWidget(topk_row)
+        ret_layout.addWidget(self._topk_spin)
+
+        ret_layout.addStretch()
+        layout.addWidget(ret_row)
 
         # danger zone
         layout.addStretch()
@@ -156,7 +193,6 @@ class KnowledgeBaseWorkspace(QWidget):
         clear_btn.setObjectName("btn-danger")
         clear_btn.clicked.connect(self._clear_index)
         layout.addWidget(clear_btn)
-
         return w
 
     # ── right panel ───────────────────────────────────────────────────────────
@@ -207,12 +243,21 @@ class KnowledgeBaseWorkspace(QWidget):
             d for d in self.state.rag.documents
             if d.get("source_file") == source
         ]
-        lines = [f"— {source} — {len(docs)} chunks\n"]
-        for i, d in enumerate(docs[:20]):
-            lines.append(f"[{d['chunk_id']}]  {d['text'][:160]}{'...' if len(d['text']) > 160 else ''}\n")
+        lines = [
+            f"<div style='font-size:11pt;color:#00C2FF;font-weight:bold;margin-bottom:4px;'>Source: {html.escape(source)}</div>"
+            f"<div style='font-size:9pt;color:#9090A8;margin-bottom:12px;'>Total {len(docs)} chunks ingested</div>"
+        ]
+        for d in docs[:20]:
+            lines.append(
+                f"<div style='background:#14141F;border:1px solid #252535;border-radius:4px;padding:8px;margin-bottom:8px;'>"
+                f"<div style='font-size:8.5pt;color:#9090A8;margin-bottom:4px;font-weight:bold;'>Chunk {d['chunk_id']}</div>"
+                f"<div style='font-size:9.5pt;color:#E4E4F0;white-space:pre-wrap;'>{html.escape(d['text'][:250])}{'...' if len(d['text']) > 250 else ''}</div>"
+                f"</div>"
+            )
         if len(docs) > 20:
-            lines.append(f"\n...and {len(docs) - 20} more chunks.")
-        self._search_results.setPlainText("".join(lines))
+            lines.append(f"<div style='font-size:9pt;color:#505068;text-align:center;margin-top:8px;'>...and {len(docs) - 20} more chunks.</div>")
+            
+        self._search_results.setHtml("".join(lines))
 
     def _ingest_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -223,7 +268,12 @@ class KnowledgeBaseWorkspace(QWidget):
             return
         self._progress.setVisible(True)
         self._ingest_status.setText("ingesting...")
-        self._ingest_thread = _IngestThread(self.state.rag, path)
+        self._ingest_thread = _IngestThread(
+            self.state.rag,
+            path,
+            chunk_size=self._chunk_size_spin.value(),
+            overlap=self._overlap_spin.value()
+        )
         self._ingest_thread.done.connect(self._on_ingest_done)
         self._ingest_thread.error.connect(self._on_ingest_error)
         self._ingest_thread.start()
@@ -242,7 +292,7 @@ class KnowledgeBaseWorkspace(QWidget):
         if not query:
             return
         if self.state.rag.total_chunks == 0:
-            self._search_results.setPlainText("Knowledge base is empty.")
+            self._search_results.setHtml("<div style='color:#F05050;'>Knowledge base is empty.</div>")
             return
 
         top_k = self._topk_spin.value()
@@ -253,18 +303,25 @@ class KnowledgeBaseWorkspace(QWidget):
             results = [r for r in results if r["distance"] <= threshold]
 
         if not results:
-            self._search_results.setPlainText(
-                f"No results above threshold {threshold:.2f} for: {query}"
+            self._search_results.setHtml(
+                f"<div style='color:#9090A8;'>No results found below distance threshold <b>{threshold:.2f}</b> for query: <i>{html.escape(query)}</i></div>"
             )
             return
 
-        lines = [f"query: {query}\n{len(results)} results\n\n"]
+        lines = [
+            f"<div style='font-size:11pt;color:#00C2FF;font-weight:bold;margin-bottom:4px;'>Search Results for: <i>{html.escape(query)}</i></div>"
+            f"<div style='font-size:9pt;color:#9090A8;margin-bottom:12px;'>Found {len(results)} chunks:</div>"
+        ]
         for r in results:
             lines.append(
-                f"[{r['chunk_id']}] {r['source_file']}  dist={r['distance']:.4f}\n"
-                f"{r['text'][:300]}{'...' if len(r['text']) > 300 else ''}\n\n"
+                f"<div style='background:#14141F;border:1px solid #252535;border-radius:4px;padding:10px;margin-bottom:10px;'>"
+                f"<div style='font-size:8.5pt;color:#9090A8;margin-bottom:4px;font-weight:bold;'>"
+                f"Chunk {r['chunk_id']} &middot; {r['source_file']} &middot; <span style='color:#F0B030;'>dist={r['distance']:.4f}</span>"
+                f"</div>"
+                f"<div style='font-size:9.5pt;color:#E4E4F0;white-space:pre-wrap;line-height:1.4;'>{html.escape(r['text'])}</div>"
+                f"</div>"
             )
-        self._search_results.setPlainText("".join(lines))
+        self._search_results.setHtml("".join(lines))
 
     def _clear_index(self):
         reply = QMessageBox.question(

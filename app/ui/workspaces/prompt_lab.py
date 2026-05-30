@@ -108,7 +108,6 @@ class _PromptColumn(QWidget):
         layout.addWidget(self._output, 1)
 
         btn = QPushButton(f"▶ run {label}")
-        btn.setObjectName("btn-primary")
         btn.clicked.connect(self._emit_run)
         layout.addWidget(btn)
 
@@ -190,7 +189,23 @@ class PromptLabWorkspace(QWidget):
         for col in (self._col_a, self._col_b):
             splitter.addWidget(col)
 
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, 1)
+
+        # Diff view placeholder (will be filled in Phase 3.2)
+        self._diff_box = QFrame()
+        self._diff_box.setObjectName("panel")
+        self._diff_box.setFixedHeight(64)
+        db_layout = QVBoxLayout(self._diff_box)
+        db_layout.setContentsMargins(12, 6, 12, 6)
+        
+        lbl = QLabel("DIFFERENCE VIEW (PHASE 3.2)")
+        lbl.setObjectName("lbl-muted")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        db_layout.addWidget(lbl)
+        
+        root.addWidget(self._diff_box)
 
     def _run_both(self):
         self._col_a.start_run(self._hyperparams)
