@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QTextEdit, QLabel,
     QFrame, QComboBox, QListWidget, QLineEdit,
-    QMessageBox,
+    QMessageBox, QTabWidget,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 
@@ -284,22 +284,62 @@ class PromptLabWorkspace(QWidget):
         splitter.setStretchFactor(1, 1)
         right_layout.addWidget(splitter, 1)
 
-        # Difference view panel
-        self._diff_box = QWidget()
-        self._diff_box.setObjectName("panel")
-        db_layout = QVBoxLayout(self._diff_box)
-        db_layout.setContentsMargins(12, 12, 12, 12)
-        db_layout.setSpacing(6)
+        # Bottom tab widget (Diff and Tokenizer)
+        self._bottom_tabs = QTabWidget()
+        self._bottom_tabs.setObjectName("bottom-tabs")
         
-        db_layout.addWidget(_section("DIFFERENCE VIEW (A vs B)"))
+        # 1. Diff tab
+        diff_tab = QWidget()
+        dt_layout = QVBoxLayout(diff_tab)
+        dt_layout.setContentsMargins(12, 12, 12, 12)
+        dt_layout.setSpacing(6)
+        dt_layout.addWidget(_section("DIFFERENCE VIEW (A vs B)"))
         
         self._diff_view = QTextBrowser()
         self._diff_view.setPlaceholderText("Difference view will render here after both outputs complete...")
         self._diff_view.setTextFormat(Qt.TextFormat.RichText)
-        self._diff_view.setFixedHeight(180)
-        db_layout.addWidget(self._diff_view)
+        self._diff_view.setFixedHeight(140)
+        dt_layout.addWidget(self._diff_view)
+        self._bottom_tabs.addTab(diff_tab, "Difference View")
         
-        right_layout.addWidget(self._diff_box)
+        # 2. Tokenizer tab
+        tokenizer_tab = QWidget()
+        tok_layout = QVBoxLayout(tokenizer_tab)
+        tok_layout.setContentsMargins(12, 12, 12, 12)
+        tok_layout.setSpacing(8)
+        
+        # Input row
+        input_row = QWidget()
+        ir_layout = QHBoxLayout(input_row)
+        ir_layout.setContentsMargins(0, 0, 0, 0)
+        ir_layout.setSpacing(10)
+        
+        self._tok_input = QTextEdit()
+        self._tok_input.setPlaceholderText("Type or paste text to tokenize...")
+        self._tok_input.setFixedHeight(50)
+        self._tok_input.textChanged.connect(self._on_tokenize_text_changed)
+        ir_layout.addWidget(self._tok_input, 1)
+        
+        btn_load_a = QPushButton("Load Output A")
+        btn_load_a.clicked.connect(self._load_output_a_to_tokenizer)
+        ir_layout.addWidget(btn_load_a)
+        
+        btn_load_b = QPushButton("Load Output B")
+        btn_load_b.clicked.connect(self._load_output_b_to_tokenizer)
+        ir_layout.addWidget(btn_load_b)
+        
+        tok_layout.addWidget(input_row)
+        
+        # Output browser
+        self._tok_output = QTextBrowser()
+        self._tok_output.setPlaceholderText("Tokens will be visualized here...")
+        self._tok_output.setTextFormat(Qt.TextFormat.RichText)
+        self._tok_output.setFixedHeight(120)
+        tok_layout.addWidget(self._tok_output)
+        
+        self._bottom_tabs.addTab(tokenizer_tab, "Tokenizer Visualizer")
+        
+        right_layout.addWidget(self._bottom_tabs)
 
         root.addWidget(right_widget, 1)
 
@@ -470,3 +510,96 @@ class PromptLabWorkspace(QWidget):
             self._diff_view.setHtml(diff_html)
         except Exception as e:
             self._diff_view.setHtml(f"<span style='color:#F05050;'>Error generating diff: {html.escape(str(e))}</span>")
+
+    # ── tokenizer tab logic ───────────────────────────────────────────────────
+
+    def _on_tokenize_text_changed(self):
+        text = self._tok_input.toPlainText()
+        if not text:
+            self._tok_output.clear()
+            return
+            
+        from app.engine.model_loader import ModelLoader
+        if not ModelLoader.is_loaded():
+            try:
+                ModelLoader.get_instance()
+            except Exception:
+                self._tok_output.setHtml(
+                    "<span style='color:#FF4A5A;'>[Error: No active model loaded. Please configure and load a model in the System tab first.]</span>"
+                )
+                return
+                
+        try:
+            llm = ModelLoader.get_instance()
+            tokens = llm.tokenize(text.encode('utf-8'))
+            
+            html_parts = [
+                f"<div style='line-height: 1.8; color: #E4E4F0; font-family: {MONO};'>"
+            ]
+            
+            for t in tokens:
+                t_bytes = llm.detokenize([t])
+                html_parts.append(self._format_token_html(t, t_bytes))
+                
+            html_parts.append("</div>")
+            
+            stats_html = f"<div style='font-size: 8.5pt; color: #9090A8; margin-bottom: 8px;'>Total Tokens: <b>{len(tokens)}</b></div>"
+            self._tok_output.setHtml(stats_html + "".join(html_parts))
+            
+        except Exception as e:
+            self._tok_output.setHtml(f"<span style='color:#FF4A5A;'>Error tokenizing: {html.escape(str(e))}</span>")
+
+    def _format_token_html(self, token_id: int, token_bytes: bytes) -> str:
+        text = token_bytes.decode('utf-8', errors='replace')
+        
+        styles = {
+            "special": "color: #FF4A5A; background: rgba(255, 74, 90, 0.12); border: 1px solid rgba(255, 74, 90, 0.25);",
+            "punctuation": "color: #00C2FF; background: rgba(0, 194, 255, 0.12); border: 1px solid rgba(0, 194, 255, 0.25);",
+            "word-start": "color: #B65CFF; background: rgba(182, 92, 255, 0.12); border: 1px solid rgba(182, 92, 255, 0.25);",
+            "continuation": "color: #F0B030; background: rgba(240, 176, 48, 0.12); border: 1px solid rgba(240, 176, 48, 0.25);"
+        }
+        
+        token_type = self._classify_token(token_id, token_bytes)
+        style = styles.get(token_type, styles["continuation"])
+        
+        if token_type == "special" and not text:
+            display_text = f"[#{token_id}]"
+        else:
+            escaped = html.escape(text)
+            display_text = escaped.replace(" ", "&middot;").replace("\n", "&crarr;<br/>").replace("\t", "&rarr;")
+            if not display_text:
+                display_text = f"[#{token_id}]"
+                
+        return (
+            f"<span title='Token ID: {token_id} (Type: {token_type})' "
+            f"style='display: inline-block; padding: 1px 4px; margin: 2px 1px; border-radius: 3px; font-family: {MONO}; font-size: 9.5pt; {style}'>"
+            f"{display_text}"
+            f"</span>"
+        )
+
+    def _classify_token(self, token_id: int, token_bytes: bytes) -> str:
+        text = token_bytes.decode('utf-8', errors='replace')
+        if not token_bytes or token_id >= 100000 or text in ("<|im_start|>", "<|im_end|>", "<think>", "</think>"):
+            return "special"
+            
+        import string
+        stripped = text.strip()
+        if stripped and all(c in string.punctuation for c in stripped):
+            return "punctuation"
+            
+        if token_bytes.startswith(b' ') or token_bytes.startswith(b'\n') or token_bytes.startswith(b'\t'):
+            return "word-start"
+            
+        return "continuation"
+
+    def _load_output_a_to_tokenizer(self):
+        if self._output_a:
+            self._tok_input.setPlainText(self._output_a)
+        else:
+            QMessageBox.information(self, "No Output", "Output A is empty. Run prompt A first.")
+
+    def _load_output_b_to_tokenizer(self):
+        if self._output_b:
+            self._tok_input.setPlainText(self._output_b)
+        else:
+            QMessageBox.information(self, "No Output", "Output B is empty. Run prompt B first.")
