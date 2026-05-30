@@ -355,7 +355,7 @@ Eval Suite:
 
 ---
 
-### 🔨 Phase 2.5d — System Config + Global Consistency Pass  ← YOU ARE HERE
+### ✅ Phase 2.5d — System Config + Global Consistency Pass *(completed)*
 **One commit. Simplest workspace + cross-workspace audit.**
 
 System Config:
@@ -374,7 +374,7 @@ Global pass (review all workspaces together):
 
 ---
 
-### ⬚ Phase 3.1 — Small Workspace Fixes
+### 🔨 Phase 3.1 — Small Workspace Fixes  ← YOU ARE HERE
 **One commit. Two mechanical additions. Low risk.**
 
 1. KB workspace: add chunk_size and overlap spinboxes before ingest button;
