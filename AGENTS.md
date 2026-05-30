@@ -384,7 +384,7 @@ Global pass (review all workspaces together):
 
 ---
 
-### 🔨 Phase 3.2 — Prompt Lab Completion  ← YOU ARE HERE
+### ✅ Phase 3.2 — Prompt Lab Completion *(completed)*
 **One commit. Self-contained UI feature. Medium risk.**
 
 1. After both A/B runs complete, render character-level diff of the two outputs
@@ -394,7 +394,7 @@ Global pass (review all workspaces together):
 
 ---
 
-### ⬚ Phase 3.3 — LoRA / QLoRA Training Thread
+### 🔨 Phase 3.3 — LoRA / QLoRA Training Thread  ← YOU ARE HERE
 **One commit. Highest-risk phase. Isolated for safety.**
 Do not mix with 3.1 or 3.2 changes.
 
