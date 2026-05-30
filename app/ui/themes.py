@@ -229,6 +229,13 @@ QPushButton#btn-ghost:hover {{
     background: transparent;
 }}
 
+QPushButton#btn-ghost:disabled {{
+    color: {text_lo};
+    background: transparent;
+    border: none;
+}}
+
+
 QPushButton#btn-icon {{
     background: transparent;
     border: none;
@@ -348,6 +355,41 @@ QListWidget::item:selected {{
     background: {sidebar_sel};
     color: {accent};
 }}
+
+/* ── CheckBox ─────────────────────────────────────────────── */
+QCheckBox {{
+    color: {text_mid};
+    spacing: 6px;
+    font-family: {mono};
+    font-size: 9pt;
+}}
+
+QCheckBox:hover {{
+    color: {text_hi};
+}}
+
+QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {border};
+    border-radius: 3px;
+    background: {bg_input};
+}}
+
+QCheckBox::indicator:hover {{
+    border-color: {border_hi};
+}}
+
+QCheckBox::indicator:checked {{
+    background: {accent};
+    border-color: {accent};
+}}
+
+QCheckBox::indicator:disabled {{
+    background: {bg_surface};
+    border-color: {border};
+}}
+
 
 /* ── TreeWidget ───────────────────────────────────────────── */
 QTreeWidget {{

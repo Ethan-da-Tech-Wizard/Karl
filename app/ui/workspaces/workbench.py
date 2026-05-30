@@ -46,18 +46,18 @@ def _label(text: str, obj: str = "") -> QLabel:
 
 _USER_TPL = (
     '<div style="margin:10px 0 4px 60px; text-align:right;">'
-    '<div style="color:#505068;font-size:8pt;margin-bottom:3px;">you</div>'
+    '<div style="color:#505068;font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">YOU</div>'
     '<div style="background:#1C1C2A;border:1px solid #383850;border-radius:4px;'
-    'padding:8px 12px;color:#E4E4F0;font-family:monospace;font-size:10pt;'
+    'padding:10px 14px;color:#E4E4F0;font-size:10pt;'
     'white-space:pre-wrap;display:inline-block;text-align:left;">{text}</div>'
     '</div>'
 )
 
 _KARL_HDR = (
     '<div style="margin:10px 60px 0 0;">'
-    '<div style="color:#505068;font-size:8pt;margin-bottom:3px;">karl</div>'
+    '<div style="color:#505068;font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">KARL</div>'
     '<div style="background:#14141F;border:1px solid #252535;border-radius:4px;'
-    'padding:8px 12px;color:#E4E4F0;font-family:monospace;font-size:10pt;'
+    'padding:10px 14px;color:#E4E4F0;font-size:10pt;'
     'white-space:pre-wrap;min-height:1em;">'
 )
 
