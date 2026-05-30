@@ -1,45 +1,56 @@
 import os
 import json
+import threading
 from llama_cpp import Llama
+
 
 class ModelLoader:
     _instance = None
+    _lock = threading.Lock()
 
     @classmethod
-    def get_instance(cls, model_path=None):
-        if cls._instance is None:
-            if model_path is None:
-                # Load from data/active_model.json if exists, else default
-                active_path = "data/active_model.json"
-                filename = "deepseek-r1-1.5b.gguf"
-                if os.path.exists(active_path):
-                    try:
-                        with open(active_path, "r") as f:
-                            active_data = json.load(f)
-                            filename = active_data.get("filename", "deepseek-r1-1.5b.gguf")
-                    except Exception as e:
-                        print(f"[ModelLoader] Error reading {active_path}: {e}")
-                model_path = os.path.join("data", "models", filename)
+    def get_instance(cls, model_path: str | None = None) -> Llama:
+        with cls._lock:
+            if cls._instance is None:
+                if model_path is None:
+                    active_path = "data/active_model.json"
+                    filename = "deepseek-r1-1.5b.gguf"
+                    if os.path.exists(active_path):
+                        try:
+                            with open(active_path, "r") as f:
+                                data = json.load(f)
+                                filename = data.get("filename", filename)
+                        except Exception as e:
+                            print(f"[ModelLoader] Could not read {active_path}: {e}")
+                    model_path = os.path.join("data", "models", filename)
 
-            if not os.path.exists(model_path):
-                # Fallback to default if upgraded model is missing
-                default_path = "data/models/deepseek-r1-1.5b.gguf"
-                if os.path.exists(default_path):
-                    print(f"[ModelLoader] Specified model {model_path} not found. Falling back to default: {default_path}")
-                    model_path = default_path
-                else:
-                    raise FileNotFoundError(f"Model not found at {model_path} or fallback {default_path}")
+                if not os.path.exists(model_path):
+                    fallback = "data/models/deepseek-r1-1.5b.gguf"
+                    if os.path.exists(fallback):
+                        print(f"[ModelLoader] {model_path} not found — using {fallback}")
+                        model_path = fallback
+                    else:
+                        raise FileNotFoundError(
+                            f"No model at {model_path} or fallback {fallback}. "
+                            "Run python download_test_model.py first."
+                        )
 
-            print(f"[ModelLoader] Loading model from {model_path}...")
-            cls._instance = Llama(
-                model_path=model_path,
-                n_ctx=4096,   # Increased from 2048 to support agentic loops
-                verbose=False
-            )
-            print("[ModelLoader] Model loaded.")
-        return cls._instance
+                print(f"[ModelLoader] Loading {model_path}")
+                cls._instance = Llama(model_path=model_path, n_ctx=4096, verbose=False)
+                cls._model_name = os.path.basename(model_path)
+                print("[ModelLoader] Ready.")
+            return cls._instance
 
     @classmethod
     def reset_instance(cls):
-        """Force a full reload on next get_instance() call. Use when changing n_ctx."""
-        cls._instance = None
+        with cls._lock:
+            cls._instance = None
+
+    @classmethod
+    def model_name(cls) -> str:
+        return getattr(cls, "_model_name", "none")
+
+    @classmethod
+    def is_loaded(cls) -> bool:
+        with cls._lock:
+            return cls._instance is not None

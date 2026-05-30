@@ -8,3 +8,9 @@ psutil
 GPUtil
 tqdm
 requests
+
+# training — optional; Training Studio gracefully degrades without these
+peft
+trl
+transformers
+datasets

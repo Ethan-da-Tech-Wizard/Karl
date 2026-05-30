@@ -79,11 +79,8 @@ def main():
 
     # Minimal inline base stylesheet (pure ASCII, no file read).
     # Full theme applied by MainWindow after init.
-    app.setStyleSheet(
-        "QMainWindow, QWidget {"
-        "background-color: #0D0D0F; color: #DDDDE0;"
-        "font-family: 'Segoe UI', Inter, Arial, sans-serif; font-size: 11pt; }"
-    )
+    from app.ui.themes import stylesheet
+    app.setStyleSheet(stylesheet())
 
     window = MainWindow()
     window.show()
