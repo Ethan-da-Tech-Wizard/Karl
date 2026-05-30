@@ -337,7 +337,7 @@ Prompt Lab:
 
 ---
 
-### 🔨 Phase 2.5c — UX Polish: Training Studio + Eval Suite  ← YOU ARE HERE
+### ✅ Phase 2.5c — UX Polish: Training Studio + Eval Suite *(completed)*
 **One commit. Both are data-heavy tabbed workspaces.**
 
 Training Studio:
@@ -355,7 +355,7 @@ Eval Suite:
 
 ---
 
-### ⬚ Phase 2.5d — System Config + Global Consistency Pass
+### 🔨 Phase 2.5d — System Config + Global Consistency Pass  ← YOU ARE HERE
 **One commit. Simplest workspace + cross-workspace audit.**
 
 System Config:
