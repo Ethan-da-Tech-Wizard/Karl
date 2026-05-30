@@ -251,42 +251,155 @@ training curator export.
 
 ## Completion Plan
 
-Work proceeds in strict phase order. Do not start Phase N+1 until Phase N is fully committed.
+Work proceeds in strict phase order.
+**Do not start Phase N+1 until Phase N is fully committed and pushed.**
 
-### Phase 1 — Wire It Together (make existing code correct)
-1. Fix `llm_thread.py` trace_logger call: pass `model_name`, `adapter_name`, `workflow`, `template`
-2. Fix `agentic_thread.py` same; also fix synthetic `rag_context`
-3. Fix context budgeting: `ModelLoader` reads `n_ctx` from `model_registry.json` at load time; both threads read `n_ctx` from `ModelLoader` instead of hardcoding 4096
-4. Fix `memory_manager.save_session()`: strip `<think>...</think>` blocks before saving
-5. Fix eval harness: add `ModelLoader.is_loaded()` guard at top of `run()` and implement `progress_cb` call inside the case loop
-6. Add params drawer to WorkbenchWorkspace: collapsible widget above input bar exposing temperature, top-p, max-tokens
+The plan is intentionally broken into sub-phases where the work is complex,
+architecturally significant, or high-risk. Simple phases (1, 2, 5) are done in
+one commit. Complex phases (3, 4) are split into isolated sub-commits so that a
+failure in one sub-phase cannot corrupt the others.
+
+---
+
+### Phase 1 — Wire It Together
+**One commit. Six targeted bug fixes. No new architecture, no new files.**
+All items are in existing files. All are mechanical. Do them together.
+
+1. Fix `llm_thread.py` trace_logger call: pass `model_name=ModelLoader.model_name()`,
+   `adapter_name`, `workflow`, `template`
+2. Fix `agentic_thread.py`: same fields; also replace synthetic
+   `rag_context=[f"agentic_iteration_{n}"]` with actual `[]`
+3. Model-aware context budget: add `ModelLoader.n_ctx() -> int` that reads `n_ctx`
+   from `data/model_registry.json` for the loaded model; both threads use it instead
+   of hardcoded `_CONTEXT_BUDGET = 4096`
+4. `memory_manager.save_session()`: strip `<think>...</think>` from all assistant
+   content before writing to disk
+5. `eval/harness.py`: add `ModelLoader.is_loaded()` guard at top of `run()`;
+   implement `progress_cb(current, total)` call inside the case loop
+6. Workbench params drawer: collapsible `QWidget` above input bar exposing
+   temperature, top-p, max-tokens spinboxes; writes to `self._hyperparams`
+
+---
 
 ### Phase 2 — Complete the Data Pipeline
-1. Add `rag_threshold` and `rag_top_k` to `AppState`; KB workspace writes them, Workbench reads them
-2. Add thumbs-down button to Workbench feedback row; wire to `curator.save_example(source="thumbs_down")`
-3. Connect `MemoryManager` to Workbench: sessions list panel, save on new session, load on click
-4. Update `feedback` field in trace log retroactively when user rates a generation
-5. `training_curator.export_unsloth()`: normalise return to path-only string
+**One commit. Five wiring tasks. Connects existing components.**
 
-### Phase 3 — Finish the Workspaces
-1. KB workspace: add chunk_size and overlap spinboxes before ingest; pass to `ingest_file()`
-2. Prompt Lab: after both A/B runs complete, render a character-level diff; add save/load named pairs
-3. Training Studio: detect `data/hf_models/` for HF weights; if present, run `SFTTrainer` via peft+trl in a `QThread`, stream loss to log view
-4. Eval Suite: implement `progress_cb` in `harness.run()`, connect to progress bar
-5. System Config: read `model_registry.json`, show tier table (name, RAM req, context), download button per tier
+1. Add `rag_threshold: float` and `rag_top_k: int` to `AppState`;
+   KB workspace writes them; Workbench reads them at `retrieve()` call
+2. Add thumbs-down button to Workbench feedback row;
+   wire to `curator.save_example(source="thumbs_down")`
+3. Connect `MemoryManager` to Workbench: left sessions list, `save_session()` on
+   new session / exit, `load_session()` on click
+4. When user rates a generation, update the `feedback` field on that trace log entry
+   (rewrite the last line of the JSONL file)
+5. `training_curator.export_unsloth()`: return path string only; remove tuple
 
-### Phase 4 — The Four Planned Milestones
-1. **Prompt diff tool**: character-level diff rendered inline in Prompt Lab after both outputs complete
-2. **Session branching**: "branch from here" on any Workbench message; fork `chat_history` at that index into a new named session
-3. **DPO export completion**: `training_curator` produces proper chosen/rejected pairs; Unsloth-compatible DPO JSONL
-4. **Tokenizer visualization**: call `llm.tokenize()` on any text; render tokens as colored spans
+---
 
-### Phase 5 — Docs, Tests, Accuracy
-1. Rewrite `README.md` for Arch Linux (remove all PowerShell references)
-2. Rewrite all 7 `docs/` files to match current architecture
-3. Update this file (`AGENTS.md`) after each phase
-4. Write unit tests: `tests/test_cognitive_parser.py`, `tests/test_trace_logger.py`, `tests/test_training_curator.py`
-5. Fix `smoke_test.py` and `engine_test.py` hardcoded model paths
+### Phase 3.1 — Small Workspace Fixes
+**One commit. Two mechanical additions. Low risk.**
+
+1. KB workspace: add chunk_size and overlap spinboxes before ingest button;
+   pass values to `ingest_file(filepath, chunk_size, overlap)`
+2. Eval Suite: connect EvalSuiteWorkspace progress bar to `progress_cb` now
+   implemented in `harness.run()`
+
+---
+
+### Phase 3.2 — Prompt Lab Completion
+**One commit. Self-contained UI feature. Medium risk.**
+
+1. After both A/B runs complete, render character-level diff of the two outputs
+   (use `difflib.ndiff` or similar; color-code additions/deletions inline)
+2. Save/load named prompt pairs to `data/prompt_pairs/<name>.json`;
+   add a pairs list in the Prompt Lab left panel
+
+---
+
+### Phase 3.3 — LoRA / QLoRA Training Thread
+**One commit. Highest-risk phase. Isolated for safety.**
+Do not mix with 3.1 or 3.2 changes.
+
+Dependencies required: `peft`, `trl`, `transformers`, `datasets`
+HF model weights must be in `data/hf_models/`
+
+1. Detect HF model presence; if absent, show clear download instructions and
+   disable Train button — export must still work regardless
+2. `TrainingThread(QThread)` running `trl.SFTTrainer`; emits `loss(step, value)`,
+   `progress(step, total)`, `done(adapter_path)`, `error(msg)`
+3. Training Studio wires thread signals to loss log view and progress bar
+4. Trained adapter saved to `data/adapters/<name>/`
+5. `ModelLoader` gains adapter load/unload capability
+6. QLoRA path: if `bitsandbytes` available, offer 4-bit quantised training via checkbox
+
+Exit criterion: training runs on a 5-example dataset, loss curve visible, adapter saved.
+
+---
+
+### Phase 3.4 — System Config Model Registry Browser
+**One commit. Self-contained workspace enhancement. Low risk.**
+
+1. Read `data/model_registry.json`; render tier table (name, RAM req, n_ctx, file size)
+2. Download button per tier: `requests` stream to `data/models/` with progress bar
+3. On download complete, set as active model via `ModelLoader.reset_instance()` +
+   write `data/active_model.json`
+
+---
+
+### Phase 4.1 — Tokenizer Visualization
+**One commit. Self-contained display feature. Low risk.**
+
+1. Add tokenizer panel to Prompt Lab (or collapsible drawer in Workbench)
+2. Call `ModelLoader.get_instance().tokenize(text.encode())` on input text
+3. Render tokens as colored inline spans with token IDs on hover
+4. Color tokens by rough type: punctuation, word-start, subword continuation, special
+
+---
+
+### Phase 4.2 — DPO Export Completion
+**One commit. Depends on Phase 2.2 (thumbs-down) being complete.**
+
+1. `training_curator.export_dpo(path)`: pair thumbs_up (chosen) with thumbs_down
+   (rejected) on same prompt; write `{prompt, chosen, rejected}` JSONL
+2. Training Studio Export tab: wire DPO button to new method
+3. Output must be loadable by Unsloth without modification — verify against schema
+
+---
+
+### Phase 4.3 — Session Branching
+**One commit. Highest architectural risk. Must be fully isolated.**
+Read the R18 risk entry in `docs/07_risk_register.md` before touching this.
+
+`chat_history` is currently `list[dict]`. This phase changes it to a tree.
+All `chat_history` references must be replaced atomically in a single commit.
+Do not introduce partial state.
+
+1. `app/utils/session_tree.py`: `SessionNode(role, content, id, children[])`,
+   `SessionTree` with active-path cursor, serialise/deserialise to JSON
+2. Replace `self.chat_history: list[dict]` in `WorkbenchWorkspace` with `SessionTree`
+3. Update `_trim_history()` to walk the active path of the tree
+4. Add "branch from here" action on messages in `ChatView`
+5. Branch navigator panel: shows tree of branches, switches active path on click
+6. Update `MemoryManager` to serialise/deserialise `SessionTree`
+
+Exit criterion: user can fork at any message, explore alternate path, navigate back.
+
+---
+
+### Phase 5 — Documentation, Tests, Accuracy
+**One commit. No code risk. Do last.**
+
+1. Rewrite `README.md` for Linux/Arch — no PowerShell, no Windows paths
+2. Rewrite `docs/01–03` and `docs/06` to match current architecture
+3. `docs/04_architecture.md`, `docs/05_scope_and_milestones.md`,
+   `docs/07_risk_register.md` — already updated; verify they still match after Phase 4
+4. Update this file (`AGENTS.md`) to reflect completed state
+5. Create `tests/` directory; write:
+   - `tests/test_cognitive_parser.py` — all 5 state machine cases
+   - `tests/test_trace_logger.py` — schema fields, rotation trigger
+   - `tests/test_training_curator.py` — save, export, DPO pairing
+6. Fix `smoke_test.py` and `engine_test.py`: replace hardcoded model paths with
+   `ModelLoader.get_instance()` / discovery from `data/models/`
 
 ---
 

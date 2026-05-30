@@ -1,183 +1,356 @@
 # Karl — Scope Lock & Milestones
 
-## Scope Lock Statement (v2 — All Milestones Complete)
+## Scope Statement
 
-Karl is a self-contained, offline LLM **Introspection Environment** focused on:
-- Exposing the model's full internal reasoning trace in real time
-- Giving the user direct, hot-reloadable control over the prompt pipeline
-- Providing a direct path from experimentation to fine-tuning
+Karl is a self-contained, offline LLM **Introspection Environment** for prompt engineers.
+
+Core invariants that must never be compromised:
 - Zero network calls during inference
+- Every generation is immutably logged
+- The hackable core (`core/`) is always hot-reloadable without restart
+- Privacy: no telemetry, no remote model servers, no localhost proxies
 
 ---
 
 ## Completed Milestones
 
-### ✅ Milestone 1 — Headless Introspection Engine
+### ✅ M1 — Headless Introspection Engine
 **Files:** `engine_test.py`, `core/cognitive_parser.py`, `app/utils/trace_logger.py`
 
 Proved the engine works and established the raw logging infrastructure.
-- `engine_test.py` loads the model headlessly and runs a test generation
-- `TraceLogger` writes structured JSONL traces to `data/logs/traces/`
-- `cognitive_parser.py` batch-parses `<think>` blocks from raw output (used by eval harness)
+`TraceLogger` writes structured JSONL to `data/logs/traces/`. `cognitive_parser.py`
+batch-parses `<think>` blocks from raw output.
 
 ---
 
-### ✅ Milestone 2 — Dual-Pane Thought Stream UI
-**Files:** `app/ui/main_window.py`, `app/engine/llm_thread.py`
+### ✅ M2 — Streaming Thought/Response Split UI
+**Files:** `app/engine/llm_thread.py`, `app/engine/agentic_thread.py`
 
-Built the PyQt6 framework with live streaming to two separate panels.
-- **Diagnostic Lane** — `<think>` tokens streamed in real time
-- **Final Response** — cleaned answer rendered as it arrives
-- Inline state machine in `LLMThread.run()` routes tokens to the correct panel
-- Suffix guard prevents tag-split flushing errors
-
----
-
-### ✅ Milestone 3 — Memory & Context Management
-**Files:** `app/utils/memory_manager.py`, `MainWindow.force_thought()`
-
-Session persistence and context window management.
-- `MemoryManager` serialises/deserialises chat history as JSON
-- **Force Thought** button injects a fake `<think>` block into the context
-- `_trim_history()` prevents context overflow in both `LLMThread` and `AgenticThread`
-- Always preserves the seed message (index 0)
+Inline streaming state machine in both threads routes tokens to the correct display:
+- `<think>` → `new_thought_token` signal → reasoning panel
+- after `</think>` → `new_chat_token` signal → response panel
+- suffix guard prevents flushing partial tags across chunk boundaries
+- auto-continuation: if `finish_reason == "length"`, re-queries up to 5 passes
 
 ---
 
-### ✅ Milestone 4 — Universal RAG Pipeline
+### ✅ M3 — Memory & Context Management
+**Files:** `app/utils/memory_manager.py`, both threads
+
+`MemoryManager` serialises chat history as JSON. `_trim_history()` in both threads
+enforces character budget `(n_ctx - 1024) * 3` and always preserves the seed message.
+
+---
+
+### ✅ M4 — Universal RAG Pipeline
 **Files:** `app/utils/rag_pipeline.py`
 
-Local document ingestion and retrieval.
-- Supported formats: PDF, DOCX, TXT, PY, MD, CSV
-- 200-word chunks / 50-word overlap
-- FAISS flat L2 index with `all-MiniLM-L6-v2` embeddings
-- Persistent index saved to `data/vector_db/`
-- Retrieved chunks logged explicitly in every trace
+Persistent FAISS flat L2 index. Embeddings via `all-MiniLM-L6-v2`.
+Formats: PDF, DOCX, TXT, PY, MD, CSV. 200-word chunks / 50-word overlap.
+Retrieval eval metrics: hit@1, hit@3, hit@k, reciprocal rank.
+Index persists across restarts at `data/vector_db/`.
 
 ---
 
-### ✅ Milestone 5 — Hackable Decoupling
+### ✅ M5 — Hackable Core Decoupling
 **Files:** `core/interaction_loop.py`, `importlib.reload()` in both threads
 
-The "edit without restarting" capability.
-- All prompt construction logic lives in `core/interaction_loop.py`
-- Both `LLMThread` and `AgenticThread` call `importlib.reload()` before every generation
-- User edits the file → clicks Generate → new logic runs immediately
+All prompt construction in `core/interaction_loop.py`. Both threads call
+`importlib.reload()` before every generation. User edits the file → clicks
+Generate → new logic runs immediately. No restart.
 
 ---
 
-### ✅ Milestone 6 — Agentic Loop
-**Files:** `core/agentic_loop.py`, `app/engine/agentic_thread.py`, UI controls
+### ✅ M6 — Agentic Loop
+**Files:** `core/agentic_loop.py`, `app/engine/agentic_thread.py`
 
-Autonomous multi-turn self-reflection.
-- `AgenticThread` loops: generate → parse → check stop → inject → repeat
-- `should_continue()` and `build_next_prompt()` in `core/agentic_loop.py` are hot-reloaded per iteration
-- Hard cap: `MAX_ITERATIONS = 5` (user editable)
-- **Run Agentic Loop** and **Stop** buttons in UI
-- Stop signals: `[DONE]`, `[END]`, `[STOP]`, `FINAL ANSWER:`
+`AgenticThread` loops: generate → parse → check stop → inject next prompt → repeat.
+`should_continue()` and `build_next_prompt()` hot-reloaded per iteration.
+Hard cap: `MAX_ITERATIONS = 20`.
 
 ---
 
-### ✅ Milestone 7 — Raw Token Archive
-**Files:** `new_raw_token` signal, `data/logs/raw/*.tokens`, Raw Token Archive panel
+### ✅ M7 — Raw Token Archive
+**Files:** `app/engine/llm_thread.py`, `app/engine/agentic_thread.py`
 
-Pre-parser token visibility.
-- Every token emitted via `new_raw_token` before the streaming parser sees it
-- Each generation writes a micro-timestamped `.tokens` file
-- Toggleable **Raw Token Archive** panel in the UI (hidden by default)
-- Data persists even if generation is killed mid-stream
+Every token emitted via `new_raw_token` before the parser sees it.
+Each generation writes a micro-timestamped `.tokens` file to `data/logs/raw/`.
+Data persists even if generation is killed mid-stream.
 
 ---
 
-### ✅ Milestone 8 — Hardware Scout & Model Registry
-**Files:** `core/hardware_scout.py`, `data/model_registry.json`, `app/engine/upgrade_manager.py`
+### ✅ M8 — Hardware Scout & Model Registry
+**Files:** `core/hardware_scout.py`, `data/model_registry.json`
 
-Automatic hardware-tier detection and model upgrade suggestions.
-- `get_hardware_profile()` reads RAM, VRAM, and available storage
-- `check_for_upgrade()` compares profile to tier thresholds in `model_registry.json`
-- Upgrade notification shown in right panel if a better tier is eligible
-
----
-
-### ✅ Milestone 9 — Auto-Loop Mode
-**Files:** `MainWindow.auto_loop_toggle`, `handle_generation_finished()`
-
-Continuous agentic operation from a single prompt.
-- **Auto-Loop** checkbox — when ON, `handle_generation_finished()` calls `start_agentic_loop()` automatically
-- Send button label changes to **Send + Loop** as a visual reminder
-- Stop via the **Stop** button or the stop condition in `core/agentic_loop.py`
+`get_hardware_profile()` reads RAM, VRAM, storage.
+`data/model_registry.json` defines 4 model tiers with RAM requirements and
+context window sizes (4096 → 8192 → 16384 → 32768).
+Note: self-upgrade functionality has been permanently removed (see M10 below).
 
 ---
 
-### ✅ Milestone 10 — Self-Upgrade Git Push
-**Files:** `app/engine/upgrade_manager.py`
+### ✅ M9 — Auto-Loop Mode
+**Files:** `app/ui/workspaces/workbench.py`
 
-Model upgrade with automatic git commit + push.
-- `perform_upgrade()` downloads the new GGUF, calls `ModelLoader.reset_instance()`
-- Updates `data/active_model.json`
-- Commits the updated JSON and pushes to `origin/main`
+Loop checkbox in Workbench. When checked, send spawns `AgenticThread` instead
+of `LLMThread`. Stop button sends `request_stop()` to the running thread.
 
 ---
 
-### ✅ Milestone 11 — Training Data Curator
-**Files:** `app/utils/training_curator.py`, rating buttons in UI
-
-Rate-to-dataset pipeline.
-- 👍 **Good** — saves positive (prompt, response) pair
-- ✏️ **Fix** — opens correction dialog, saves corrected pair
-- All data in `data/training/curated.jsonl`
-- **Export for Unsloth** — writes Unsloth-formatted JSONL for QLoRA fine-tuning
-- Stats displayed live in right panel
+### ~~M10 — Self-Upgrade Git Push~~ — REMOVED
+`app/engine/upgrade_manager.py` has been permanently deleted.
+Self-upgrade was cut because it introduced fragile git subprocess calls and
+a push-conflict risk with no rollback. Hardware detection and model registry
+remain (M8); automatic downloading will be reimplemented in Phase 3.4.
 
 ---
 
-### ✅ Milestone 12 — Eval Harness
-**Files:** `eval/harness.py`, `eval/graders.py`, `eval/run_eval.py`, `eval/benchmark_rag.py`
+### ✅ M11 — Training Data Curator
+**Files:** `app/utils/training_curator.py`, `app/ui/workspaces/workbench.py`
 
-Dataset-driven automated evaluation.
-- 5 graders: `keyword_hit`, `json_valid`, `groundedness`, `json_schema`, `regex_match`
-- CLI: `python eval/run_eval.py --workflow grounded_answer --top_k 5`
-- Retrieval benchmark: `python eval/benchmark_rag.py`
-
----
-
-### ✅ Milestone 13 — Three Workflow Modes + Prompt Templates
-**Files:** `core/prompt_templates.py`, `core/workflows.py`
-
-Named, selectable operating modes.
-- 4 workflows: General Chat, Document Extractor, Grounded Answer, Code Review
-- 5 templates: `reasoning_minimal`, `gpt_structured`, `json_extractor`, `grounded_answer`, `code_review`
-- Changing workflow auto-selects its default template and RAG top-k
+👍 Good response → `curator.save_example(source="thumbs_up")`.
+✎ Correct response → user edits → saved as `source="corrected"`.
+All data in `data/training/curated.jsonl` in Unsloth SFT format.
 
 ---
 
-### ✅ Milestone 14 — RAG Hardening
+### ✅ M12 — Eval Harness
+**Files:** `eval/harness.py`, `eval/graders.py`, `eval/run_eval.py`
+
+5 graders: `exact_match`, `json_valid`, `keyword_hit`, `groundedness`, `not_in_context`.
+CLI: `python eval/run_eval.py --dataset path/to/dataset.jsonl`.
+Dry-run mode tests graders without model.
+
+---
+
+### ✅ M13 — Workflow Modes & Prompt Templates
+**Files:** `core/workflows.py`, `core/prompt_templates.py`
+
+4 workflows: `general_chat`, `document_extractor`, `grounded_answer`, `code_review`.
+5 templates: `reasoning_minimal`, `gpt_structured`, `json_extractor`, `grounded_answer`, `code_review`.
+Workflow selector in Workbench combo box.
+
+---
+
+### ✅ M14 — RAG Hardening
 **Files:** `app/utils/rag_pipeline.py`
 
-Production-grade RAG improvements.
-- Persistent FAISS index across restarts
-- File-level metadata attached to every chunk `{source_file, chunk_id, ingested_at}`
-- Optional contextual chunk headers `[Source: file | Chunk N]`
-- `source_filter` parameter on `retrieve()` to restrict by file
-- Retrieval eval: `hit@1`, `hit@3`, `hit@k`, reciprocal rank
+Persistent FAISS index with file-level metadata. Optional contextual chunk headers.
+`source_filter` on `retrieve()`. Retrieval eval metrics built in.
 
 ---
 
-### ✅ Milestone 15 — Training Path Formalisation
+### ✅ M15 — Training Path Formalisation
 **Files:** `training/validate_dataset.py`, `training/qlora_config_template.yaml`, `training/WHEN_TO_TUNE.md`
 
-End-to-end fine-tuning guidance.
-- `validate_dataset.py` — validates curated JSONL before training runs
-- `qlora_config_template.yaml` — ready-to-use QLoRA config for Unsloth
-- `WHEN_TO_TUNE.md` — decision guide for when fine-tuning is worthwhile vs. prompt engineering
+`validate_dataset.py` validates curated JSONL before training.
+`qlora_config_template.yaml` ready for Unsloth.
+`WHEN_TO_TUNE.md` decision guide.
 
 ---
 
-## Planned Next Milestones
+### ✅ M16 — Multi-Workspace UI Rebuild
+**Files:** `app/ui/`, `app/state.py`
 
-| # | Name | Description |
-|---|---|---|
-| 16 | Tokenizer Visualization | Display actual token IDs and per-token log-probabilities alongside the raw stream. Requires `logprobs=5` in the generation call. |
-| 17 | Session Branching | Fork a session at any turn and explore alternate prompt paths in parallel. |
-| 18 | Prompt Diff Tool | Side-by-side comparison of two trace logs. The `workflow` + `template` fields in every trace make this tractable. |
-| 19 | DPO Export | Direct preference optimisation dataset format. Requires storing the original (rejected) response alongside the correction in `_rate_thumbs_down()`. |
+Replaced two-page layout with sidebar + 6-workspace architecture.
+Sidebar: Workbench, Prompt Lab, Knowledge Base, Training Studio, Eval Suite, System.
+`AppState` shared state container. Single dark design system (`themes.py`).
+`StatusBar`: always shows model name, generation state, RAM usage.
+
+---
+
+### ✅ M17 — Foundation Hardening
+**Files:** `app/engine/model_loader.py`, `core/cognitive_parser.py`, `app/utils/trace_logger.py`
+
+- `ModelLoader`: `threading.Lock()` eliminates race condition on `get_instance()`
+- `cognitive_parser`: state machine replaces `str.split()`; handles any tag casing,
+  multiple blocks, unclosed tags
+- `trace_logger`: new Unsloth-compatible schema (`id`, `session_id`, `feedback`,
+  `corrected_response`, `model`, `adapter`, `timing`); 50 MB log rotation
+
+---
+
+## Remaining Work — Phase Plan
+
+The phases below must be executed in strict order.
+Each phase has a defined scope, commit strategy, and risk level.
+
+---
+
+### Phase 1 — Wire It Together
+**Strategy:** Single commit. All 6 items are targeted bug fixes in existing files.
+No new components. No architecture changes.
+**Risk:** Low.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 1.1 | Fix trace_logger call in LLMThread: pass `model_name`, `adapter_name`, `workflow`, `template` | `app/engine/llm_thread.py` |
+| 1.2 | Fix trace_logger call in AgenticThread: same + fix synthetic `rag_context` | `app/engine/agentic_thread.py` |
+| 1.3 | Model-aware context budget: `ModelLoader` reads `n_ctx` from `model_registry.json`; threads read from `ModelLoader` | `app/engine/model_loader.py`, both threads |
+| 1.4 | Strip `<think>` blocks in `memory_manager.save_session()` | `app/utils/memory_manager.py` |
+| 1.5 | Eval harness model guard: check `ModelLoader.is_loaded()` at top of `run()`; implement `progress_cb` call in case loop | `eval/harness.py` |
+| 1.6 | Workbench params drawer: collapsible widget above input exposing temperature, top-p, max-tokens | `app/ui/workspaces/workbench.py` |
+
+**Exit criteria:** All 6 items complete, tests pass, single clean commit.
+
+---
+
+### Phase 2 — Complete the Data Pipeline
+**Strategy:** Single commit. All items wire existing components together.
+**Risk:** Low-Medium.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 2.1 | Add `rag_threshold` and `rag_top_k` to `AppState`; KB workspace writes them; Workbench reads them at retrieve() | `app/state.py`, `knowledge_base.py`, `workbench.py` |
+| 2.2 | Add thumbs-down button to Workbench feedback row; wire to `curator.save_example(source="thumbs_down")` | `app/ui/workspaces/workbench.py`, `app/utils/training_curator.py` |
+| 2.3 | Connect `MemoryManager` to Workbench: sessions list panel, save on new session, load on click | `app/ui/workspaces/workbench.py` |
+| 2.4 | Update `feedback` field in trace log when user rates a generation | `app/engine/llm_thread.py`, `app/ui/workspaces/workbench.py` |
+| 2.5 | Normalise `training_curator.export_unsloth()` return to path string only (remove tuple) | `app/utils/training_curator.py`, `app/ui/workspaces/training_studio.py` |
+
+**Exit criteria:** Full trace → curate → export → Unsloth-ready loop works end-to-end.
+
+---
+
+### Phase 3.1 — Small Workspace Fixes
+**Strategy:** Single commit. Mechanical additions to two workspaces.
+**Risk:** Low.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 3.1a | KB workspace: add chunk_size and overlap spinboxes; pass to `ingest_file()` | `app/ui/workspaces/knowledge_base.py` |
+| 3.1b | Eval Suite: connect `progress_cb` from `EvalSuiteWorkspace` to `harness.run()` | `eval/harness.py`, `app/ui/workspaces/eval_suite.py` |
+
+---
+
+### Phase 3.2 — Prompt Lab Completion
+**Strategy:** Single commit. Self-contained UI feature.
+**Risk:** Low-Medium.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 3.2a | After both A/B runs complete, render character-level diff of the two outputs | `app/ui/workspaces/prompt_lab.py` |
+| 3.2b | Save/load named prompt pairs to `data/prompt_pairs/` | `app/ui/workspaces/prompt_lab.py` |
+
+---
+
+### Phase 3.3 — LoRA / QLoRA Training Thread
+**Strategy:** Single commit. High-risk; isolated from other Phase 3 work.
+**Risk:** High — new threading pattern, HF model dependency, optional deps.
+
+Dependencies: `peft`, `trl`, `transformers`, `datasets`.
+HF model weights must be present in `data/hf_models/`.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 3.3a | Detect HF model in `data/hf_models/`; show clear guide if absent | `app/ui/workspaces/training_studio.py` |
+| 3.3b | `TrainingThread(QThread)` running `SFTTrainer` from `trl`; streams loss to log view | `app/ui/workspaces/training_studio.py` |
+| 3.3c | Save trained adapter to `data/adapters/<name>/`; load adapter into ModelLoader | `app/engine/model_loader.py`, `app/ui/workspaces/training_studio.py` |
+| 3.3d | QLoRA path: if `bitsandbytes` is available, offer 4-bit quantised training | `app/ui/workspaces/training_studio.py` |
+
+**Exit criteria:** Training runs on a 5-example dataset, loss curve visible, adapter saved.
+
+---
+
+### Phase 3.4 — System Config Model Registry
+**Strategy:** Single commit. Self-contained workspace enhancement.
+**Risk:** Low.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 3.4a | Read `model_registry.json`; render tier table (name, RAM req, n_ctx, size) | `app/ui/workspaces/system_config.py` |
+| 3.4b | Download button per tier: fetch GGUF to `data/models/`, show progress, set active | `app/ui/workspaces/system_config.py`, `app/engine/model_loader.py` |
+
+---
+
+### Phase 4.1 — Tokenizer Visualization
+**Strategy:** Single commit. Self-contained display feature.
+**Risk:** Low.
+
+Expose `llm.tokenize(text)` from `llama-cpp-python`. Render tokens as colored
+spans in a dedicated panel. Lives in Prompt Lab or as a drawer in Workbench.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 4.1a | Add tokenize panel: text input → token spans with IDs | `app/ui/workspaces/prompt_lab.py` |
+| 4.1b | Color tokens by type (punctuation, word, subword, special) | same |
+
+---
+
+### Phase 4.2 — DPO Export Completion
+**Strategy:** Single commit. Depends on Phase 2.2 (thumbs-down) being complete.
+**Risk:** Low-Medium.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 4.2a | `training_curator` pairing algorithm: match thumbs-up (chosen) with thumbs-down (rejected) on same prompt | `app/utils/training_curator.py` |
+| 4.2b | `export_dpo(path)` produces Unsloth-compatible DPO JSONL: `{prompt, chosen, rejected}` | `app/utils/training_curator.py`, `app/ui/workspaces/training_studio.py` |
+
+**Exit criteria:** Exported DPO file loadable by Unsloth without modification.
+
+---
+
+### Phase 4.3 — Session Branching
+**Strategy:** Single commit. Architecturally significant — isolated for safety.
+**Risk:** High — changes `chat_history` from `list[dict]` to a tree structure.
+
+This is the most architecturally complex item in the plan. `chat_history` currently
+lives in `WorkbenchWorkspace` as a flat list. Branching requires it to become a tree
+where each node can have multiple child turns. Plan carefully before touching code.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 4.3a | Design `SessionTree` data structure: node = `{role, content, children[], id}` | new `app/utils/session_tree.py` |
+| 4.3b | Replace flat `chat_history` list in `WorkbenchWorkspace` with `SessionTree` | `app/ui/workspaces/workbench.py` |
+| 4.3c | "Branch from here" action on any message in chat view | `app/ui/workspaces/workbench.py` |
+| 4.3d | Branch navigator: show tree of branches, switch between them | `app/ui/workspaces/workbench.py` |
+| 4.3e | `MemoryManager` serialise/deserialise `SessionTree` | `app/utils/memory_manager.py` |
+
+**Exit criteria:** User can fork any message, explore alternate path, return to original.
+
+---
+
+### Phase 5 — Documentation, Tests, Accuracy
+**Strategy:** Single commit. No code risk.
+**Risk:** None.
+
+| # | Task | File(s) |
+|---|------|---------|
+| 5.1 | Rewrite `README.md` for Linux/Arch: remove all PowerShell, add Arch-specific install | `README.md` |
+| 5.2 | Rewrite all 7 `docs/` files to match current architecture | `docs/01–07` |
+| 5.3 | Update `AGENTS.md` to reflect final completed state | `AGENTS.md` |
+| 5.4 | Write unit tests: `cognitive_parser`, `trace_logger`, `training_curator` | `tests/` (new) |
+| 5.5 | Fix `smoke_test.py` and `engine_test.py` hardcoded model paths | root |
+
+---
+
+## Milestone Summary Table
+
+| ID | Name | Status |
+|----|------|--------|
+| M1 | Headless Introspection Engine | ✅ Done |
+| M2 | Streaming Thought/Response Split | ✅ Done |
+| M3 | Memory & Context Management | ✅ Done |
+| M4 | Universal RAG Pipeline | ✅ Done |
+| M5 | Hackable Core Decoupling | ✅ Done |
+| M6 | Agentic Loop | ✅ Done |
+| M7 | Raw Token Archive | ✅ Done |
+| M8 | Hardware Scout & Model Registry | ✅ Done |
+| M9 | Auto-Loop Mode | ✅ Done |
+| M10 | Self-Upgrade Git Push | ~~Removed~~ |
+| M11 | Training Data Curator | ✅ Done |
+| M12 | Eval Harness | ✅ Done |
+| M13 | Workflow Modes & Prompt Templates | ✅ Done |
+| M14 | RAG Hardening | ✅ Done |
+| M15 | Training Path Formalisation | ✅ Done |
+| M16 | Multi-Workspace UI Rebuild | ✅ Done |
+| M17 | Foundation Hardening | ✅ Done |
+| — | Phase 1: Wire It Together | ⬜ Next |
+| — | Phase 2: Data Pipeline | ⬜ Pending |
+| — | Phase 3.1: Small Workspace Fixes | ⬜ Pending |
+| — | Phase 3.2: Prompt Lab Completion | ⬜ Pending |
+| — | Phase 3.3: LoRA/QLoRA Training | ⬜ Pending |
+| — | Phase 3.4: Model Registry Browser | ⬜ Pending |
+| — | Phase 4.1: Tokenizer Visualization | ⬜ Pending |
+| — | Phase 4.2: DPO Export Completion | ⬜ Pending |
+| — | Phase 4.3: Session Branching | ⬜ Pending |
+| — | Phase 5: Docs, Tests, Accuracy | ⬜ Pending |
