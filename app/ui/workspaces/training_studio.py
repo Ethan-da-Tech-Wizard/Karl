@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import html
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
@@ -112,30 +113,40 @@ class TrainingStudioWorkspace(QWidget):
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
-        layout.addWidget(_section("UNSLOTH / SFT FORMAT"))
-        layout.addWidget(QLabel(
+        # SFT Panel
+        sft_box = QWidget()
+        sft_box.setObjectName("panel")
+        sft_l = QVBoxLayout(sft_box)
+        sft_l.setContentsMargins(12, 12, 12, 12)
+        sft_l.setSpacing(8)
+        sft_l.addWidget(_section("UNSLOTH / SFT FORMAT"))
+        sft_l.addWidget(QLabel(
             "Exports curated examples in Unsloth-compatible JSONL.\n"
-            "Fields: instruction, input, output, source, timestamp."
+            "Fields: messages (compatible with HF chat format)."
         ))
-
         sft_btn = QPushButton("export SFT  →  unsloth_sft.jsonl")
         sft_btn.setObjectName("btn-primary")
         sft_btn.clicked.connect(lambda: self._export("sft"))
-        layout.addWidget(sft_btn)
+        sft_l.addWidget(sft_btn)
+        layout.addWidget(sft_box)
 
-        layout.addWidget(_hline())
-        layout.addWidget(_section("DPO FORMAT"))
-        layout.addWidget(QLabel(
+        # DPO Panel
+        dpo_box = QWidget()
+        dpo_box.setObjectName("panel")
+        dpo_l = QVBoxLayout(dpo_box)
+        dpo_l.setContentsMargins(12, 12, 12, 12)
+        dpo_l.setSpacing(8)
+        dpo_l.addWidget(_section("DPO FORMAT"))
+        dpo_l.addWidget(QLabel(
             "Exports thumbs-up (chosen) vs thumbs-down (rejected) pairs.\n"
             "Requires at least one example of each type."
         ))
-
         dpo_btn = QPushButton("export DPO  →  unsloth_dpo.jsonl")
-        dpo_btn.setObjectName("btn-primary")
         dpo_btn.clicked.connect(lambda: self._export("dpo"))
-        layout.addWidget(dpo_btn)
+        dpo_l.addWidget(dpo_btn)
+        layout.addWidget(dpo_box)
 
         layout.addStretch()
         self._export_status = QLabel("")
@@ -169,12 +180,14 @@ class TrainingStudioWorkspace(QWidget):
         cfg_l.setContentsMargins(0, 0, 0, 0)
         cfg_l.setSpacing(20)
 
-        def _row(label: str, widget: QWidget) -> QWidget:
+        def _row(label_text: str, widget: QWidget) -> QWidget:
             row = QWidget()
             rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 0, 0, 0)
-            rl.setSpacing(8)
-            rl.addWidget(QLabel(label))
+            rl.setContentsMargins(0, 2, 0, 2)
+            rl.setSpacing(12)
+            lbl = QLabel(label_text)
+            lbl.setFixedWidth(80)
+            rl.addWidget(lbl)
             rl.addWidget(widget)
             rl.addStretch()
             return row
@@ -236,6 +249,7 @@ class TrainingStudioWorkspace(QWidget):
         layout.addWidget(self._train_progress)
 
         self._train_log = QTextBrowser()
+        self._train_log.setObjectName("reasoning-view")
         self._train_log.setFixedHeight(120)
         self._train_log.setPlaceholderText("training log...")
         layout.addWidget(self._train_log)
@@ -248,14 +262,20 @@ class TrainingStudioWorkspace(QWidget):
     def _refresh(self):
         stats = self.state.curator.get_stats()
         self._stats_lbl.setText(
-            f"{stats['total']} examples  ·  "
-            f"{stats['thumbs_up']} good  ·  "
-            f"{stats['corrected']} corrected"
+            f"<b>{stats['total']}</b> examples  &middot;  "
+            f"<span style='color:#2DD4A0;'><b>{stats['thumbs_up']}</b> good</span>  &middot;  "
+            f"<span style='color:#F0B030;'><b>{stats['corrected']}</b> corrected</span>"
         )
         self._example_list.clear()
         for ex in self.state.curator.get_all_examples():
             source = ex.get("source", "unknown")
-            preview = ex.get("instruction", "")[:60]
+            messages = ex.get("messages", [])
+            user_text = ""
+            for m in messages:
+                if m.get("role") == "user":
+                    user_text = m.get("content", "")
+                    break
+            preview = user_text[:60]
             item = QListWidgetItem(f"[{source}]  {preview}")
             self._example_list.addItem(item)
 
@@ -266,7 +286,33 @@ class TrainingStudioWorkspace(QWidget):
         if row >= len(examples):
             return
         ex = examples[row]
-        self._detail_view.setPlainText(json.dumps(ex, indent=2, ensure_ascii=False))
+        
+        messages = ex.get("messages", [])
+        timestamp = ex.get("timestamp", "")
+        source = ex.get("source", "unknown")
+        
+        html_parts = [
+            f"<div style='font-size:9pt;color:#9090A8;margin-bottom:12px;border-bottom:1px solid #252535;padding-bottom:6px;'>"
+            f"Source: <b style='color:#00C2FF;'>{source}</b> &middot; Created: {timestamp}"
+            f"</div>"
+        ]
+        
+        for msg in messages:
+            role = msg.get("role", "user").upper()
+            content = msg.get("content", "")
+            
+            color = "#00C2FF" if role == "SYSTEM" else ("#2DD4A0" if role == "ASSISTANT" else "#E4E4F0")
+            bg = "#14141F" if role == "SYSTEM" else ("#0D0D16" if role == "ASSISTANT" else "#1C1C2A")
+            border = "#252535" if role == "SYSTEM" else ("#1A1A25" if role == "ASSISTANT" else "#383850")
+            
+            html_parts.append(
+                f"<div style='margin-bottom:10px;'>"
+                f"<div style='font-size:7.5pt;font-weight:bold;color:#505068;margin-bottom:3px;letter-spacing:1px;'>{role}</div>"
+                f"<div style='background:{bg};border:1px solid {border};border-radius:4px;padding:8px 12px;color:{color};font-size:9.5pt;white-space:pre-wrap;'>{html.escape(content)}</div>"
+                f"</div>"
+            )
+            
+        self._detail_view.setHtml("".join(html_parts))
 
     def _delete_selected(self):
         row = self._example_list.currentRow()
