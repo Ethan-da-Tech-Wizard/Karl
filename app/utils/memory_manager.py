@@ -1,6 +1,10 @@
 import os
+import re
 import json
 from datetime import datetime
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
 
 class MemoryManager:
     def __init__(self, sessions_dir="data/sessions"):
@@ -14,9 +18,18 @@ class MemoryManager:
         
         filepath = os.path.join(self.sessions_dir, filename)
         
+        # Strip <think>...</think> blocks from assistant messages
+        cleaned = []
+        for msg in chat_history:
+            if msg.get("role") == "assistant":
+                content = _THINK_RE.sub("", msg.get("content", "")).strip()
+                cleaned.append({**msg, "content": content})
+            else:
+                cleaned.append(msg)
+        
         data = {
             "system_prompt": system_prompt,
-            "chat_history": chat_history
+            "chat_history": cleaned
         }
         
         with open(filepath, "w", encoding="utf-8") as f:

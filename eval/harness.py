@@ -207,6 +207,7 @@ class EvalHarness:
         workflow_name: str,
         template_override: Optional[str] = None,
         hyperparams: Optional[dict] = None,
+        progress_cb=None,
     ) -> EvalReport:
         """
         Run the full eval loop.
@@ -221,6 +222,17 @@ class EvalHarness:
             EvalReport with per-case results and aggregate metrics.
         """
         from datetime import datetime, timezone
+        from app.engine.model_loader import ModelLoader
+
+        # Guard: ensure model is loaded before running eval
+        if not ModelLoader.is_loaded():
+            try:
+                ModelLoader.get_instance()
+            except FileNotFoundError as e:
+                raise RuntimeError(
+                    "No model loaded. Run download_test_model.py or "
+                    "load a model in System Config."
+                ) from e
 
         workflow_cfg = get_workflow(workflow_name)
         template_name = template_override or workflow_cfg["template"]
@@ -235,6 +247,8 @@ class EvalHarness:
 
         for i, case in enumerate(cases, 1):
             case_id = case.get("id", f"case_{i:03d}")
+            if progress_cb:
+                progress_cb(i, len(cases))
             print(f"  [{i}/{len(cases)}] {case_id}...", end="", flush=True)
 
             context_chunks = self._resolve_context(case, workflow_cfg)

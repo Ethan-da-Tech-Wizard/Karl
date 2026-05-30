@@ -3,7 +3,7 @@
 > **Written for AI coding agents. Read this before touching any code.**
 > This file describes the exact current state of the repo — what is done,
 > what is incomplete, what is broken, and what must be built next.
-> Every claim here is accurate as of the last commit on `claude/hopeful-brahmagupta-dIo49`.
+> Every claim here is accurate as of the last Phase 1 commit.
 
 ---
 
@@ -261,7 +261,9 @@ failure in one sub-phase cannot corrupt the others.
 
 ---
 
-### Phase 1 — Wire It Together
+> **Progress Legend:** ✅ = completed · 🔨 = in progress (← YOU ARE HERE) · ⬚ = not started
+
+### ✅ Phase 1 — Wire It Together *(completed)*
 **One commit. Six targeted bug fixes. No new architecture, no new files.**
 All items are in existing files. All are mechanical. Do them together.
 
@@ -281,7 +283,7 @@ All items are in existing files. All are mechanical. Do them together.
 
 ---
 
-### Phase 2 — Complete the Data Pipeline
+### 🔨 Phase 2 — Complete the Data Pipeline  ← YOU ARE HERE
 **One commit. Five wiring tasks. Connects existing components.**
 
 1. Add `rag_threshold: float` and `rag_top_k: int` to `AppState`;
@@ -296,7 +298,7 @@ All items are in existing files. All are mechanical. Do them together.
 
 ---
 
-### Phase 2.5a — UX Polish: Workbench
+### ⬚ Phase 2.5a — UX Polish: Workbench
 **One commit. Layout and visual hierarchy only. No new functionality.**
 Phase 1 and 2 must be complete first — both add controls to Workbench (params drawer,
 sessions panel, thumbs-down button). Polish an incomplete interface and you polish it twice.
@@ -317,7 +319,7 @@ Tasks:
 
 ---
 
-### Phase 2.5b — UX Polish: Knowledge Base + Prompt Lab
+### ⬚ Phase 2.5b — UX Polish: Knowledge Base + Prompt Lab
 **One commit. Two workspaces, similar visual language.**
 
 Knowledge Base:
@@ -335,7 +337,7 @@ Prompt Lab:
 
 ---
 
-### Phase 2.5c — UX Polish: Training Studio + Eval Suite
+### ⬚ Phase 2.5c — UX Polish: Training Studio + Eval Suite
 **One commit. Both are data-heavy tabbed workspaces.**
 
 Training Studio:
@@ -353,7 +355,7 @@ Eval Suite:
 
 ---
 
-### Phase 2.5d — System Config + Global Consistency Pass
+### ⬚ Phase 2.5d — System Config + Global Consistency Pass
 **One commit. Simplest workspace + cross-workspace audit.**
 
 System Config:
@@ -372,7 +374,7 @@ Global pass (review all workspaces together):
 
 ---
 
-### Phase 3.1 — Small Workspace Fixes
+### ⬚ Phase 3.1 — Small Workspace Fixes
 **One commit. Two mechanical additions. Low risk.**
 
 1. KB workspace: add chunk_size and overlap spinboxes before ingest button;
@@ -382,7 +384,7 @@ Global pass (review all workspaces together):
 
 ---
 
-### Phase 3.2 — Prompt Lab Completion
+### ⬚ Phase 3.2 — Prompt Lab Completion
 **One commit. Self-contained UI feature. Medium risk.**
 
 1. After both A/B runs complete, render character-level diff of the two outputs
@@ -392,7 +394,7 @@ Global pass (review all workspaces together):
 
 ---
 
-### Phase 3.3 — LoRA / QLoRA Training Thread
+### ⬚ Phase 3.3 — LoRA / QLoRA Training Thread
 **One commit. Highest-risk phase. Isolated for safety.**
 Do not mix with 3.1 or 3.2 changes.
 
@@ -412,7 +414,7 @@ Exit criterion: training runs on a 5-example dataset, loss curve visible, adapte
 
 ---
 
-### Phase 3.4 — System Config Model Registry Browser
+### ⬚ Phase 3.4 — System Config Model Registry Browser
 **One commit. Self-contained workspace enhancement. Low risk.**
 
 1. Read `data/model_registry.json`; render tier table (name, RAM req, n_ctx, file size)
@@ -422,7 +424,7 @@ Exit criterion: training runs on a 5-example dataset, loss curve visible, adapte
 
 ---
 
-### Phase 4.1 — Tokenizer Visualization
+### ⬚ Phase 4.1 — Tokenizer Visualization
 **One commit. Self-contained display feature. Low risk.**
 
 1. Add tokenizer panel to Prompt Lab (or collapsible drawer in Workbench)
@@ -432,7 +434,7 @@ Exit criterion: training runs on a 5-example dataset, loss curve visible, adapte
 
 ---
 
-### Phase 4.2 — DPO Export Completion
+### ⬚ Phase 4.2 — DPO Export Completion
 **One commit. Depends on Phase 2.2 (thumbs-down) being complete.**
 
 1. `training_curator.export_dpo(path)`: pair thumbs_up (chosen) with thumbs_down
@@ -442,7 +444,7 @@ Exit criterion: training runs on a 5-example dataset, loss curve visible, adapte
 
 ---
 
-### Phase 4.3 — Session Branching
+### ⬚ Phase 4.3 — Session Branching
 **One commit. Highest architectural risk. Must be fully isolated.**
 Read the R18 risk entry in `docs/07_risk_register.md` before touching this.
 
@@ -462,7 +464,7 @@ Exit criterion: user can fork at any message, explore alternate path, navigate b
 
 ---
 
-### Phase 5 — Documentation, Tests, Accuracy
+### ⬚ Phase 5 — Documentation, Tests, Accuracy
 **One commit. No code risk. Do last.**
 
 1. Rewrite `README.md` for Linux/Arch — no PowerShell, no Windows paths

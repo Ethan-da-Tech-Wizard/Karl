@@ -9,6 +9,21 @@ class ModelLoader:
     _lock = threading.Lock()
 
     @classmethod
+    def _read_registry_n_ctx(cls, filename: str) -> int:
+        """Look up n_ctx for the given model filename from model_registry.json."""
+        registry_path = "data/model_registry.json"
+        if os.path.exists(registry_path):
+            try:
+                with open(registry_path, "r") as f:
+                    registry = json.load(f)
+                for entry in registry:
+                    if entry.get("filename") == filename:
+                        return entry.get("n_ctx", 4096)
+            except Exception as e:
+                print(f"[ModelLoader] Could not read registry: {e}")
+        return 4096
+
+    @classmethod
     def get_instance(cls, model_path: str | None = None) -> Llama:
         with cls._lock:
             if cls._instance is None:
@@ -35,9 +50,10 @@ class ModelLoader:
                             "Run python download_test_model.py first."
                         )
 
-                print(f"[ModelLoader] Loading {model_path}")
-                cls._instance = Llama(model_path=model_path, n_ctx=4096, verbose=False)
                 cls._model_name = os.path.basename(model_path)
+                cls._n_ctx = cls._read_registry_n_ctx(cls._model_name)
+                print(f"[ModelLoader] Loading {model_path} (n_ctx={cls._n_ctx})")
+                cls._instance = Llama(model_path=model_path, n_ctx=cls._n_ctx, verbose=False)
                 print("[ModelLoader] Ready.")
             return cls._instance
 
@@ -49,6 +65,11 @@ class ModelLoader:
     @classmethod
     def model_name(cls) -> str:
         return getattr(cls, "_model_name", "none")
+
+    @classmethod
+    def n_ctx(cls) -> int:
+        """Return the context window size for the loaded model."""
+        return getattr(cls, '_n_ctx', 4096)
 
     @classmethod
     def is_loaded(cls) -> bool:

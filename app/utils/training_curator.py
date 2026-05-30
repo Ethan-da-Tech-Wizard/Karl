@@ -93,3 +93,27 @@ def delete_example(index: int):
         with open(CURATED_PATH, "w", encoding="utf-8") as f:
             for ex in examples:
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+
+
+class TrainingCurator:
+    """
+    Class wrapper around the module-level curator functions.
+    AppState instantiates this so workspaces can call self.state.curator.method().
+    """
+
+    def save_example(self, prompt: str, response: str,
+                     source: str = "thumbs_up", system_prompt: str = ""):
+        """Save a training example. Args match how Workbench calls this."""
+        save_example(system_prompt, prompt, response, source)
+
+    def get_all_examples(self):
+        return get_all_examples()
+
+    def get_stats(self):
+        return get_stats()
+
+    def export_unsloth(self, output_path: str = "data/training/export_unsloth.jsonl"):
+        return export_unsloth(output_path)
+
+    def delete_example(self, index: int):
+        return delete_example(index)

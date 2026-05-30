@@ -12,9 +12,7 @@ RAW_LOG_DIR = "data/logs/raw"
 
 # Reserve this many tokens for the next generation's output.
 # The rest of the budget is used for history.
-_CONTEXT_BUDGET = 4096
 _RESPONSE_RESERVE = 1024  # max_tokens headroom
-_HISTORY_CHAR_LIMIT = (_CONTEXT_BUDGET - _RESPONSE_RESERVE) * 3  # ~1 token ≈ 3 chars (conservative)
 
 class AgenticThread(QThread):
     """
@@ -29,11 +27,14 @@ class AgenticThread(QThread):
     loop_finished = pyqtSignal(int)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, system_prompt, initial_history, hyperparams):
+    def __init__(self, system_prompt, initial_history, hyperparams,
+                 workflow="general_chat", template="reasoning_minimal"):
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = list(initial_history)   # copy so we can mutate safely
         self.hyperparams = hyperparams
+        self.workflow = workflow
+        self.template = template
         self.logger = TraceLogger()
         self._stop_requested = False
 
@@ -45,8 +46,11 @@ class AgenticThread(QThread):
         Trims the chat history so the compiled prompt stays inside the context budget.
         Always keeps the first user message (the seed) and the most recent turns.
         """
+        context_budget = ModelLoader.n_ctx()
+        history_char_limit = (context_budget - _RESPONSE_RESERVE) * 3  # ~1 token ≈ 3 chars (conservative)
+
         base_len = len(system_prompt)
-        budget = _HISTORY_CHAR_LIMIT - base_len
+        budget = history_char_limit - base_len
 
         # Walk backwards through history accumulating character count.
         # Always keep at least the first message (index 0) as the seed.
@@ -208,7 +212,11 @@ class AgenticThread(QThread):
                     parsed_thought=thought,
                     parsed_response=response,
                     execution_time=elapsed,
-                    rag_context=[f"agentic_iteration_{iteration}"]
+                    rag_context=[],
+                    model_name=ModelLoader.model_name(),
+                    adapter_name=getattr(ModelLoader, '_adapter_name', None),
+                    workflow=self.workflow,
+                    template=self.template,
                 )
 
                 # Store only the response — not the think block — to keep context lean

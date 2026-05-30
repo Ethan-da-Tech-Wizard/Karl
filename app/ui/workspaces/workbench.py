@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QTextEdit, QComboBox,
     QLabel, QSizePolicy, QFrame, QCheckBox,
+    QDoubleSpinBox, QSpinBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut
@@ -283,6 +284,12 @@ class WorkbenchWorkspace(QWidget):
         layout.addWidget(feedback_row)
         layout.addWidget(_hline())
 
+        # params drawer (collapsed by default)
+        self._params_drawer = self._build_params_drawer()
+        self._params_drawer.setVisible(False)
+        layout.addWidget(self._params_drawer)
+        layout.addWidget(_hline())
+
         # input area
         input_container = QWidget()
         input_container.setFixedHeight(120)
@@ -315,6 +322,13 @@ class WorkbenchWorkspace(QWidget):
         self._loop_check.setToolTip("Run in agentic loop mode")
         ctrl_layout.addWidget(self._loop_check)
 
+        self._params_toggle = QPushButton("⚙")
+        self._params_toggle.setObjectName("btn-ghost")
+        self._params_toggle.setFixedWidth(28)
+        self._params_toggle.setToolTip("Toggle generation parameters")
+        self._params_toggle.clicked.connect(self._toggle_params)
+        ctrl_layout.addWidget(self._params_toggle)
+
         ctrl_layout.addStretch()
 
         self._stop_btn = QPushButton("■ stop")
@@ -332,6 +346,52 @@ class WorkbenchWorkspace(QWidget):
         layout.addWidget(input_container)
 
         return w
+
+    def _build_params_drawer(self) -> QWidget:
+        drawer = QWidget()
+        drawer.setFixedHeight(40)
+        dl = QHBoxLayout(drawer)
+        dl.setContentsMargins(10, 4, 10, 4)
+        dl.setSpacing(12)
+
+        # Temperature
+        dl.addWidget(_label("temp", "lbl-muted"))
+        self._temp_spin = QDoubleSpinBox()
+        self._temp_spin.setRange(0.0, 2.0)
+        self._temp_spin.setSingleStep(0.05)
+        self._temp_spin.setValue(self._hyperparams["temperature"])
+        self._temp_spin.setFixedWidth(70)
+        self._temp_spin.valueChanged.connect(
+            lambda v: self._hyperparams.__setitem__("temperature", v)
+        )
+        dl.addWidget(self._temp_spin)
+
+        # Top-p
+        dl.addWidget(_label("top-p", "lbl-muted"))
+        self._topp_spin = QDoubleSpinBox()
+        self._topp_spin.setRange(0.0, 1.0)
+        self._topp_spin.setSingleStep(0.05)
+        self._topp_spin.setValue(self._hyperparams["top_p"])
+        self._topp_spin.setFixedWidth(70)
+        self._topp_spin.valueChanged.connect(
+            lambda v: self._hyperparams.__setitem__("top_p", v)
+        )
+        dl.addWidget(self._topp_spin)
+
+        # Max tokens
+        dl.addWidget(_label("max tok", "lbl-muted"))
+        self._maxtok_spin = QSpinBox()
+        self._maxtok_spin.setRange(64, 8192)
+        self._maxtok_spin.setSingleStep(64)
+        self._maxtok_spin.setValue(self._hyperparams["max_tokens"])
+        self._maxtok_spin.setFixedWidth(80)
+        self._maxtok_spin.valueChanged.connect(
+            lambda v: self._hyperparams.__setitem__("max_tokens", v)
+        )
+        dl.addWidget(self._maxtok_spin)
+
+        dl.addStretch()
+        return drawer
 
     def _connect_shortcuts(self):
         sc = QShortcut(QKeySequence("Ctrl+Return"), self)
@@ -361,6 +421,16 @@ class WorkbenchWorkspace(QWidget):
         else:
             self._start_single(chunks)
 
+    def _current_workflow(self) -> str:
+        return self._workflow_combo.currentData() or "general_chat"
+
+    def _current_template(self) -> str:
+        from core.workflows import get_workflow
+        try:
+            return get_workflow(self._current_workflow())["template"]
+        except KeyError:
+            return "reasoning_minimal"
+
     def _start_single(self, chunks: list[str]):
         self._chat_view.begin_stream()
         self._set_busy(True)
@@ -369,6 +439,8 @@ class WorkbenchWorkspace(QWidget):
             chat_history=list(self.chat_history),
             hyperparams=self._hyperparams,
             retrieved_chunks=chunks,
+            workflow=self._current_workflow(),
+            template=self._current_template(),
         )
         t.new_thought_token.connect(self._on_thought)
         t.new_chat_token.connect(self._on_chat)
@@ -384,6 +456,8 @@ class WorkbenchWorkspace(QWidget):
             system_prompt=self._system_prompt,
             initial_history=list(self.chat_history),
             hyperparams=self._hyperparams,
+            workflow=self._current_workflow(),
+            template=self._current_template(),
         )
         t.new_thought_token.connect(self._on_thought)
         t.new_chat_token.connect(self._on_chat)
@@ -402,6 +476,10 @@ class WorkbenchWorkspace(QWidget):
         visible = self._reasoning_view.isVisible()
         self._reasoning_view.setVisible(not visible)
         self._toggle_reason_btn.setText("show" if visible else "hide")
+
+    def _toggle_params(self):
+        visible = self._params_drawer.isVisible()
+        self._params_drawer.setVisible(not visible)
 
     def _new_session(self):
         self.chat_history.clear()

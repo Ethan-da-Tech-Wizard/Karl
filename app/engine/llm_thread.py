@@ -8,9 +8,7 @@ from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
 
 RAW_LOG_DIR = "data/logs/raw"
-_CONTEXT_BUDGET = 4096
 _RESPONSE_RESERVE = 1024
-_HISTORY_CHAR_LIMIT = (_CONTEXT_BUDGET - _RESPONSE_RESERVE) * 3
 _MAX_MSG_CHARS = 1500   # Truncate any single message to this length before it enters the prompt
 
 _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
@@ -25,13 +23,17 @@ class LLMThread(QThread):
     generation_finished = pyqtSignal(str, str, bool, bool)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, system_prompt, chat_history, hyperparams, retrieved_chunks=None, start_in_thought=False):
+    def __init__(self, system_prompt, chat_history, hyperparams,
+                 retrieved_chunks=None, start_in_thought=False,
+                 workflow="general_chat", template="reasoning_minimal"):
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = chat_history
         self.hyperparams = hyperparams
         self.retrieved_chunks = retrieved_chunks or []
         self.start_in_thought = start_in_thought  # True when continuing mid-thought
+        self.workflow = workflow
+        self.template = template
         self.logger = TraceLogger()
 
     def _trim_history(self, history):
@@ -41,6 +43,9 @@ class LLMThread(QThread):
         2. Drops oldest messages until the total fits in the budget
         3. Always keeps message[0] (the seed)
         """
+        context_budget = ModelLoader.n_ctx()
+        history_char_limit = (context_budget - _RESPONSE_RESERVE) * 3
+
         def _cap(msg):
             content = msg.get("content", "")
             if len(content) > _MAX_MSG_CHARS:
@@ -52,7 +57,7 @@ class LLMThread(QThread):
         running = 0
         for msg in reversed(capped):
             entry_len = len(msg.get("content", ""))
-            if running + entry_len > _HISTORY_CHAR_LIMIT and kept:
+            if running + entry_len > history_char_limit and kept:
                 break
             kept.insert(0, msg)
             running += entry_len
@@ -180,7 +185,11 @@ class LLMThread(QThread):
                 parsed_thought=parsed_thought,
                 parsed_response=parsed_response,
                 execution_time=execution_time,
-                rag_context=self.retrieved_chunks
+                rag_context=self.retrieved_chunks,
+                model_name=ModelLoader.model_name(),
+                adapter_name=getattr(ModelLoader, '_adapter_name', None),
+                workflow=self.workflow,
+                template=self.template,
             )
 
             self.generation_finished.emit(parsed_thought, parsed_response, truncated, ended_in_thought)
