@@ -25,7 +25,8 @@ class LLMThread(QThread):
 
     def __init__(self, system_prompt, chat_history, hyperparams,
                  retrieved_chunks=None, start_in_thought=False,
-                 workflow="general_chat", template="reasoning_minimal"):
+                 workflow="general_chat", template="reasoning_minimal",
+                 adapter_name=None):
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = chat_history
@@ -34,6 +35,7 @@ class LLMThread(QThread):
         self.start_in_thought = start_in_thought  # True when continuing mid-thought
         self.workflow = workflow
         self.template = template
+        self.adapter_name = adapter_name
         self.logger = TraceLogger()
 
     def _trim_history(self, history):
@@ -69,7 +71,7 @@ class LLMThread(QThread):
         try:
             importlib.reload(core.interaction_loop)
 
-            llm = ModelLoader.get_instance()
+            llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
             trimmed_history = self._trim_history(self.chat_history)
             prompt = core.interaction_loop.build_prompt(self.system_prompt, trimmed_history)
 

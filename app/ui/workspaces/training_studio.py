@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import html
+import re
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
@@ -20,7 +21,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit,
     QProgressBar, QCheckBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 
 def _section(text: str) -> QLabel:
@@ -33,6 +34,144 @@ def _hline() -> QFrame:
     f = QFrame()
     f.setFrameShape(QFrame.Shape.HLine)
     return f
+
+
+# ── training thread ───────────────────────────────────────────────────────────
+
+class TrainingThread(QThread):
+    loss = pyqtSignal(int, float)     # step, loss_val
+    progress = pyqtSignal(int, int) # step, total_steps
+    done = pyqtSignal(str)           # adapter_path
+    error = pyqtSignal(str)
+    log = pyqtSignal(str)
+
+    def __init__(self, hf_base_dir: str, adapter_name: str, config: dict):
+        super().__init__()
+        self.hf_base_dir = hf_base_dir
+        self.adapter_name = adapter_name
+        self.config = config
+
+    def run(self):
+        try:
+            self.log.emit("Preparing training dataset...")
+            import json
+            import torch
+            from datasets import load_dataset
+            from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, BitsAndBytesConfig, TrainerCallback
+            from peft import LoraConfig, get_peft_model
+            from trl import SFTTrainer
+
+            # Load dataset from curated examples
+            dataset_path = "data/training/curated.jsonl"
+            dataset = load_dataset("json", data_files=dataset_path, split="train")
+
+            self.log.emit("Loading tokenizer and model...")
+            tokenizer = AutoTokenizer.from_pretrained(self.hf_base_dir)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            # Set up QLoRA if requested and bitsandbytes is available
+            use_qlora = self.config.get("use_qlora", False)
+            if use_qlora:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.hf_base_dir,
+                    quantization_config=bnb_config,
+                    device_map="auto"
+                )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.hf_base_dir,
+                    device_map="auto"
+                )
+
+            self.log.emit("Configuring LoRA...")
+            lora_config = LoraConfig(
+                r=self.config.get("rank", 16),
+                lora_alpha=self.config.get("alpha", 32),
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=self.config.get("dropout", 0.05),
+                bias="none",
+                task_type="CAUSAL_LM"
+            )
+
+            # Prepare model for training
+            model = get_peft_model(model, lora_config)
+
+            adapter_path = os.path.join("data", "adapters", self.adapter_name)
+            os.makedirs(adapter_path, exist_ok=True)
+
+            training_args = TrainingArguments(
+                output_dir=os.path.join(adapter_path, "temp_checkpoints"),
+                per_device_train_batch_size=1,
+                gradient_accumulation_steps=4,
+                learning_rate=self.config.get("lr", 2e-4),
+                logging_steps=1,
+                num_train_epochs=self.config.get("epochs", 3),
+                save_strategy="no",
+                report_to="none",
+                fp16=True if torch.cuda.is_available() else False,
+            )
+
+            # Callback to report progress and loss
+            thread_ref = self
+            class TrainerProgressCallback(TrainerCallback):
+                def on_log(self, args, state, control, logs=None, **kwargs):
+                    if logs and "loss" in logs:
+                        thread_ref.loss.emit(state.global_step, float(logs["loss"]))
+                        thread_ref.log.emit(f"Step {state.global_step}: loss = {logs['loss']:.4f}")
+
+                def on_step_end(self, args, state, control, **kwargs):
+                    thread_ref.progress.emit(state.global_step, state.max_steps)
+
+            self.log.emit("Starting SFTTrainer...")
+            trainer = SFTTrainer(
+                model=model,
+                train_dataset=dataset,
+                dataset_text_field="messages",
+                max_seq_length=512,
+                tokenizer=tokenizer,
+                args=training_args,
+                callbacks=[TrainerProgressCallback()]
+            )
+
+            trainer.train()
+
+            self.log.emit("Saving PyTorch adapter model weights...")
+            trainer.model.save_pretrained(adapter_path)
+            trainer.tokenizer.save_pretrained(adapter_path)
+
+            # Clean up temp checkpoint folder
+            import shutil
+            temp_checkpoints = os.path.join(adapter_path, "temp_checkpoints")
+            if os.path.exists(temp_checkpoints):
+                shutil.rmtree(temp_checkpoints)
+
+            # Convert to GGUF format
+            self.log.emit("Converting PyTorch adapter to GGUF format...")
+            import subprocess
+            import sys
+            cmd = [
+                sys.executable,
+                "app/utils/convert_lora_to_gguf.py",
+                "--base", self.hf_base_dir,
+                adapter_path
+            ]
+            self.log.emit(f"Running: {' '.join(cmd)}")
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                raise RuntimeError(f"LoRA GGUF conversion failed: {res.stderr}")
+
+            self.log.emit("Training and GGUF conversion completed successfully!")
+            self.done.emit(adapter_path)
+
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class TrainingStudioWorkspace(QWidget):
@@ -360,35 +499,81 @@ class TrainingStudioWorkspace(QWidget):
                 f.write(json.dumps(p, ensure_ascii=False) + "\n")
         return path
 
+    def _get_hf_model_path(self) -> tuple[str | None, str]:
+        from app.engine.model_loader import ModelLoader
+        active_gguf = ModelLoader.model_name()
+        
+        # Determine expected Hugging Face repository based on active GGUF filename
+        if "1.5b" in active_gguf.lower():
+            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+            folder_name = "DeepSeek-R1-Distill-Qwen-1.5B"
+        elif "7b" in active_gguf.lower():
+            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+            folder_name = "DeepSeek-R1-Distill-Qwen-7B"
+        elif "14b" in active_gguf.lower():
+            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+            folder_name = "DeepSeek-R1-Distill-Qwen-14B"
+        elif "70b" in active_gguf.lower():
+            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Llama-70B"
+            folder_name = "DeepSeek-R1-Distill-Llama-70B"
+        else:
+            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+            folder_name = "DeepSeek-R1-Distill-Qwen-1.5B"
+            
+        local_dir = os.path.join("data", "hf_models", folder_name)
+        if os.path.exists(local_dir):
+            try:
+                files = os.listdir(local_dir)
+                if any(f.endswith(".safetensors") or f.endswith(".bin") for f in files):
+                    return local_dir, repo_id
+            except Exception:
+                pass
+                
+        return None, repo_id
+
     def _check_deps(self):
         missing = []
-        for pkg in ("peft", "trl", "transformers"):
+        for pkg in ("peft", "trl", "transformers", "datasets", "gguf"):
             try:
                 __import__(pkg)
             except ImportError:
                 missing.append(pkg)
+                
+        hf_path, repo_id = self._get_hf_model_path()
+        
         if missing:
             self._deps_lbl.setText(
                 f"In-app training requires: {', '.join(missing)}\n"
                 f"Install with:  pip install {' '.join(missing)}"
             )
             self._deps_lbl.setObjectName("lbl-red")
+            self._train_btn.setEnabled(False)
+        elif hf_path is None:
+            local_dir = f"data/hf_models/{os.path.basename(repo_id)}"
+            self._deps_lbl.setText(
+                f"HuggingFace model weights for '{repo_id}' are missing in '{local_dir}'.\n"
+                f"To download them privately and enable training, run in terminal:\n"
+                f"huggingface-cli download {repo_id} --local-dir {local_dir}"
+            )
+            self._deps_lbl.setObjectName("lbl-red")
+            self._train_btn.setEnabled(False)
         else:
-            self._deps_lbl.setText("✓ training dependencies available")
+            self._deps_lbl.setText(
+                f"✓ training dependencies available\n"
+                f"✓ base HF model weights ready: {os.path.basename(hf_path)}"
+            )
             self._deps_lbl.setObjectName("lbl-green")
+            self._train_btn.setEnabled(True)
 
     def _begin_training(self):
-        try:
-            import peft  # noqa
-            import trl   # noqa
-        except ImportError:
-            self._train_log.append("install peft and trl before training.")
-            return
-
         adapter_name = self._adapter_name_input.text().strip()
         if not adapter_name:
             self._train_log.append("set an adapter name first.")
             return
+
+        # Sanitize adapter name for file path
+        adapter_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', adapter_name)
+        self._adapter_name_input.setText(adapter_name)
 
         examples = self.state.curator.get_all_examples()
         if len(examples) < 5:
@@ -398,15 +583,62 @@ class TrainingStudioWorkspace(QWidget):
             )
             return
 
-        self._train_log.append(
-            f"training with {len(examples)} examples · "
-            f"rank={self._rank_spin.value()} · "
-            f"alpha={self._alpha_spin.value()} · "
-            f"lr={self._lr_spin.value():.2e} · "
-            f"epochs={self._epochs_spin.value()}"
+        hf_base_dir, repo_id = self._get_hf_model_path()
+        if not hf_base_dir:
+            self._train_log.append(f"Base HuggingFace weights for {repo_id} not found locally.")
+            return
+
+        self._train_btn.setEnabled(False)
+        self._train_progress.setVisible(True)
+        self._train_progress.setRange(0, 100)
+        self._train_progress.setValue(0)
+        
+        self._train_log.clear()
+        self._train_log.append("Initializing local training pipeline...")
+
+        config = {
+            "rank": self._rank_spin.value(),
+            "alpha": self._alpha_spin.value(),
+            "dropout": self._dropout_spin.value(),
+            "lr": self._lr_spin.value(),
+            "epochs": self._epochs_spin.value(),
+            "use_qlora": self._qlora_check.isChecked()
+        }
+
+        # Start thread
+        self._thread = TrainingThread(hf_base_dir, adapter_name, config)
+        self._thread.log.connect(self._on_train_log)
+        self._thread.loss.connect(self._on_train_loss)
+        self._thread.progress.connect(self._on_train_progress)
+        self._thread.done.connect(self._on_train_done)
+        self._thread.error.connect(self._on_train_error)
+        self._thread.start()
+
+    def _on_train_log(self, text: str):
+        self._train_log.append(text)
+        
+    def _on_train_loss(self, step: int, value: float):
+        # Optional: update a plot or stat in the future
+        pass
+
+    def _on_train_progress(self, current: int, total: int):
+        if total > 0:
+            percentage = int((current / total) * 100)
+            self._train_progress.setValue(percentage)
+            
+    def _on_train_done(self, adapter_path: str):
+        self._train_btn.setEnabled(True)
+        self._train_progress.setVisible(False)
+        QMessageBox.information(
+            self, "Training Complete",
+            f"Trained adapter successfully saved and converted to GGUF in:\n{adapter_path}"
         )
-        self._train_log.append(
-            "NOTE: in-app LoRA training requires the HuggingFace model weights, "
-            "not just the GGUF file. Place the HF model in data/hf_models/ and "
-            "this will be implemented in the next release."
-        )
+        self._adapter_name_input.clear()
+        self._check_deps()
+        
+    def _on_train_error(self, msg: str):
+        self._train_btn.setEnabled(True)
+        self._train_progress.setVisible(False)
+        self._train_log.append(f"\n[ERROR] Training failed:\n{msg}")
+        QMessageBox.critical(self, "Training Error", f"Training encountered an error:\n{msg}")
+        self._check_deps()

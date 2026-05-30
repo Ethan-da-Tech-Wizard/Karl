@@ -28,13 +28,15 @@ class AgenticThread(QThread):
     error_occurred = pyqtSignal(str)
 
     def __init__(self, system_prompt, initial_history, hyperparams,
-                 workflow="general_chat", template="reasoning_minimal"):
+                 workflow="general_chat", template="reasoning_minimal",
+                 adapter_name=None):
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = list(initial_history)   # copy so we can mutate safely
         self.hyperparams = hyperparams
         self.workflow = workflow
         self.template = template
+        self.adapter_name = adapter_name
         self.logger = TraceLogger()
         self._stop_requested = False
 
@@ -180,7 +182,7 @@ class AgenticThread(QThread):
             importlib.reload(core.interaction_loop)
             importlib.reload(core.agentic_loop)
 
-            llm = ModelLoader.get_instance()
+            llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
             iteration = 0
 
             while not self._stop_requested:

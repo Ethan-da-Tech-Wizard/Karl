@@ -36,3 +36,7 @@ t/
 
 # IDE
 .vscode/
+
+# Scratch directory
+scratch/
+

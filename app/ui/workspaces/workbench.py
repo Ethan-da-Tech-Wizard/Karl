@@ -522,6 +522,7 @@ class WorkbenchWorkspace(QWidget):
             retrieved_chunks=chunks,
             workflow=self._current_workflow(),
             template=self._current_template(),
+            adapter_name=self.state.adapter_name,
         )
         t.new_thought_token.connect(self._on_thought)
         t.new_chat_token.connect(self._on_chat)
@@ -539,6 +540,7 @@ class WorkbenchWorkspace(QWidget):
             hyperparams=self._hyperparams,
             workflow=self._current_workflow(),
             template=self._current_template(),
+            adapter_name=self.state.adapter_name,
         )
         t.new_thought_token.connect(self._on_thought)
         t.new_chat_token.connect(self._on_chat)

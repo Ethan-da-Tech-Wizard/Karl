@@ -24,20 +24,31 @@ class ModelLoader:
         return 4096
 
     @classmethod
-    def get_instance(cls, model_path: str | None = None) -> Llama:
+    def get_instance(cls, model_path: str | None = None, adapter_name: str | None = None) -> Llama:
         with cls._lock:
-            if cls._instance is None:
-                if model_path is None:
-                    active_path = "data/active_model.json"
-                    filename = "deepseek-r1-1.5b.gguf"
-                    if os.path.exists(active_path):
-                        try:
-                            with open(active_path, "r") as f:
-                                data = json.load(f)
-                                filename = data.get("filename", filename)
-                        except Exception as e:
-                            print(f"[ModelLoader] Could not read {active_path}: {e}")
-                    model_path = os.path.join("data", "models", filename)
+            if model_path is None:
+                active_path = "data/active_model.json"
+                filename = "deepseek-r1-1.5b.gguf"
+                if os.path.exists(active_path):
+                    try:
+                        with open(active_path, "r") as f:
+                            data = json.load(f)
+                            filename = data.get("filename", filename)
+                    except Exception as e:
+                        print(f"[ModelLoader] Could not read {active_path}: {e}")
+                model_path = os.path.join("data", "models", filename)
+
+            current_model_path = getattr(cls, "_model_path", None)
+            current_adapter = getattr(cls, "_active_adapter", None)
+
+            needs_reload = (
+                cls._instance is None or
+                (model_path is not None and model_path != current_model_path) or
+                (adapter_name != current_adapter)
+            )
+
+            if needs_reload:
+                cls._instance = None
 
                 if not os.path.exists(model_path):
                     fallback = "data/models/deepseek-r1-1.5b.gguf"
@@ -50,10 +61,33 @@ class ModelLoader:
                             "Run python download_test_model.py first."
                         )
 
+                cls._model_path = model_path
                 cls._model_name = os.path.basename(model_path)
                 cls._n_ctx = cls._read_registry_n_ctx(cls._model_name)
-                print(f"[ModelLoader] Loading {model_path} (n_ctx={cls._n_ctx})")
-                cls._instance = Llama(model_path=model_path, n_ctx=cls._n_ctx, verbose=False)
+                cls._active_adapter = adapter_name
+
+                # Look for LoRA adapter file
+                lora_path = None
+                if adapter_name:
+                    possible_paths = [
+                        os.path.join("data", "adapters", adapter_name, f"{adapter_name}.bin"),
+                        os.path.join("data", "adapters", adapter_name, f"{adapter_name}.gguf"),
+                        os.path.join("data", "adapters", adapter_name, "adapter_model.bin"),
+                        os.path.join("data", "adapters", adapter_name, "adapter_model.gguf"),
+                        os.path.join("data", "adapters", f"{adapter_name}.bin"),
+                        os.path.join("data", "adapters", f"{adapter_name}.gguf"),
+                    ]
+                    for p in possible_paths:
+                        if os.path.exists(p):
+                            lora_path = p
+                            break
+
+                if lora_path:
+                    print(f"[ModelLoader] Loading {model_path} with LoRA adapter {lora_path} (n_ctx={cls._n_ctx})")
+                    cls._instance = Llama(model_path=model_path, n_ctx=cls._n_ctx, lora_path=lora_path, verbose=False)
+                else:
+                    print(f"[ModelLoader] Loading {model_path} (n_ctx={cls._n_ctx})")
+                    cls._instance = Llama(model_path=model_path, n_ctx=cls._n_ctx, verbose=False)
                 print("[ModelLoader] Ready.")
             return cls._instance
 
@@ -61,6 +95,8 @@ class ModelLoader:
     def reset_instance(cls):
         with cls._lock:
             cls._instance = None
+            cls._active_adapter = None
+            cls._model_path = None
 
     @classmethod
     def model_name(cls) -> str:
