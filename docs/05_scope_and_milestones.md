@@ -211,6 +211,24 @@ No new components. No architecture changes.
 
 ---
 
+### Phase 2.5 — UX Polish Pass
+**Strategy:** Four commits, one per workspace group. No new functionality in any of them.**
+Must come after Phase 2. Phase 1 adds the params drawer (changes Workbench layout).
+Phase 2 adds sessions panel and thumbs-down (changes Workbench layout again).
+Polishing before these land means polishing twice.
+**Risk:** None — layout and visual hierarchy changes only.
+
+| Sub-phase | Scope | Workspaces |
+|-----------|-------|-----------|
+| 2.5a | Workbench layout, chat bubbles, input area, params drawer, sessions panel, feedback row | Workbench |
+| 2.5b | Inspection tool polish, A/B column balance, KB source/inspector proportion | Knowledge Base, Prompt Lab |
+| 2.5c | Data tool tab hierarchy, dataset row scannability, results tree columns | Training Studio, Eval Suite |
+| 2.5d | System Config tabs + global consistency pass (margins, fonts, buttons, separators) | System Config + all |
+
+**Rule for all 2.5 sub-phases:** If a change requires new logic, signals, or data — it belongs in a different phase. Every change is spacing, sizing, proportion, hierarchy, or clutter removal.
+
+---
+
 ### Phase 3.1 — Small Workspace Fixes
 **Strategy:** Single commit. Mechanical additions to two workspaces.
 **Risk:** Low.
@@ -346,6 +364,10 @@ where each node can have multiple child turns. Plan carefully before touching co
 | M17 | Foundation Hardening | ✅ Done |
 | — | Phase 1: Wire It Together | ⬜ Next |
 | — | Phase 2: Data Pipeline | ⬜ Pending |
+| — | Phase 2.5a: UX Polish — Workbench | ⬜ Pending |
+| — | Phase 2.5b: UX Polish — KB + Prompt Lab | ⬜ Pending |
+| — | Phase 2.5c: UX Polish — Training + Eval | ⬜ Pending |
+| — | Phase 2.5d: UX Polish — System + Global | ⬜ Pending |
 | — | Phase 3.1: Small Workspace Fixes | ⬜ Pending |
 | — | Phase 3.2: Prompt Lab Completion | ⬜ Pending |
 | — | Phase 3.3: LoRA/QLoRA Training | ⬜ Pending |

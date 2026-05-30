@@ -296,6 +296,82 @@ All items are in existing files. All are mechanical. Do them together.
 
 ---
 
+### Phase 2.5a — UX Polish: Workbench
+**One commit. Layout and visual hierarchy only. No new functionality.**
+Phase 1 and 2 must be complete first — both add controls to Workbench (params drawer,
+sessions panel, thumbs-down button). Polish an incomplete interface and you polish it twice.
+
+Rules for this phase and all 2.5 sub-phases:
+- No new features, no new signals, no new data
+- Every change is spacing, sizing, proportion, visual hierarchy, or removing clutter
+- If a change requires new logic, it belongs in a different phase
+
+Tasks:
+1. Reasoning panel / chat panel split ratio — verify it feels balanced at 1280×768
+2. Chat message bubbles — padding, font size, role label weight and spacing
+3. Input area — height, placeholder text, send button prominence vs ghost buttons
+4. Params drawer — open/close animation feel, control alignment inside drawer
+5. Sessions panel — row height, selected state, new session button placement
+6. Feedback row — thumbs-up/down/correct buttons spaced and weighted correctly
+7. Overall: nothing cramped, nothing orphaned, clear visual flow top to bottom
+
+---
+
+### Phase 2.5b — UX Polish: Knowledge Base + Prompt Lab
+**One commit. Two workspaces, similar visual language.**
+
+Knowledge Base:
+1. Left panel: source list row height, stats label placement, ingest controls grouping
+2. Chunk size/overlap controls (added in 3.1) — pre-polish their layout here
+3. Right panel: search input + button alignment, results view typography and spacing
+4. Threshold/top-k controls — inline with labels, not a wall of fields
+
+Prompt Lab:
+1. A/B columns — equal width, header labels clear, no visual competition
+2. System prompt editors — height proportional, not dominant
+3. Output panels — monospace, sufficient line height, scrollable without feeling cramped
+4. Run buttons — weighted correctly relative to output panels
+5. Diff view placeholder space (Phase 3.2 will fill it) — reserve it cleanly
+
+---
+
+### Phase 2.5c — UX Polish: Training Studio + Eval Suite
+**One commit. Both are data-heavy tabbed workspaces.**
+
+Training Studio:
+1. Stats row — numbers prominent, not buried in muted text
+2. Dataset tab: list rows scannable, preview panel proportioned
+3. Export tab: section headers clear, buttons weighted to action importance
+4. Train tab: config rows consistent alignment, LoRA params readable at a glance
+5. Training log view — fixed height, monospace, not competing with config
+
+Eval Suite:
+1. Left panel: dataset path row compact, summary stats prominent after run
+2. Results tree: column widths useful (case name wide, pass narrow, response truncated cleanly)
+3. Detail panel: proportioned so you can read a full result without scrolling constantly
+4. Progress bar placement and visual weight during run
+
+---
+
+### Phase 2.5d — System Config + Global Consistency Pass
+**One commit. Simplest workspace + cross-workspace audit.**
+
+System Config:
+1. Four tabs — labels clear, no ambiguity about what each contains
+2. Settings rows — label width consistent, controls right-aligned, units visible
+3. Model list display — filename, size, active indicator
+4. Hardware readout — values prominent, labels muted
+
+Global pass (review all workspaces together):
+1. Margin/padding consistency — every workspace uses the same outer padding (12px)
+2. Section header style — all use the same `#section-header` object name and spacing
+3. Separator usage — `_hline()` used consistently, not overused
+4. Font sizes — body 10pt, muted labels 9pt, section headers 8pt everywhere
+5. Button hierarchy — primary/ghost/danger used correctly and consistently
+6. Scrollbar visibility — thin, present when needed, not intrusive
+
+---
+
 ### Phase 3.1 — Small Workspace Fixes
 **One commit. Two mechanical additions. Low risk.**
 
