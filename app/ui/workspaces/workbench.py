@@ -18,13 +18,15 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QTextEdit, QComboBox,
     QLabel, QSizePolicy, QFrame, QCheckBox,
     QDoubleSpinBox, QSpinBox, QListWidget,
+    QTreeWidget, QTreeWidgetItem,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut
+from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
 
 from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
 from core.workflows import list_workflows
+from app.utils.session_tree import SessionTree
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -46,7 +48,8 @@ def _label(text: str, obj: str = "") -> QLabel:
 
 _USER_TPL = (
     '<div style="margin:10px 0 4px 60px; text-align:right;">'
-    '<div style="color:#505068;font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">YOU</div>'
+    '<div style="color:#505068;font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">'
+    'YOU &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:#00C2FF;text-decoration:none;">branch</a></div>'
     '<div style="background:#1C1C2A;border:1px solid #383850;border-radius:4px;'
     'padding:10px 14px;color:#E4E4F0;font-size:10pt;'
     'white-space:pre-wrap;display:inline-block;text-align:left;">{text}</div>'
@@ -55,7 +58,8 @@ _USER_TPL = (
 
 _KARL_HDR = (
     '<div style="margin:10px 60px 0 0;">'
-    '<div style="color:#505068;font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">KARL</div>'
+    '<div style="color:#505068;font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">'
+    'KARL &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:#00C2FF;text-decoration:none;">branch</a></div>'
     '<div style="background:#14141F;border:1px solid #252535;border-radius:4px;'
     'padding:10px 14px;color:#E4E4F0;font-size:10pt;'
     'white-space:pre-wrap;min-height:1em;">'
@@ -71,25 +75,27 @@ class ChatView(QTextBrowser):
         super().__init__(parent)
         self.setOpenLinks(False)
         self.setReadOnly(True)
-        self._messages: list[tuple[str, str]] = []   # (role, text)
+        self._messages: list[tuple[str, str, str]] = []   # (role, text, node_id)
         self._streaming_buf = ""
         self._streaming = False
+        self._streaming_node_id = ""
 
     # public API ──────────────────────────────────────────────────────────────
 
-    def push_user(self, text: str):
+    def push_user(self, text: str, node_id: str):
         self._finalize_stream()
-        self._messages.append(("user", text))
+        self._messages.append(("user", text, node_id))
         self._render_all()
 
-    def begin_stream(self):
+    def begin_stream(self, node_id: str = ""):
         self._streaming = True
         self._streaming_buf = ""
+        self._streaming_node_id = node_id
         # Append the karl header block then let tokens stream in
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.setTextCursor(cursor)
-        self.insertHtml(_KARL_HDR)
+        self.insertHtml(_KARL_HDR.format(node_id=node_id))
 
     def append_token(self, token: str):
         if not self._streaming:
@@ -101,18 +107,21 @@ class ChatView(QTextBrowser):
         self.setTextCursor(cursor)
         self.ensureCursorVisible()
 
-    def finalize_stream(self):
+    def finalize_stream(self, node_id: str = ""):
         if not self._streaming:
             return
-        self._messages.append(("assistant", self._streaming_buf))
+        final_node_id = node_id or self._streaming_node_id
+        self._messages.append(("assistant", self._streaming_buf, final_node_id))
         self._streaming_buf = ""
         self._streaming = False
         # Close the HTML block we opened in begin_stream
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(_KARL_FOOT)
+        self.insertHtml(_KARL_FOOT)
         self.setTextCursor(cursor)
         self.ensureCursorVisible()
+        # Cleanly re-render with the final node ID and links
+        self._render_all()
 
     def clear_display(self):
         self._messages.clear()
@@ -122,7 +131,7 @@ class ChatView(QTextBrowser):
 
     def replace_last_assistant(self, text: str):
         if self._messages and self._messages[-1][0] == "assistant":
-            self._messages[-1] = ("assistant", text)
+            self._messages[-1] = ("assistant", text, self._messages[-1][2])
             self._render_all()
 
 
@@ -146,12 +155,12 @@ class ChatView(QTextBrowser):
 
     def _render_all(self):
         parts = []
-        for role, text in self._messages:
+        for role, text, node_id in self._messages:
             safe = _escape(text)
             if role == "user":
-                parts.append(_USER_TPL.format(text=safe))
+                parts.append(_USER_TPL.format(text=safe, node_id=node_id))
             else:
-                parts.append(_KARL_HDR + safe + _KARL_FOOT)
+                parts.append(_KARL_HDR.format(node_id=node_id) + safe + _KARL_FOOT)
         self.setHtml(
             '<html><body style="background:transparent;margin:8px;">'
             + "".join(parts)
@@ -179,7 +188,7 @@ class WorkbenchWorkspace(QWidget):
         self.state = state
         self.setObjectName("workspace-root")
 
-        self.chat_history: list[dict] = []
+        self.chat_history = SessionTree()
         self._thread: LLMThread | AgenticThread | None = None
         self._last_response = ""
         self._last_thought = ""
@@ -248,6 +257,23 @@ class WorkbenchWorkspace(QWidget):
         self._sessions_list.currentItemChanged.connect(self._on_session_clicked)
         layout.addWidget(self._sessions_list, 1)
 
+        # separator
+        layout.addWidget(_hline())
+
+        # branches header
+        hdr_branches = QWidget()
+        hdr_branches.setObjectName("panel-header")
+        hdr_branches_layout = QHBoxLayout(hdr_branches)
+        hdr_branches_layout.setContentsMargins(12, 5, 8, 5)
+        hdr_branches.setFixedHeight(30)
+        hdr_branches_layout.addWidget(_label("BRANCHES", "section-header"))
+        layout.addWidget(hdr_branches)
+
+        self._branches_tree = QTreeWidget()
+        self._branches_tree.setHeaderHidden(True)
+        self._branches_tree.itemClicked.connect(self._on_branch_clicked)
+        layout.addWidget(self._branches_tree, 1)
+
         return w
 
     def _build_reasoning_panel(self) -> QWidget:
@@ -288,6 +314,7 @@ class WorkbenchWorkspace(QWidget):
 
         # chat display
         self._chat_view = ChatView(w)
+        self._chat_view.anchorClicked.connect(self._on_chat_link_clicked)
         layout.addWidget(self._chat_view, 1)
 
         layout.addWidget(_hline())
@@ -455,8 +482,8 @@ class WorkbenchWorkspace(QWidget):
             self._input.clear()
 
             # Update the last assistant message in history
-            if self.chat_history and self.chat_history[-1]["role"] == "assistant":
-                self.chat_history[-1]["content"] = text
+            if self.chat_history:
+                self.chat_history.update_current_node_content(text)
 
             # Update ChatView
             self._chat_view.replace_last_assistant(text)
@@ -481,13 +508,13 @@ class WorkbenchWorkspace(QWidget):
             return
 
         self._input.clear()
-        self._chat_view.push_user(text)
         self._reasoning_view.clear()
         self._thumb_btn.setEnabled(False)
         self._thumb_down_btn.setEnabled(False)
         self._correct_btn.setEnabled(False)
 
-        self.chat_history.append({"role": "user", "content": text})
+        user_node = self.chat_history.add_message("user", text)
+        self._chat_view.push_user(text, user_node.id)
 
         chunks = []
         if self._rag_check.isChecked() and self.state.rag.total_chunks > 0:
@@ -568,6 +595,7 @@ class WorkbenchWorkspace(QWidget):
         self._save_current_session()
         self._current_session_file = None
         self.chat_history.clear()
+        self._populate_branches_tree()
         self._chat_view.clear_display()
         self._reasoning_view.clear()
         self._last_response = ""
@@ -596,8 +624,10 @@ class WorkbenchWorkspace(QWidget):
         self._chat_view.append_token(token)
 
     def _on_done(self, thought: str, response: str, truncated: bool, _ended_in_thought: bool):
-        self._chat_view.finalize_stream()
-        self.chat_history.append({"role": "assistant", "content": response})
+        node = self.chat_history.add_message("assistant", response)
+        node.thought = thought
+        self._chat_view.finalize_stream(node.id)
+        self._populate_branches_tree()
         self._last_response = response
         self._last_thought = thought
         if truncated:
@@ -622,6 +652,20 @@ class WorkbenchWorkspace(QWidget):
 
     def _on_loop_done(self, total: int):
         self._chat_view.finalize_stream()
+        if self._thread and hasattr(self._thread, "chat_history"):
+            thread_history = self._thread.chat_history
+            original_len = len(self.chat_history)
+            new_msgs = thread_history[original_len:]
+            for msg in new_msgs:
+                self.chat_history.add_message(msg["role"], msg["content"])
+            
+            # Refresh ChatView to ensure all messages have correct node_ids
+            self._chat_view.clear_display()
+            active_path = self.chat_history.get_active_path()
+            self._chat_view._messages = [(n.role, n.content, n.id) for n in active_path]
+            self._chat_view._render_all()
+            self._populate_branches_tree()
+
         self._chat_view.append_system_note(f"— loop finished ({total} iterations) —")
         self._set_busy(False)
         self._thread = None
@@ -709,18 +753,22 @@ class WorkbenchWorkspace(QWidget):
         sys_prompt, history = self.state.memory.load_session(filename)
         self._current_session_file = filename
         self._system_prompt = sys_prompt
-        self.chat_history = list(history)
+        self.chat_history = history
 
         self._chat_view.clear_display()
-        self._chat_view._messages = [(m["role"], m["content"]) for m in self.chat_history]
+        active_path = self.chat_history.get_active_path()
+        self._chat_view._messages = [(n.role, n.content, n.id) for n in active_path]
         self._chat_view._render_all()
+        self._populate_branches_tree()
 
         self._is_correcting = False
         self._correct_btn.setText("✎ correct")
 
-        if self.chat_history and self.chat_history[-1]["role"] == "assistant":
-            self._last_response = self.chat_history[-1]["content"]
-            self._last_thought = ""
+        last_node = active_path[-1] if active_path else None
+        if last_node and last_node.role == "assistant":
+            self._last_response = last_node.content
+            self._last_thought = last_node.thought or ""
+            self._reasoning_view.setPlainText(self._last_thought)
             self._thumb_btn.setText("✓ good")
             self._thumb_down_btn.setText("✗ bad")
             self._thumb_btn.setEnabled(True)
@@ -729,6 +777,7 @@ class WorkbenchWorkspace(QWidget):
         else:
             self._last_response = ""
             self._last_thought = ""
+            self._reasoning_view.clear()
             self._thumb_btn.setEnabled(False)
             self._thumb_down_btn.setEnabled(False)
             self._correct_btn.setEnabled(False)
@@ -742,6 +791,95 @@ class WorkbenchWorkspace(QWidget):
         self._input.setEnabled(not busy)
         state_text = "generating..." if busy else "idle"
         self.status_changed.emit(state_text, busy)
+
+    def _on_chat_link_clicked(self, url):
+        link = url.toString()
+        if link.startswith("branch:"):
+            node_id = link.split(":", 1)[1]
+            self._branch_from_node(node_id)
+
+    def _branch_from_node(self, node_id):
+        if not self.chat_history:
+            return
+        self.chat_history.set_current_node(node_id)
+        
+        node = self.chat_history.get_node(node_id)
+        if node and node.role == "assistant":
+            self._last_response = node.content
+            self._last_thought = node.thought or ""
+            self._reasoning_view.setPlainText(self._last_thought)
+            self._thumb_btn.setEnabled(True)
+            self._thumb_down_btn.setEnabled(True)
+            self._correct_btn.setEnabled(True)
+        else:
+            self._last_response = ""
+            self._last_thought = ""
+            self._reasoning_view.clear()
+            self._thumb_btn.setEnabled(False)
+            self._thumb_down_btn.setEnabled(False)
+            self._correct_btn.setEnabled(False)
+            
+        self._chat_view.clear_display()
+        active_path = self.chat_history.get_active_path()
+        self._chat_view._messages = [(n.role, n.content, n.id) for n in active_path]
+        self._chat_view._render_all()
+        
+        self._populate_branches_tree()
+        self._save_current_session()
+
+    def _populate_branches_tree(self):
+        self._branches_tree.blockSignals(True)
+        self._branches_tree.clear()
+        if not self.chat_history:
+            self._branches_tree.blockSignals(False)
+            return
+
+        root_node = self.chat_history.root
+        self._tree_items_map = {}
+        
+        def _add_node(session_node, parent_item):
+            snippet = session_node.content
+            import re
+            snippet = re.sub(r"<think>.*?</think>", "", snippet, flags=re.DOTALL).strip()
+            if len(snippet) > 25:
+                snippet = snippet[:22] + "..."
+            
+            role_label = "User" if session_node.role == "user" else "Karl"
+            label = f"[{role_label}] {snippet}"
+            
+            if parent_item is None:
+                item = QTreeWidgetItem(self._branches_tree)
+            else:
+                item = QTreeWidgetItem(parent_item)
+                
+            item.setText(0, label)
+            item.setData(0, Qt.ItemDataRole.UserRole, session_node.id)
+            
+            if session_node.id == self.chat_history.current_id:
+                font = item.font(0)
+                font.setBold(True)
+                item.setFont(0, font)
+                item.setForeground(0, QColor("#00C2FF"))
+                self._branches_tree.setCurrentItem(item)
+                
+            self._tree_items_map[session_node.id] = item
+            item.setExpanded(True)
+            
+            for child in session_node.children:
+                _add_node(child, item)
+
+        for child in root_node.children:
+            _add_node(child, None)
+            
+        self._branches_tree.blockSignals(False)
+
+    def _on_branch_clicked(self, item, column):
+        node_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if not node_id:
+            return
+        if node_id == self.chat_history.current_id:
+            return
+        self._branch_from_node(node_id)
 
     # ── public API for main_window ────────────────────────────────────────────
 
