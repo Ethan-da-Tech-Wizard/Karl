@@ -81,3 +81,36 @@ class TraceLogger:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
         return self._log_file
+
+    def update_last_entry_feedback(self, feedback: str, corrected_response: str | None = None):
+        """
+        Rewrite the last line of the active jsonl file with the updated feedback
+        and corrected response.
+        """
+        self._refresh_path()
+        if not self._log_file or not os.path.exists(self._log_file):
+            return
+
+        try:
+            with open(self._log_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            if not lines:
+                return
+
+            last_line = lines[-1].strip()
+            if not last_line:
+                return
+
+            entry = json.loads(last_line)
+            entry["feedback"] = feedback
+            if corrected_response is not None:
+                entry["corrected_response"] = corrected_response
+
+            lines[-1] = json.dumps(entry, ensure_ascii=False) + "\n"
+
+            with open(self._log_file, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+        except Exception as e:
+            print(f"[TraceLogger] Error updating feedback: {e}")
+

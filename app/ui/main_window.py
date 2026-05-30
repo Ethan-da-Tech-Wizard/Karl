@@ -97,3 +97,8 @@ class MainWindow(QMainWindow):
 
     def _on_status_changed(self, text: str, active: bool):
         self._status_bar.set_state(text, active)
+
+    def closeEvent(self, event):
+        self._workbench.on_close()
+        event.accept()
+

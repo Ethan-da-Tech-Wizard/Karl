@@ -125,11 +125,12 @@ class KnowledgeBaseWorkspace(QWidget):
         self._threshold_spin = QDoubleSpinBox()
         self._threshold_spin.setRange(0.0, 2.0)
         self._threshold_spin.setSingleStep(0.05)
-        self._threshold_spin.setValue(0.0)
+        self._threshold_spin.setValue(self.state.rag_threshold)
         self._threshold_spin.setToolTip(
             "Max L2 distance. 0 = no filter (return all top-k)."
         )
         self._threshold_spin.setFixedWidth(80)
+        self._threshold_spin.valueChanged.connect(self._on_threshold_changed)
         tr_layout.addWidget(self._threshold_spin)
         tr_layout.addStretch()
         layout.addWidget(thresh_row)
@@ -141,8 +142,9 @@ class KnowledgeBaseWorkspace(QWidget):
         tk_layout.addWidget(QLabel("top-k"))
         self._topk_spin = QSpinBox()
         self._topk_spin.setRange(1, 20)
-        self._topk_spin.setValue(3)
+        self._topk_spin.setValue(self.state.rag_top_k)
         self._topk_spin.setFixedWidth(80)
+        self._topk_spin.valueChanged.connect(self._on_topk_changed)
         tk_layout.addWidget(self._topk_spin)
         tk_layout.addStretch()
         layout.addWidget(topk_row)
@@ -275,3 +277,10 @@ class KnowledgeBaseWorkspace(QWidget):
             self._refresh_sources()
             self._search_results.clear()
             self._ingest_status.setText("index cleared")
+
+    def _on_threshold_changed(self, val):
+        self.state.rag_threshold = val
+
+    def _on_topk_changed(self, val):
+        self.state.rag_top_k = val
+

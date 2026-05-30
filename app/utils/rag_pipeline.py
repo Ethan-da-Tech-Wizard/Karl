@@ -190,6 +190,7 @@ class RAGPipeline:
         query: str,
         top_k: int = 3,
         source_filter: str | None = None,
+        threshold: float = 0.0,
     ) -> list[str]:
         """
         Retrieve top-k chunks relevant to `query`.
@@ -198,6 +199,7 @@ class RAGPipeline:
             query:         User query string.
             top_k:         Number of chunks to return.
             source_filter: If set, restrict results to chunks from this filename.
+            threshold:     Max L2 distance. 0.0 = no filtering.
 
         Returns:
             List of text strings (with optional contextual headers prepended).
@@ -207,12 +209,14 @@ class RAGPipeline:
 
         query_vector = self.encoder.encode([query]).astype("float32")
         # Over-fetch when filtering so we have enough candidates after filtering
-        fetch_k = min(top_k * 5 if source_filter else top_k, self.index.ntotal)
+        fetch_k = min(top_k * 5 if (source_filter or threshold > 0.0) else top_k, self.index.ntotal)
         distances, indices = self.index.search(query_vector, fetch_k)
 
         results = []
-        for i in indices[0]:
+        for dist, i in zip(distances[0], indices[0]):
             if i == -1 or i >= len(self.documents):
+                continue
+            if threshold > 0.0 and dist > threshold:
                 continue
             doc = self.documents[i]
             if source_filter and doc.get("source_file") != source_filter:
@@ -228,6 +232,7 @@ class RAGPipeline:
                 break
 
         return results
+
 
     def retrieve_with_metadata(
         self,

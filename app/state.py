@@ -19,3 +19,8 @@ class AppState:
         self.model_name: str = "none"
         self.adapter_name: str | None = None
         self.generating: bool = False
+
+        # RAG retrieval parameters wired between KB and Workbench
+        self.rag_threshold: float = 0.0
+        self.rag_top_k: int = 3
+

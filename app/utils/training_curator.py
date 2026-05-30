@@ -81,7 +81,7 @@ def export_unsloth(output_path: str = "data/training/export_unsloth.jsonl"):
         for ex in examples:
             out = {"messages": ex["messages"]}
             f.write(json.dumps(out, ensure_ascii=False) + "\n")
-    return output_path, len(examples)
+    return output_path
 
 
 def delete_example(index: int):

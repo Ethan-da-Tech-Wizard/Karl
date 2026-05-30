@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QTextEdit, QComboBox,
     QLabel, QSizePolicy, QFrame, QCheckBox,
-    QDoubleSpinBox, QSpinBox,
+    QDoubleSpinBox, QSpinBox, QListWidget,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut
@@ -120,6 +120,12 @@ class ChatView(QTextBrowser):
         self._streaming = False
         self.clear()
 
+    def replace_last_assistant(self, text: str):
+        if self._messages and self._messages[-1][0] == "assistant":
+            self._messages[-1] = ("assistant", text)
+            self._render_all()
+
+
     def append_system_note(self, text: str):
         self._finalize_stream()
         safe = _escape(text)
@@ -186,9 +192,12 @@ class WorkbenchWorkspace(QWidget):
             "You are Karl, a precise and thoughtful AI assistant. "
             "Reason carefully before responding."
         )
+        self._current_session_file: str | None = None
+        self._is_correcting = False
 
         self._build_ui()
         self._connect_shortcuts()
+        self._refresh_sessions()
 
     # ── build ─────────────────────────────────────────────────────────────────
 
@@ -200,19 +209,46 @@ class WorkbenchWorkspace(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setHandleWidth(1)
 
-        # Left: reasoning panel
+        # Pane 0: Sessions panel
+        self._sessions_panel = self._build_sessions_panel()
+        splitter.addWidget(self._sessions_panel)
+
+        # Pane 1: Reasoning panel
         self._reasoning_panel = self._build_reasoning_panel()
         splitter.addWidget(self._reasoning_panel)
 
-        # Right: chat + input
+        # Pane 2: Chat panel
         right = self._build_chat_panel()
         splitter.addWidget(right)
 
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 5)
-        splitter.setSizes([280, 720])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 4)
+        splitter.setSizes([200, 280, 720])
 
         root.addWidget(splitter)
+
+    def _build_sessions_panel(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("panel")
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # header
+        hdr = QWidget()
+        hdr.setObjectName("panel-header")
+        hdr_layout = QHBoxLayout(hdr)
+        hdr_layout.setContentsMargins(12, 5, 8, 5)
+        hdr.setFixedHeight(30)
+        hdr_layout.addWidget(_label("SESSIONS", "section-header"))
+        layout.addWidget(hdr)
+
+        self._sessions_list = QListWidget()
+        self._sessions_list.currentItemChanged.connect(self._on_session_clicked)
+        layout.addWidget(self._sessions_list, 1)
+
+        return w
 
     def _build_reasoning_panel(self) -> QWidget:
         w = QWidget()
@@ -269,6 +305,11 @@ class WorkbenchWorkspace(QWidget):
         self._thumb_btn.setEnabled(False)
         self._thumb_btn.clicked.connect(self._on_thumb_up)
 
+        self._thumb_down_btn = QPushButton("✗ bad")
+        self._thumb_down_btn.setObjectName("btn-ghost")
+        self._thumb_down_btn.setEnabled(False)
+        self._thumb_down_btn.clicked.connect(self._on_thumb_down)
+
         self._correct_btn = QPushButton("✎ correct")
         self._correct_btn.setObjectName("btn-ghost")
         self._correct_btn.setEnabled(False)
@@ -278,7 +319,7 @@ class WorkbenchWorkspace(QWidget):
         self._new_session_btn.setObjectName("btn-ghost")
         self._new_session_btn.clicked.connect(self._new_session)
 
-        for b in (self._thumb_btn, self._correct_btn, self._new_session_btn):
+        for b in (self._thumb_btn, self._thumb_down_btn, self._correct_btn, self._new_session_btn):
             fb_layout.addWidget(b)
 
         layout.addWidget(feedback_row)
@@ -404,17 +445,57 @@ class WorkbenchWorkspace(QWidget):
         if not text or self._thread is not None:
             return
 
+        if self._is_correcting:
+            self._is_correcting = False
+            self._correct_btn.setText("✎ correct")
+            self._correct_btn.setEnabled(False)
+            self._thumb_btn.setEnabled(False)
+            self._thumb_down_btn.setEnabled(False)
+
+            self._input.clear()
+
+            # Update the last assistant message in history
+            if self.chat_history and self.chat_history[-1]["role"] == "assistant":
+                self.chat_history[-1]["content"] = text
+
+            # Update ChatView
+            self._chat_view.replace_last_assistant(text)
+
+            # Save corrected example
+            prompt = self.chat_history[-2]["content"] if len(self.chat_history) >= 2 else ""
+            self.state.curator.save_example(
+                prompt=prompt,
+                response=text,
+                source="corrected",
+                system_prompt=self._system_prompt
+            )
+
+            # Update trace log
+            self.state.logger.update_last_entry_feedback(
+                feedback="corrected",
+                corrected_response=text
+            )
+
+            self._last_response = text
+            self._save_current_session()
+            return
+
         self._input.clear()
         self._chat_view.push_user(text)
         self._reasoning_view.clear()
         self._thumb_btn.setEnabled(False)
+        self._thumb_down_btn.setEnabled(False)
         self._correct_btn.setEnabled(False)
 
         self.chat_history.append({"role": "user", "content": text})
 
         chunks = []
         if self._rag_check.isChecked() and self.state.rag.total_chunks > 0:
-            chunks = self.state.rag.retrieve(text, top_k=3)
+            chunks = self.state.rag.retrieve(
+                text,
+                top_k=getattr(self.state, "rag_top_k", 3),
+                threshold=getattr(self.state, "rag_threshold", 0.0)
+            )
 
         if self._loop_check.isChecked():
             self._start_agentic(chunks)
@@ -482,13 +563,23 @@ class WorkbenchWorkspace(QWidget):
         self._params_drawer.setVisible(not visible)
 
     def _new_session(self):
+        self._save_current_session()
+        self._current_session_file = None
         self.chat_history.clear()
         self._chat_view.clear_display()
         self._reasoning_view.clear()
         self._last_response = ""
         self._last_thought = ""
+        self._is_correcting = False
+        self._correct_btn.setText("✎ correct")
+        self._thumb_btn.setText("✓ good")
+        self._thumb_down_btn.setText("✗ bad")
         self._thumb_btn.setEnabled(False)
+        self._thumb_down_btn.setEnabled(False)
         self._correct_btn.setEnabled(False)
+        self._sessions_list.blockSignals(True)
+        self._sessions_list.setCurrentItem(None)
+        self._sessions_list.blockSignals(False)
 
     # ── thread slots ──────────────────────────────────────────────────────────
 
@@ -510,10 +601,16 @@ class WorkbenchWorkspace(QWidget):
         if truncated:
             self._chat_view.append_system_note("— generation truncated —")
         self._set_busy(False)
+        self._is_correcting = False
+        self._correct_btn.setText("✎ correct")
+        self._thumb_btn.setText("✓ good")
+        self._thumb_down_btn.setText("✗ bad")
         self._thumb_btn.setEnabled(True)
+        self._thumb_down_btn.setEnabled(True)
         self._correct_btn.setEnabled(True)
         self._thread = None
         self.status_changed.emit("idle", False)
+        self._save_current_session()
 
     def _on_iteration(self, index: int, _thought: str, response: str):
         self._chat_view.finalize_stream()
@@ -527,6 +624,7 @@ class WorkbenchWorkspace(QWidget):
         self._set_busy(False)
         self._thread = None
         self.status_changed.emit("idle", False)
+        self._save_current_session()
 
     def _on_error(self, msg: str):
         self._chat_view.finalize_stream()
@@ -544,17 +642,97 @@ class WorkbenchWorkspace(QWidget):
                 prompt=prompt,
                 response=self._last_response,
                 source="thumbs_up",
+                system_prompt=self._system_prompt,
             )
+            self.state.logger.update_last_entry_feedback(feedback="thumbs_up")
             self._thumb_btn.setText("✓ saved")
             self._thumb_btn.setEnabled(False)
+            self._thumb_down_btn.setEnabled(False)
+
+    def _on_thumb_down(self):
+        if self._last_response:
+            prompt = self.chat_history[-2]["content"] if len(self.chat_history) >= 2 else ""
+            self.state.curator.save_example(
+                prompt=prompt,
+                response=self._last_response,
+                source="thumbs_down",
+                system_prompt=self._system_prompt,
+            )
+            self.state.logger.update_last_entry_feedback(feedback="thumbs_down")
+            self._thumb_down_btn.setText("✗ saved")
+            self._thumb_btn.setEnabled(False)
+            self._thumb_down_btn.setEnabled(False)
 
     def _on_correct(self):
         self._correct_btn.setText("editing...")
         self._correct_btn.setEnabled(False)
+        self._is_correcting = True
         self._input.setPlainText(self._last_response)
         self._input.setFocus()
 
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _save_current_session(self):
+        if not self.chat_history:
+            return
+        self._current_session_file = self.state.memory.save_session(
+            chat_history=self.chat_history,
+            system_prompt=self._system_prompt,
+            filename=self._current_session_file
+        )
+        self._refresh_sessions()
+
+    def _refresh_sessions(self):
+        self._sessions_list.blockSignals(True)
+        self._sessions_list.clear()
+        sessions = self.state.memory.list_sessions()
+        sessions.sort(reverse=True)
+        for s in sessions:
+            self._sessions_list.addItem(s)
+        if getattr(self, "_current_session_file", None):
+            items = self._sessions_list.findItems(self._current_session_file, Qt.MatchFlag.MatchExact)
+            if items:
+                self._sessions_list.setCurrentItem(items[0])
+        self._sessions_list.blockSignals(False)
+
+    def _on_session_clicked(self, current, previous):
+        if not current:
+            return
+        filename = current.text()
+        if filename == getattr(self, "_current_session_file", None):
+            return
+
+        self._save_current_session()
+
+        sys_prompt, history = self.state.memory.load_session(filename)
+        self._current_session_file = filename
+        self._system_prompt = sys_prompt
+        self.chat_history = list(history)
+
+        self._chat_view.clear_display()
+        self._chat_view._messages = [(m["role"], m["content"]) for m in self.chat_history]
+        self._chat_view._render_all()
+
+        self._is_correcting = False
+        self._correct_btn.setText("✎ correct")
+
+        if self.chat_history and self.chat_history[-1]["role"] == "assistant":
+            self._last_response = self.chat_history[-1]["content"]
+            self._last_thought = ""
+            self._thumb_btn.setText("✓ good")
+            self._thumb_down_btn.setText("✗ bad")
+            self._thumb_btn.setEnabled(True)
+            self._thumb_down_btn.setEnabled(True)
+            self._correct_btn.setEnabled(True)
+        else:
+            self._last_response = ""
+            self._last_thought = ""
+            self._thumb_btn.setEnabled(False)
+            self._thumb_down_btn.setEnabled(False)
+            self._correct_btn.setEnabled(False)
+
+    def on_close(self):
+        self._save_current_session()
 
     def _set_busy(self, busy: bool):
         self._send_btn.setEnabled(not busy)

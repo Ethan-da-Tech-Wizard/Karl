@@ -283,7 +283,7 @@ All items are in existing files. All are mechanical. Do them together.
 
 ---
 
-### 🔨 Phase 2 — Complete the Data Pipeline  ← YOU ARE HERE
+### ✅ Phase 2 — Complete the Data Pipeline
 **One commit. Five wiring tasks. Connects existing components.**
 
 1. Add `rag_threshold: float` and `rag_top_k: int` to `AppState`;
@@ -298,7 +298,7 @@ All items are in existing files. All are mechanical. Do them together.
 
 ---
 
-### ⬚ Phase 2.5a — UX Polish: Workbench
+### 🔨 Phase 2.5a — UX Polish: Workbench  ← YOU ARE HERE
 **One commit. Layout and visual hierarchy only. No new functionality.**
 Phase 1 and 2 must be complete first — both add controls to Workbench (params drawer,
 sessions panel, thumbs-down button). Polish an incomplete interface and you polish it twice.
