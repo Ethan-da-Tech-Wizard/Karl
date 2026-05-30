@@ -374,7 +374,7 @@ Global pass (review all workspaces together):
 
 ---
 
-### 🔨 Phase 3.1 — Small Workspace Fixes  ← YOU ARE HERE
+### ✅ Phase 3.1 — Small Workspace Fixes *(completed)*
 **One commit. Two mechanical additions. Low risk.**
 
 1. KB workspace: add chunk_size and overlap spinboxes before ingest button;
@@ -384,7 +384,7 @@ Global pass (review all workspaces together):
 
 ---
 
-### ⬚ Phase 3.2 — Prompt Lab Completion
+### 🔨 Phase 3.2 — Prompt Lab Completion  ← YOU ARE HERE
 **One commit. Self-contained UI feature. Medium risk.**
 
 1. After both A/B runs complete, render character-level diff of the two outputs
