@@ -297,7 +297,6 @@ class PromptLabWorkspace(QWidget):
         
         self._diff_view = QTextBrowser()
         self._diff_view.setPlaceholderText("Difference view will render here after both outputs complete...")
-        self._diff_view.setTextFormat(Qt.TextFormat.RichText)
         self._diff_view.setFixedHeight(140)
         dt_layout.addWidget(self._diff_view)
         self._bottom_tabs.addTab(diff_tab, "Difference View")
@@ -333,7 +332,6 @@ class PromptLabWorkspace(QWidget):
         # Output browser
         self._tok_output = QTextBrowser()
         self._tok_output.setPlaceholderText("Tokens will be visualized here...")
-        self._tok_output.setTextFormat(Qt.TextFormat.RichText)
         self._tok_output.setFixedHeight(120)
         tok_layout.addWidget(self._tok_output)
         
@@ -442,7 +440,7 @@ class PromptLabWorkspace(QWidget):
             self._pairs_list.blockSignals(True)
             self._refresh_pairs()
             
-            items = self._pairs_list.findItems(name, Qt.MatchFlag.MatchExact)
+            items = self._pairs_list.findItems(name, Qt.MatchFlag.MatchFixedString)
             if items:
                 self._pairs_list.setCurrentItem(items[0])
             self._pairs_list.blockSignals(False)

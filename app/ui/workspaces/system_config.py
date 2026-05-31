@@ -213,7 +213,6 @@ class SystemConfigWorkspace(QWidget):
         self._model_list = QTextBrowser()
         self._model_list.setFixedHeight(160)
         self._model_list.setPlaceholderText("scanning data/models/...")
-        self._model_list.setTextFormat(Qt.TextFormat.RichText)
         avp_layout.addWidget(self._model_list)
         self._scan_models()
 
@@ -576,6 +575,7 @@ class SystemConfigWorkspace(QWidget):
         self._system_edit = QTextEdit()
         self._system_edit.setPlainText(
             "You are Karl, a precise and thoughtful AI assistant. "
+            "Always respond in English. "
             "Reason carefully before responding."
         )
         ip_layout.addWidget(self._system_edit, 1)
@@ -607,7 +607,6 @@ class SystemConfigWorkspace(QWidget):
 
         self._hw_view = QTextBrowser()
         self._hw_view.setFixedHeight(130)
-        self._hw_view.setTextFormat(Qt.TextFormat.RichText)
         hwp_layout.addWidget(self._hw_view)
 
         refresh_btn = QPushButton("refresh hardware")

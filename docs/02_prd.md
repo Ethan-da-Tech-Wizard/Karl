@@ -81,18 +81,18 @@ Four named workflow modes, each bundling a template + RAG config + output schema
 | Grounded Answer | `grounded_answer` | Required (top-5) | Cited text or NOT IN CONTEXT |
 | Code Review | `code_review` | Off | JSON array of findings |
 
-### 4.5 Hardware Scout & Model Upgrade
+### 4.5 Hardware Scout & Model Downloader
 - `core/hardware_scout.py` → `get_hardware_profile()` returns `{ram_gb, vram_gb, storage_gb}`.
-- `app/engine/upgrade_manager.py` → `check_for_upgrade()` compares profile to `data/model_registry.json` tiers.
-- On user approval: downloads GGUF, resets `ModelLoader` singleton, updates `data/active_model.json`, runs `git commit + git push`.
+- **Model Registry Downloader** → reads `data/model_registry.json` model tiers (name, context size, RAM requirements, download URLs).
+- **Asynchronous Downloads** → streams GGUF models directly to `data/models/` in the background with speed metrics, cancel controls, and auto-activation upon completion (writes active JSON and resets the model loader instance).
 
-### 4.6 Training Data Curator
-- 👍 / ✏️ rating buttons appear after every completed generation.
-- 👍 saves the exchange as a positive example.
-- ✏️ opens a correction dialog — user rewrites the ideal response.
-- All data stored in `data/training/curated.jsonl`.
-- Export via **Export for Unsloth** button → writes Unsloth-formatted JSONL for QLoRA fine-tuning.
-- See `training/qlora_config_template.yaml` and `training/WHEN_TO_TUNE.md` for the full training pipeline.
+### 4.6 Training Data Curator & DPO Export
+- 👍 / 👎 / ✏️ rating buttons appear after every completed generation.
+- 👍 saves the exchange as a positive (chosen) example.
+- 👎 saves the exchange as a negative (rejected) example.
+- ✏️ opens a correction dialog — user rewrites the ideal response (saved as corrected).
+- Export SFT: exports Unsloth-formatted JSONL.
+- Export DPO: matches thumbs-up/corrected with thumbs-down outputs on matching user prompts to export Unsloth DPO datasets.
 
 ### 4.7 Eval Harness
 - `eval/harness.py` — dataset runner across all workflow modes.
@@ -111,11 +111,14 @@ Four named workflow modes, each bundling a template + RAG config + output schema
 - **Rich tooltips** — every interactive element has a detailed hover description
 - Fully resizable via QSplitter handles
 
+### 4.9 Advanced Customization & Experimentation (Phases 3 & 4)
+- **Prompt Diff Tool** — Side-by-side comparison of two trace outputs with character-level diff color highlighting.
+- **Tokenizer Visualization** — BPE token parser with classification color coding (special, punctuation, word-start, continuation) and token IDs on hover.
+- **Session Branching** — Conversation tree structure. Allows branching from any previous user or assistant message, tracking parent/child nodes, and navigating paths using an interactive Branch Tree widget.
+
 ---
 
 ## 5. Out of Scope (Planned Next Milestones)
 
-- **Tokenizer Visualization** — token IDs and per-token log-probabilities alongside raw stream
-- **Session Branching** — fork a conversation at any point and explore alternate paths
-- **Prompt Diff Tool** — side-by-side comparison of two trace logs
-- **DPO Export** — direct preference optimisation dataset format (requires rejected-text storage at rating time)
+- Live multi-user collaboration / cloud databases (Karl is offline-first).
+- Native training GPU scaling beyond a single device.

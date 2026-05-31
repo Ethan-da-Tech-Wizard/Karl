@@ -49,7 +49,7 @@ each other and never reference `MainWindow`.
 
 | Workspace | File | Owns |
 |-----------|------|------|
-| Workbench | `workbench.py` | `chat_history`, LLMThread, AgenticThread |
+| Workbench | `workbench.py` | `chat_history` (SessionTree), LLMThread, AgenticThread |
 | Prompt Lab | `prompt_lab.py` | A/B run threads, prompt pairs |
 | Knowledge Base | `knowledge_base.py` | ingest controls, chunk inspector |
 | Training Studio | `training_studio.py` | dataset browser, export, TrainingThread |
@@ -183,11 +183,12 @@ User input → WorkbenchWorkspace._send()
   │      AppState.rag.retrieve(query, top_k=AppState.rag_top_k,
   │                             threshold=AppState.rag_threshold)  ← Phase 2.1
   │
-  ├── 2. append user message to chat_history
+  ├── 2. add user message to chat_history (SessionTree)
+  │      user_node = chat_history.add_message("user", text)
   │
-  ├── 3. chat_view.push_user(text)
+  ├── 3. chat_view.push_user(text, user_node.id)
   │
-  ├── 4. spawn LLMThread(system_prompt, chat_history, hyperparams, chunks)
+  ├── 4. spawn LLMThread(system_prompt, list(chat_history), hyperparams, chunks)
   │
   └── LLMThread.run():
         ├── importlib.reload(core.interaction_loop)
@@ -202,7 +203,8 @@ User input → WorkbenchWorkspace._send()
         │     workflow=..., template=..., ...)
         └── emit generation_finished(thought, response, truncated, ended_in_thought)
               → WorkbenchWorkspace._on_done()
-                  ├── chat_history.append({"role": "assistant", "content": response})
+                  ├── node = chat_history.add_message("assistant", response)
+                  ├── chat_view.finalize_stream(node.id)
                   ├── enable feedback buttons
                   └── status_changed.emit("idle", False)
 ```
@@ -213,7 +215,7 @@ User input → WorkbenchWorkspace._send()
 
 ```
 WorkbenchWorkspace._start_agentic()
-  → AgenticThread(system_prompt, chat_history, hyperparams)
+  → AgenticThread(system_prompt, list(chat_history), hyperparams)
 
 AgenticThread.run():
   while not stop_requested:
@@ -228,6 +230,9 @@ AgenticThread.run():
     ├── if not should_continue(i, response): break
     └── chat_history.append({"role":"user", "content": build_next_prompt(response, i)})
   emit loop_finished(total)
+      → WorkbenchWorkspace._on_loop_done()
+          ├── merges new agentic turns back into main SessionTree
+          └── chat_view re-renders all messages with branch IDs
 ```
 
 ---

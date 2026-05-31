@@ -193,12 +193,13 @@ class WorkbenchWorkspace(QWidget):
         self._last_response = ""
         self._last_thought = ""
         self._hyperparams = {
-            "temperature": 0.7,
+            "temperature": 0.6,
             "top_p": 0.95,
-            "max_tokens": 2048,
+            "max_tokens": 1024,
         }
         self._system_prompt = (
             "You are Karl, a precise and thoughtful AI assistant. "
+            "Always respond in English. "
             "Reason carefully before responding."
         )
         self._current_session_file: str | None = None
@@ -736,7 +737,7 @@ class WorkbenchWorkspace(QWidget):
         for s in sessions:
             self._sessions_list.addItem(s)
         if getattr(self, "_current_session_file", None):
-            items = self._sessions_list.findItems(self._current_session_file, Qt.MatchFlag.MatchExact)
+            items = self._sessions_list.findItems(self._current_session_file, Qt.MatchFlag.MatchFixedString)
             if items:
                 self._sessions_list.setCurrentItem(items[0])
         self._sessions_list.blockSignals(False)

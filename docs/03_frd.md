@@ -10,13 +10,13 @@
 │                 │                                  │                  │
 │  Saved Sessions │  [Raw Token Archive — hidden]    │  System Prompt   │
 │  ─────────────  │  ─────────────────────────────── │  ─────────────── │
-│  Knowledge Base │  Diagnostic Lane (thought stream)│  Workflow Mode   │
-│  (RAG)          │  ─────────────────────────────── │  Template        │
-│                 │  Final Response + Input Row       │  RAG top-k       │
-│                 │  Workflow Report                  │  ─────────────── │
+│  Branches Tree  │  Diagnostic Lane (thought stream)│  Workflow Mode   │
+│  ─────────────  │  ─────────────────────────────── │  Template        │
+│  Knowledge Base │  Final Response + Input Row       │  RAG top-k       │
+│  (RAG)          │  Workflow Report                  │  ─────────────── │
 │                 │  Rating Row                       │  Hyperparameters │
 │                 │  Agentic Controls                 │  ─────────────── │
-│                 │                                   │  Curator         │
+│                 │                                   │  Curator / Train │
 └─────────────────┴───────────────────────────────────┴──────────────────┘
                               Status Bar
 ```
@@ -28,24 +28,25 @@ The Raw Token Archive panel is collapsed by default (toggled via checkbox).
 
 | Panel | Widget | Purpose |
 |---|---|---|
-| Left | `QListWidget` (sessions) | Double-click to reload a saved conversation |
+| Left | `QListWidget` (sessions) | Click to load a saved conversation |
+| Left | `QTreeWidget` (branches) | Tree view displaying user/assistant messages on all branches; click to jump active path |
 | Left | `QListWidget` (KB) | Shows ingested document names and chunk counts |
 | Left | `QPushButton` × 3 | New session, Save session, Ingest document |
 | Center top | `QTextBrowser` (raw) | Pre-parser token stream — toggleable |
 | Center mid | `QTextBrowser` (thought) | Live `<think>` stream from streaming parser |
-| Center bot | `QTextBrowser` (chat) | Cleaned final response |
+| Center bot | `QTextBrowser` (chat) | Cleaned final response, with clickable anchor branch links next to YOU/KARL headers |
 | Center bot | `QLineEdit` + buttons | Prompt input + Generate + Force Thought |
 | Center bot | `QTextBrowser` (report) | Post-generation workflow report |
-| Center bot | Rating buttons | 👍 Good / ✏️ Fix — feeds training curator |
+| Center bot | Rating buttons | 👍 Good / 👎 Bad / ✏️ Fix — feeds training curator |
 | Center bot | Agentic controls | Auto-Loop checkbox, Run, Stop, status label |
 | Right | `QTextEdit` | System prompt (editable, sticky across turns) |
 | Right | `QComboBox` × 2 | Workflow and template selectors |
 | Right | `QSpinBox` + `QCheckBox` | RAG top-k and contextual headers toggle |
 | Right | `QDoubleSpinBox` × 2 | Temperature and Top-P |
 | Right | `QSpinBox` | Max new tokens |
-| Right | Upgrade area | Hardware upgrade notification + button |
-| Right | Curator stats + export | Training example count and export button |
-| Bottom | `QStatusBar` | Live state + last generation latency |
+| Right | Downloader area | Registry model tiers list + download managers |
+| Right | Curator stats + export | Training example count and export SFT/DPO buttons |
+| Bottom | `QStatusBar` | Live state + last generation latency + active model/RAM metrics |
 
 ### 1.3 Rich Tooltips
 Every interactive element carries a `setToolTip()` with:
@@ -131,7 +132,7 @@ Format: `{unix_float}\t{token_text}` — one line per streaming chunk.
 `ModelLoader` is a class-level singleton:
 - `get_instance()` — loads model once, returns same object forever
 - `reset_instance()` — forces reload on next `get_instance()` call
-- Config: `n_ctx=4096`, `verbose=False`
+- Config: `n_ctx` loaded from `data/model_registry.json` based on active GGUF model tier, `verbose=False`
 - Default model: `data/models/deepseek-r1-1.5b.gguf`
 
 ### 3.2 Generation Call Parameters
@@ -152,7 +153,7 @@ llm(
 ### 3.3 Context Window Management
 
 Both threads implement `_trim_history()`:
-- Budget: `(4096 - 1024) * 3` chars (~9216 chars, conservative 3 chars/token)
+- Budget: `(ModelLoader.n_ctx() - 1024) * 3` chars (~3 chars/token conservative estimate)
 - Walks history newest-first, accumulating char count
 - Stops when budget exceeded, always preserves seed message (index 0)
 - Emits a notice to the Diagnostic Lane when trimming occurs

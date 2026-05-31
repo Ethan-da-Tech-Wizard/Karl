@@ -10,38 +10,53 @@ It is not LM Studio. It is not Ollama. It is a surgical instrument.
 
 - **Zero network calls.** The engine runs as a C-extension inside your Python process. No localhost servers. No telemetry.
 - **You see exactly how it thinks.** Karl splits DeepSeek-R1's `<think>` reasoning blocks into a dedicated live stream panel, separate from the final response.
+- **Session Branching.** Interactive conversation tree view allowing you to branch off any message to explore alternate prompts and generation paths.
 - **Every generation is logged.** An immutable JSONL trace file captures the exact prompt, hyperparameters, thought process, and response for every single generation. Your experimental audit trail is guaranteed.
 - **The core is yours to hack.** `core/interaction_loop.py` and `core/cognitive_parser.py` are the live Python scripts that control prompt construction and thought parsing. Karl hot-reloads them on every generation — change the file and click Generate, no restart needed.
 - **RAG on any file.** Drop a PDF, Word doc, Python file, markdown, or CSV into Karl's Knowledge Base. It chunks, embeds, and retrieves locally via `sentence-transformers` + `faiss-cpu`.
 
 ---
 
-## Getting Started
+## Getting Started (Arch Linux / Linux)
 
 ### 1. Prerequisites
 - Python 3.10+
-- Microsoft C++ Build Tools (required to compile `llama-cpp-python` from source)
+- C/C++ compiler toolchain (gcc, cmake, make)
+- NVIDIA GPU with CUDA drivers (optional, for LoRA training/GPU inference)
 
-### 2. Install
-```powershell
+On Arch Linux, install base build tools and system headers:
+```bash
+sudo pacman -S base-devel cmake python
+```
+
+### 2. Install Virtual Environment
+```bash
 python -m venv venv
-.\venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Note:** `llama-cpp-python` must be compiled from source for your CPU architecture:
-> ```powershell
-> $env:CMAKE_ARGS="-DGGML_NATIVE=ON"; pip install llama-cpp-python --no-binary llama-cpp-python
-> ```
+Compile `llama-cpp-python` from source for native CPU optimizations:
+```bash
+CMAKE_ARGS="-DGGML_NATIVE=ON" pip install llama-cpp-python --no-binary llama-cpp-python
+```
 
-### 3. Download Model
-```powershell
+### 3. GPU Acceleration (CUDA / LoRA Training Setup)
+If you have an NVIDIA graphics card, run the provided GPU setup script to compile CUDA drivers, install CUDA PyTorch, and set up PEFT/TRL training tools in your virtual environment:
+```bash
+# Switching graphics manager to hybrid/nvidia mode may be required beforehand
+sudo ./setup_gpu.sh
+```
+
+### 4. Download Model
+```bash
 python download_test_model.py
 ```
 This downloads **DeepSeek-R1-Distill-Qwen-1.5B** (Q4_K_M, ~1GB) into `data/models/`.
 
-### 4. Run
-```powershell
+### 5. Run Karl
+```bash
+source venv/bin/activate
 python main.py
 ```
 
@@ -74,3 +89,4 @@ python main.py
 - ✅ Milestone 4: Universal RAG Pipeline
 - ✅ Milestone 5: Hackable Decoupling
 - ✅ Milestone 6: Agentic Loop (Autonomous Self-Iteration)
+- ✅ Milestone 7: Interactive Session Branching (Conversation Tree)

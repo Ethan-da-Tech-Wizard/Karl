@@ -362,17 +362,17 @@ where each node can have multiple child turns. Plan carefully before touching co
 | M15 | Training Path Formalisation | ✅ Done |
 | M16 | Multi-Workspace UI Rebuild | ✅ Done |
 | M17 | Foundation Hardening | ✅ Done |
-| — | Phase 1: Wire It Together | ⬜ Next |
-| — | Phase 2: Data Pipeline | ⬜ Pending |
-| — | Phase 2.5a: UX Polish — Workbench | ⬜ Pending |
-| — | Phase 2.5b: UX Polish — KB + Prompt Lab | ⬜ Pending |
-| — | Phase 2.5c: UX Polish — Training + Eval | ⬜ Pending |
-| — | Phase 2.5d: UX Polish — System + Global | ⬜ Pending |
-| — | Phase 3.1: Small Workspace Fixes | ⬜ Pending |
-| — | Phase 3.2: Prompt Lab Completion | ⬜ Pending |
-| — | Phase 3.3: LoRA/QLoRA Training | ⬜ Pending |
-| — | Phase 3.4: Model Registry Browser | ⬜ Pending |
-| — | Phase 4.1: Tokenizer Visualization | ⬜ Pending |
-| — | Phase 4.2: DPO Export Completion | ⬜ Pending |
-| — | Phase 4.3: Session Branching | ⬜ Pending |
-| — | Phase 5: Docs, Tests, Accuracy | ⬜ Pending |
+| — | Phase 1: Wire It Together | ✅ Done |
+| — | Phase 2: Data Pipeline | ✅ Done |
+| — | Phase 2.5a: UX Polish — Workbench | ✅ Done |
+| — | Phase 2.5b: UX Polish — KB + Prompt Lab | ✅ Done |
+| — | Phase 2.5c: UX Polish — Training + Eval | ✅ Done |
+| — | Phase 2.5d: UX Polish — System + Global | ✅ Done |
+| — | Phase 3.1: Small Workspace Fixes | ✅ Done |
+| — | Phase 3.2: Prompt Lab Completion | ✅ Done |
+| — | Phase 3.3: LoRA/QLoRA Training | ✅ Done |
+| — | Phase 3.4: Model Registry Browser | ✅ Done |
+| — | Phase 4.1: Tokenizer Visualization | ✅ Done |
+| — | Phase 4.2: DPO Export Completion | ✅ Done |
+| — | Phase 4.3: Session Branching | ✅ Done |
+| — | Phase 5: Docs, Tests, Accuracy | ✅ Done |

@@ -35,24 +35,21 @@ Karl/
 ├── app/
 │   ├── engine/
 │   │   ├── model_loader.py     ← ModelLoader singleton: get_instance() / reset_instance()
-│   │   │                          n_ctx=4096, verbose=False
+│   │   │                          model-aware n_ctx context size, verbose=False
 │   │   ├── llm_thread.py       ← LLMThread(QThread): single-shot streaming generation
 │   │   │                          Inline state machine: routes <think> tokens to thought panel
 │   │   │                          Handles truncation chaining (finish_reason == "length")
-│   │   ├── agentic_thread.py   ← AgenticThread(QThread): autonomous multi-turn loop
-│   │   │                          Hot-reloads agentic_loop.py between iterations
-│   │   └── upgrade_manager.py  ← check_for_upgrade() + perform_upgrade()
-│   │                              Compares hardware profile to model_registry.json tiers
-│   │                              Downloads GGUF + git commit + git push on upgrade
+│   │   └── agentic_thread.py   ← AgenticThread(QThread): autonomous multi-turn loop
+│   │                              Hot-reloads agentic_loop.py between iterations
 │   │
 │   ├── ui/
-│   │   ├── main_window.py      ← MainWindow(QMainWindow): full UI v2
+│   │   ├── main_window.py      ← MainWindow(QMainWindow): full UI layout stack
 │   │   │                          Three-column layout (Sessions | Center | Config)
 │   │   │                          Rich tooltips on every interactive element
 │   │   │                          Status bar with live state + latency
-│   │   └── styles/
-│   │       └── neutral.qss     ← Full Qt stylesheet: dark theme, hover states,
-│   │                              scrollbars, tooltips, button variants, comboboxes
+│   │   ├── workspaces/         ← Multi-workspace widgets (Workbench, Prompt Lab, etc.)
+│   │   ├── widgets/            ← Common widgets (Status bar, settings rows, downloader cards)
+│   │   └── themes.py           ← Design system palette, mono fonts, and dynamically compiled QSS stylesheet
 │   │
 │   └── utils/
 │       ├── trace_logger.py     ← TraceLogger: writes JSONL to data/logs/traces/
@@ -61,11 +58,12 @@ Karl/
 │       │                          raw_output, parsed_thought, parsed_response
 │       ├── memory_manager.py   ← MemoryManager: save/load/list sessions as JSON
 │       │                          Sessions stored in data/sessions/
+│       ├── session_tree.py     ← SessionNode / SessionTree: nested conversation tree structure supporting branching
 │       ├── rag_pipeline.py     ← RAGPipeline: ingest / retrieve / eval
 │       │                          FAISS flat L2 + all-MiniLM-L6-v2 embeddings
 │       │                          Persistent index in data/vector_db/
 │       │                          Supports PDF, DOCX, TXT, PY, MD, CSV
-│       └── training_curator.py ← save_example() / get_stats() / export_unsloth()
+│       └── training_curator.py ← save_example() / get_stats() / export_unsloth() / export_dpo()
 │                                  Curated examples stored in data/training/curated.jsonl
 │
 ├── eval/

@@ -261,7 +261,9 @@ failure in one sub-phase cannot corrupt the others.
 
 ---
 
-> **Progress Legend:** ✅ = completed · 🔨 = in progress (← YOU ARE HERE) · ⬚ = not started
+> **Progress Legend:** ✅ = completed · 🔨 = in progress · ⬚ = not started
+> **All phases complete. Karl is fully built.**
+
 
 ### ✅ Phase 1 — Wire It Together *(completed)*
 **One commit. Six targeted bug fixes. No new architecture, no new files.**
@@ -444,7 +446,7 @@ Exit criterion: training runs on a 5-example dataset, loss curve visible, adapte
 
 ---
 
-### 🔨 Phase 4.3 — Session Branching  ← YOU ARE HERE
+### ✅ Phase 4.3 — Session Branching *(completed)*
 **One commit. Highest architectural risk. Must be fully isolated.**
 Read the R18 risk entry in `docs/07_risk_register.md` before touching this.
 
@@ -464,20 +466,22 @@ Exit criterion: user can fork at any message, explore alternate path, navigate b
 
 ---
 
-### ⬚ Phase 5 — Documentation, Tests, Accuracy
+### ✅ Phase 5 — Documentation, Tests, Accuracy  *(completed)*
 **One commit. No code risk. Do last.**
 
-1. Rewrite `README.md` for Linux/Arch — no PowerShell, no Windows paths
-2. Rewrite `docs/01–03` and `docs/06` to match current architecture
+1. Rewrote `README.md` for Linux/Arch — no PowerShell, no Windows paths
+2. Rewrote `docs/01–03` and `docs/06` to match current architecture
 3. `docs/04_architecture.md`, `docs/05_scope_and_milestones.md`,
-   `docs/07_risk_register.md` — already updated; verify they still match after Phase 4
-4. Update this file (`AGENTS.md`) to reflect completed state
-5. Create `tests/` directory; write:
+   `docs/07_risk_register.md` — verified and updated to match completed Phase 4 state
+4. Updated `AGENTS.md` to reflect fully completed project
+5. Created `tests/` directory with:
    - `tests/test_cognitive_parser.py` — all 5 state machine cases
    - `tests/test_trace_logger.py` — schema fields, rotation trigger
    - `tests/test_training_curator.py` — save, export, DPO pairing
-6. Fix `smoke_test.py` and `engine_test.py`: replace hardcoded model paths with
-   `ModelLoader.get_instance()` / discovery from `data/models/`
+   - `tests/test_session_tree.py` — node/tree ops, branching, serialization, duck-typing
+6. Fixed `engine_test.py`: uses `ModelLoader.get_instance()` and `ModelLoader.model_name()`
+   instead of a hardcoded `Llama()` constructor with a hardcoded path
+
 
 ---
 

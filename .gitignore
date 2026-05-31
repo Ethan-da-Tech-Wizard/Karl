@@ -17,6 +17,9 @@ data/sessions/
 
 # Training data and fine-tuned adapters (large, user-specific)
 data/training/
+data/adapters/
+data/hf_models/
+unsloth_compiled_cache/
 
 # Eval results (run artifacts — reproducible from datasets)
 eval/results/

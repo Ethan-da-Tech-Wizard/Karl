@@ -308,7 +308,6 @@ class TrainingStudioWorkspace(QWidget):
         self._deps_lbl.setObjectName("lbl-muted")
         self._deps_lbl.setWordWrap(True)
         layout.addWidget(self._deps_lbl)
-        self._check_deps()
 
         layout.addWidget(_hline())
         layout.addWidget(_section("LORA CONFIG"))
@@ -382,6 +381,7 @@ class TrainingStudioWorkspace(QWidget):
         self._train_btn.setObjectName("btn-primary")
         self._train_btn.clicked.connect(self._begin_training)
         layout.addWidget(self._train_btn)
+        self._check_deps()  # now safe — _train_btn exists
 
         self._train_progress = QProgressBar()
         self._train_progress.setVisible(False)

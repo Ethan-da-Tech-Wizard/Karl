@@ -182,7 +182,6 @@ class EvalSuiteWorkspace(QWidget):
 
         self._detail_view = QTextBrowser()
         self._detail_view.setPlaceholderText("select a result to inspect")
-        self._detail_view.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self._detail_view, 1)
 
         return w
