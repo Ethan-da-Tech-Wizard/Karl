@@ -179,6 +179,7 @@ class TrainingStudioWorkspace(QWidget):
         super().__init__(parent)
         self.state = state
         self.setObjectName("workspace-root")
+        self._active_threads = set()
         self._build_ui()
 
     def _build_ui(self):
@@ -588,6 +589,11 @@ class TrainingStudioWorkspace(QWidget):
 
         # Start thread
         self._thread = TrainingThread(hf_base_dir, adapter_name, config)
+        self._active_threads.add(self._thread)
+        self._thread.finished.connect(
+            lambda t=self._thread: self._active_threads.discard(t)
+        )
+        self._thread.finished.connect(self._thread.deleteLater)
         self._thread.log.connect(self._on_train_log)
         self._thread.loss.connect(self._on_train_loss)
         self._thread.progress.connect(self._on_train_progress)

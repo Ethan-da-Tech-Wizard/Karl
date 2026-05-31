@@ -134,6 +134,7 @@ class SystemConfigWorkspace(QWidget):
         self.state = state
         self._workbench = workbench_ref
         self._download_thread = None
+        self._active_threads = set()
         self._load_registry()
         self.setObjectName("workspace-root")
         self._build_ui()
@@ -444,6 +445,11 @@ class SystemConfigWorkspace(QWidget):
         self._set_ui_enabled_for_download(False)
         
         self._download_thread = DownloadThread(url, target_path)
+        self._active_threads.add(self._download_thread)
+        self._download_thread.finished.connect(
+            lambda t=self._download_thread: self._active_threads.discard(t)
+        )
+        self._download_thread.finished.connect(self._download_thread.deleteLater)
         self._download_thread.progress.connect(self._on_download_progress)
         self._download_thread.speed.connect(self._on_download_speed)
         self._download_thread.done.connect(lambda: self._on_download_done(filename))

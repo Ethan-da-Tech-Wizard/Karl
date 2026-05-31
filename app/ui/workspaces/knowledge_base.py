@@ -59,6 +59,7 @@ class KnowledgeBaseWorkspace(QWidget):
         super().__init__(parent)
         self.state = state
         self.setObjectName("workspace-root")
+        self._active_threads = set()
         self._build_ui()
         self._refresh_sources()
 
@@ -274,6 +275,11 @@ class KnowledgeBaseWorkspace(QWidget):
             chunk_size=self._chunk_size_spin.value(),
             overlap=self._overlap_spin.value()
         )
+        self._active_threads.add(self._ingest_thread)
+        self._ingest_thread.finished.connect(
+            lambda t=self._ingest_thread: self._active_threads.discard(t)
+        )
+        self._ingest_thread.finished.connect(self._ingest_thread.deleteLater)
         self._ingest_thread.done.connect(self._on_ingest_done)
         self._ingest_thread.error.connect(self._on_ingest_error)
         self._ingest_thread.start()

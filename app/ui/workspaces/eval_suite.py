@@ -66,6 +66,7 @@ class EvalSuiteWorkspace(QWidget):
         super().__init__(parent)
         self.state = state
         self.setObjectName("workspace-root")
+        self._active_threads = set()
         self._build_ui()
 
     def _build_ui(self):
@@ -220,6 +221,11 @@ class EvalSuiteWorkspace(QWidget):
         workflow = self._workflow_combo.currentData()
 
         self._thread = _EvalThread(path, workflow, self.state.rag)
+        self._active_threads.add(self._thread)
+        self._thread.finished.connect(
+            lambda t=self._thread: self._active_threads.discard(t)
+        )
+        self._thread.finished.connect(self._thread.deleteLater)
         self._thread.progress.connect(self._on_progress)
         self._thread.done.connect(self._on_done)
         self._thread.error.connect(self._on_error)

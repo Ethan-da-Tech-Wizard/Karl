@@ -190,6 +190,7 @@ class WorkbenchWorkspace(QWidget):
 
         self.chat_history = SessionTree()
         self._thread: LLMThread | AgenticThread | None = None
+        self._active_threads = set()
         self._last_response = ""
         self._last_thought = ""
         self._hyperparams = {
@@ -381,6 +382,10 @@ class WorkbenchWorkspace(QWidget):
         self._workflow_combo.setFixedWidth(160)
         for name, label in list_workflows():
             self._workflow_combo.addItem(label, name)
+        # Select "general_chat" by default (rather than alphabetically first "code_review")
+        default_idx = self._workflow_combo.findData("general_chat")
+        if default_idx >= 0:
+            self._workflow_combo.setCurrentIndex(default_idx)
         ctrl_layout.addWidget(self._workflow_combo)
 
         self._rag_check = QCheckBox("RAG")
@@ -556,6 +561,12 @@ class WorkbenchWorkspace(QWidget):
         t.new_chat_token.connect(self._on_chat)
         t.generation_finished.connect(self._on_done)
         t.error_occurred.connect(self._on_error)
+        
+        # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
+        self._active_threads.add(t)
+        t.finished.connect(lambda: self._active_threads.discard(t))
+        t.finished.connect(t.deleteLater)
+        
         self._thread = t
         t.start()
 
@@ -575,6 +586,12 @@ class WorkbenchWorkspace(QWidget):
         t.iteration_finished.connect(self._on_iteration)
         t.loop_finished.connect(self._on_loop_done)
         t.error_occurred.connect(self._on_error)
+        
+        # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
+        self._active_threads.add(t)
+        t.finished.connect(lambda: self._active_threads.discard(t))
+        t.finished.connect(t.deleteLater)
+        
         self._thread = t
         t.start()
 
