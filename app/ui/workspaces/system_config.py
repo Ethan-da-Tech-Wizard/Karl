@@ -307,6 +307,16 @@ class SystemConfigWorkspace(QWidget):
                     "n_ctx": 8192
                 },
                 {
+                    "tier": 2,
+                    "name": "DeepSeek-R1-Distill-Llama-8B Q4_K_M",
+                    "filename": "deepseek-r1-llama-8b.gguf",
+                    "min_ram_gb": 8.0,
+                    "min_vram_gb": 0.0,
+                    "min_storage_gb": 5.5,
+                    "url": "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf",
+                    "n_ctx": 8192
+                },
+                {
                     "tier": 3,
                     "name": "DeepSeek-R1-Distill-Qwen-14B Q4_K_M",
                     "filename": "deepseek-r1-14b.gguf",

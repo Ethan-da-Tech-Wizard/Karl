@@ -296,6 +296,12 @@ class WorkbenchWorkspace(QWidget):
         hdr_layout.setContentsMargins(12, 5, 8, 5)
         hdr.setFixedHeight(30)
         hdr_layout.addWidget(_label("REASONING", "section-header"))
+        
+        self._reasoning_stats_lbl = QLabel("")
+        self._reasoning_stats_lbl.setObjectName("lbl-muted")
+        self._reasoning_stats_lbl.setStyleSheet("margin-left: 8px; font-weight: normal; font-size: 8pt;")
+        hdr_layout.addWidget(self._reasoning_stats_lbl)
+        
         hdr_layout.addStretch()
         self._toggle_reason_btn = QPushButton("hide")
         self._toggle_reason_btn.setObjectName("btn-ghost")
@@ -559,6 +565,7 @@ class WorkbenchWorkspace(QWidget):
     def _start_single(self, chunks: list[str]):
         self._chat_view.begin_stream()
         self._set_busy(True)
+        self._reasoning_stats_lbl.setText("")
         t = LLMThread(
             system_prompt=self._system_prompt,
             chat_history=list(self.chat_history),
@@ -570,6 +577,7 @@ class WorkbenchWorkspace(QWidget):
         )
         t.new_thought_token.connect(self._on_thought)
         t.new_chat_token.connect(self._on_chat)
+        t.live_stats.connect(self._on_live_stats)
         t.generation_finished.connect(self._on_done)
         t.error_occurred.connect(self._on_error)
         
@@ -583,6 +591,7 @@ class WorkbenchWorkspace(QWidget):
 
     def _start_agentic(self, chunks: list[str]):
         self._set_busy(True)
+        self._reasoning_stats_lbl.setText("")
         self._chat_view.append_system_note("— agentic loop started —")
         t = AgenticThread(
             system_prompt=self._system_prompt,
@@ -594,6 +603,7 @@ class WorkbenchWorkspace(QWidget):
         )
         t.new_thought_token.connect(self._on_thought)
         t.new_chat_token.connect(self._on_chat)
+        t.live_stats.connect(self._on_live_stats)
         t.iteration_finished.connect(self._on_iteration)
         t.loop_finished.connect(self._on_loop_done)
         t.error_occurred.connect(self._on_error)
@@ -713,7 +723,11 @@ class WorkbenchWorkspace(QWidget):
     def _on_chat(self, token: str):
         self._chat_view.append_token(token)
 
-    def _on_done(self, thought: str, response: str, truncated: bool, _ended_in_thought: bool):
+    def _on_live_stats(self, count: int, speed: float):
+        self._reasoning_stats_lbl.setText(f"({count} tokens · {speed:.1f} t/s)")
+
+    def _on_done(self, thought: str, response: str, truncated: bool, _ended_in_thought: bool, diagnostics: dict | None = None):
+        self._reasoning_stats_lbl.setText("")
         node = self.chat_history.add_message("assistant", response)
         node.thought = thought
         self._chat_view.finalize_stream(node.id)
@@ -722,6 +736,20 @@ class WorkbenchWorkspace(QWidget):
         self._last_thought = thought
         if truncated:
             self._chat_view.append_system_note("— generation truncated —")
+
+        if diagnostics:
+            from app.engine.model_loader import ModelLoader
+            model_name = ModelLoader.model_name()
+            n_ctx = ModelLoader.n_ctx()
+            diag_text = (
+                f"— Generation Diagnostics —\n"
+                f"Model: {model_name} (n_ctx={n_ctx})\n"
+                f"Prompt: {diagnostics.get('prompt_tokens', 0)} tokens (prefill in {diagnostics.get('prefill_time', 0):.2f}s @ {diagnostics.get('prefill_tps', 0):.1f} t/s)\n"
+                f"Generation: {diagnostics.get('generation_tokens', 0)} tokens (generated in {diagnostics.get('generation_time', 0):.2f}s @ {diagnostics.get('generation_tps', 0):.1f} t/s)\n"
+                f"Total Time: {diagnostics.get('total_time', 0):.2f}s @ {diagnostics.get('total_tps', 0):.1f} t/s"
+            )
+            self._chat_view.append_system_note(diag_text)
+
         self._set_busy(False)
         self._is_correcting = False
         self._correct_btn.setText("✎ correct")
@@ -734,13 +762,18 @@ class WorkbenchWorkspace(QWidget):
         self.status_changed.emit("idle", False)
         self._save_current_session()
 
-    def _on_iteration(self, index: int, _thought: str, response: str):
+    def _on_iteration(self, index: int, _thought: str, response: str, diagnostics: dict | None = None):
+        self._reasoning_stats_lbl.setText("")
         self._chat_view.finalize_stream()
-        self._chat_view.append_system_note(f"— iteration {index + 1} complete —")
+        diag_suffix = ""
+        if diagnostics:
+            diag_suffix = f" ({diagnostics.get('generation_tokens', 0)} tokens in {diagnostics.get('total_time', 0):.2f}s @ {diagnostics.get('total_tps', 0):.1f} t/s)"
+        self._chat_view.append_system_note(f"— iteration {index + 1} complete{diag_suffix} —")
         self._chat_view.begin_stream()
         self._last_response = response
 
     def _on_loop_done(self, total: int):
+        self._reasoning_stats_lbl.setText("")
         self._chat_view.finalize_stream()
         if self._thread and hasattr(self._thread, "chat_history"):
             thread_history = self._thread.chat_history
@@ -763,6 +796,7 @@ class WorkbenchWorkspace(QWidget):
         self._save_current_session()
 
     def _on_error(self, msg: str):
+        self._reasoning_stats_lbl.setText("")
         self._chat_view.finalize_stream()
         self._chat_view.append_system_note(f"error: {msg}")
         self._set_busy(False)

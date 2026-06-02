@@ -93,7 +93,8 @@ def generate_char_diff_html(a: str, b: str) -> str:
 
 class _RunThread(QThread):
     token = pyqtSignal(str)
-    done  = pyqtSignal(str)
+    done  = pyqtSignal(str, dict)
+    live_stats = pyqtSignal(int, float)
     error = pyqtSignal(str)
 
     def __init__(self, system_prompt: str, user_prompt: str, hyperparams: dict):
@@ -107,13 +108,20 @@ class _RunThread(QThread):
             from app.engine.model_loader import ModelLoader
             import core.interaction_loop
             import importlib
+            import time
             importlib.reload(core.interaction_loop)
 
             llm = ModelLoader.get_instance()
             history = [{"role": "user", "content": self.user_prompt}]
             prompt  = core.interaction_loop.build_prompt(self.system_prompt, history)
 
+            # Tokenize prompt to get accurate prompt token count
+            prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
+
+            start_time = time.time()
+            first_token_time = None
             full = ""
+            gen_token_count = 0
             for chunk in llm(
                 prompt,
                 max_tokens=self.hyperparams.get("max_tokens", 1024),
@@ -127,13 +135,50 @@ class _RunThread(QThread):
                     continue
                 text = chunk["choices"][0].get("text", "")
                 if text:
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                    
+                    chunk_tokens = len(llm.tokenize(text.encode('utf-8'), add_bos=False))
+                    gen_token_count += chunk_tokens
+                    elapsed = time.time() - first_token_time
+                    speed = gen_token_count / elapsed if elapsed > 0 else 0.0
+                    self.live_stats.emit(gen_token_count, speed)
+                    
                     full += text
                     self.token.emit(text)
+
+            end_time = time.time()
+            prefill_time = (first_token_time - start_time) if first_token_time is not None else (end_time - start_time)
+            if prefill_time <= 0:
+                prefill_time = 0.001
+            prefill_tps = prompt_tokens / prefill_time
+
+            generation_time = (end_time - first_token_time) if first_token_time is not None else 0.0
+            generation_tokens = len(llm.tokenize(full.encode('utf-8'), add_bos=False))
+            if generation_time <= 0:
+                generation_tps = generation_tokens / 0.001 if generation_tokens > 0 else 0.0
+            else:
+                generation_tps = generation_tokens / generation_time
+
+            total_time = end_time - start_time
+            total_tokens = prompt_tokens + generation_tokens
+            total_tps = total_tokens / total_time if total_time > 0 else 0.0
+
+            diagnostics = {
+                "prompt_tokens": prompt_tokens,
+                "prefill_time": prefill_time,
+                "prefill_tps": prefill_tps,
+                "generation_tokens": generation_tokens,
+                "generation_time": generation_time,
+                "generation_tps": generation_tps,
+                "total_time": total_time,
+                "total_tps": total_tps,
+            }
 
             # strip think block from shown output
             from core.cognitive_parser import parse_thought_stream
             _, response = parse_thought_stream(full)
-            self.done.emit(response)
+            self.done.emit(response, diagnostics)
 
         except Exception as e:
             self.error.emit(str(e))
@@ -143,7 +188,7 @@ class _RunThread(QThread):
 
 class _PromptColumn(QWidget):
     run_requested = pyqtSignal(str, str)   # (label, user_text)
-    generation_done = pyqtSignal(str)      # response text
+    generation_done = pyqtSignal(str, dict)      # response text, diagnostics
 
     def __init__(self, label: str, parent=None):
         super().__init__(parent)
@@ -164,7 +209,18 @@ class _PromptColumn(QWidget):
         self._user_edit.setFixedHeight(80)
         layout.addWidget(self._user_edit)
 
-        layout.addWidget(_section(f"OUTPUT  {label}"))
+        out_hdr = QWidget()
+        out_hdr_layout = QHBoxLayout(out_hdr)
+        out_hdr_layout.setContentsMargins(0, 0, 0, 0)
+        out_hdr_layout.setSpacing(6)
+        out_hdr_layout.addWidget(_section(f"OUTPUT  {label}"))
+        
+        self._stats_lbl = QLabel("")
+        self._stats_lbl.setObjectName("lbl-muted")
+        self._stats_lbl.setStyleSheet("font-size: 8pt; font-weight: normal;")
+        out_hdr_layout.addWidget(self._stats_lbl)
+        out_hdr_layout.addStretch()
+        layout.addWidget(out_hdr)
 
         self._output = QTextBrowser()
         self._output.setPlaceholderText("output will stream here...")
@@ -193,6 +249,7 @@ class _PromptColumn(QWidget):
 
     def clear_output(self):
         self._output.clear()
+        self._stats_lbl.setText("")
 
     def start_run(self, hyperparams: dict):
         user = self.user_text()
@@ -200,8 +257,10 @@ class _PromptColumn(QWidget):
             return
         self._output.clear()
         self._output.setPlainText("generating...")
+        self._stats_lbl.setText("")
         self._thread = _RunThread(self.system_text(), user, hyperparams)
         self._thread.token.connect(self._on_token)
+        self._thread.live_stats.connect(self._on_live_stats)
         self._thread.done.connect(self._on_done)
         self._thread.error.connect(self._on_error)
         self._thread.start()
@@ -214,10 +273,19 @@ class _PromptColumn(QWidget):
         self._output.setTextCursor(c)
         self._output.ensureCursorVisible()
 
-    def _on_done(self, response: str):
-        self.generation_done.emit(response)
+    def _on_live_stats(self, count: int, speed: float):
+        self._stats_lbl.setText(f"({count} tokens · {speed:.1f} t/s)")
+
+    def _on_done(self, response: str, diagnostics: dict):
+        self._stats_lbl.setText("")
+        self._output.append(
+            f"\n\n[Prefill: {diagnostics.get('prompt_tokens', 0)} tok in {diagnostics.get('prefill_time', 0):.2f}s @ {diagnostics.get('prefill_tps', 0):.1f} t/s | "
+            f"Gen: {diagnostics.get('generation_tokens', 0)} tok in {diagnostics.get('generation_time', 0):.2f}s @ {diagnostics.get('generation_tps', 0):.1f} t/s]"
+        )
+        self.generation_done.emit(response, diagnostics)
 
     def _on_error(self, msg: str):
+        self._stats_lbl.setText("")
         self._output.append(f"\n[error: {msg}]")
 
 
@@ -488,11 +556,11 @@ class PromptLabWorkspace(QWidget):
         self._col_a.start_run(self._hyperparams)
         self._col_b.start_run(self._hyperparams)
 
-    def _on_col_a_done(self, text: str):
+    def _on_col_a_done(self, text: str, diagnostics: dict | None = None):
         self._output_a = text
         self._update_diff()
 
-    def _on_col_b_done(self, text: str):
+    def _on_col_b_done(self, text: str, diagnostics: dict | None = None):
         self._output_b = text
         self._update_diff()
 

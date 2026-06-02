@@ -23,7 +23,9 @@ class AgenticThread(QThread):
     new_thought_token = pyqtSignal(str)
     new_chat_token = pyqtSignal(str)
     new_raw_token = pyqtSignal(str)                  # M7: every character pre-parser
-    iteration_finished = pyqtSignal(int, str, str)
+    # iteration_index, thought, response, diagnostics
+    iteration_finished = pyqtSignal(int, str, str, dict)
+    live_stats = pyqtSignal(int, float)
     loop_finished = pyqtSignal(int)
     error_occurred = pyqtSignal(str)
 
@@ -83,6 +85,8 @@ class AgenticThread(QThread):
         # Prompt pre-seeds <think>\n -- always start in thought mode
         in_thought = True
         buffer = ""
+        first_token_time = None
+        gen_token_count = 0
 
         continuation_count = 0
         max_continuations = 5
@@ -116,6 +120,15 @@ class AgenticThread(QThread):
                 text = choice.get('text', '')
                 if not text:
                     continue
+
+                if first_token_time is None:
+                    first_token_time = time.time()
+
+                chunk_tokens = len(llm.tokenize(text.encode('utf-8'), add_bos=False))
+                gen_token_count += chunk_tokens
+                elapsed = time.time() - first_token_time
+                speed = gen_token_count / elapsed if elapsed > 0 else 0.0
+                self.live_stats.emit(gen_token_count, speed)
 
                 has_tokens = True
                 raw_output += text
@@ -163,7 +176,43 @@ class AgenticThread(QThread):
             if finish_reason != "length" or not has_tokens:
                 break
 
-            self.new_thought_token.emit("\n[continuing...]\n")
+            # Check if we need to do cognitive roll-up compression
+            current_tokens_count = len(llm.tokenize((prompt + raw_output).encode('utf-8')))
+            context_budget = ModelLoader.n_ctx()
+            
+            if current_tokens_count > 0.8 * context_budget and parsed_thought:
+                self.new_thought_token.emit("\n[Context full — compressing cognitive state...]\n")
+                try:
+                    compress_prompt = (
+                        "<|im_start|>system\n"
+                        "You are a cognitive compression tool. Summarize the reasoning steps, calculations, "
+                        "and findings established in the thinking process below. Write a dense, concise summary "
+                        "in one short paragraph so that the reasoning can proceed from that point. "
+                        "Do not solve the problem yourself, just summarize the current train of thought.\n"
+                        f"Thinking process to summarize:\n{parsed_thought}\n<|im_end|>\n"
+                        "<|im_start|>assistant\n"
+                        "<think>\n"
+                    )
+                    comp_res = llm(
+                        compress_prompt,
+                        max_tokens=300,
+                        temperature=0.1,
+                        stop=["</think>", "<|im_end|>"],
+                        echo=False
+                    )
+                    summary = comp_res['choices'][0]['text'].strip()
+                    summary = summary.replace("<think>", "").replace("</think>", "")
+                    
+                    parsed_thought = f"[Summary of thoughts so far: {summary}]"
+                    raw_output = f"<think>\n{parsed_thought}\n"
+                    in_thought = True # Resume in thought mode
+                    self.new_thought_token.emit(f"\n[Compressed state: {parsed_thought}]\n")
+                except Exception as ce:
+                    print(f"[AgenticThread] Cognitive compression failed: {ce}")
+                    self.new_thought_token.emit("\n[continuing...]\n")
+            else:
+                self.new_thought_token.emit("\n[continuing...]\n")
+            
             continuation_count += 1
 
         # flush remainder
@@ -175,7 +224,7 @@ class AgenticThread(QThread):
                 self.new_chat_token.emit(buffer)
                 parsed_response += buffer
 
-        return raw_output, parsed_thought, parsed_response
+        return raw_output, parsed_thought, parsed_response, first_token_time
 
     def run(self):
         try:
@@ -194,14 +243,44 @@ class AgenticThread(QThread):
                 trimmed_history = self._trim_history(self.chat_history, self.system_prompt)
                 prompt = core.interaction_loop.build_prompt(self.system_prompt, trimmed_history)
 
+                # Tokenize prompt to get accurate prompt token count
+                prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
+
                 start = time.time()
                 # M7: open raw archive file for this iteration
                 os.makedirs(RAW_LOG_DIR, exist_ok=True)
                 ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
                 raw_log_path = os.path.join(RAW_LOG_DIR, f"agentic_{ts}_iter{iteration}.tokens")
                 with open(raw_log_path, "w", encoding="utf-8") as raw_file:
-                    raw, thought, response = self._run_single_generation(llm, prompt, raw_file)
-                elapsed = time.time() - start
+                    raw, thought, response, first_token_time = self._run_single_generation(llm, prompt, raw_file)
+                end = time.time()
+
+                prefill_time = (first_token_time - start) if first_token_time is not None else (end - start)
+                if prefill_time <= 0:
+                    prefill_time = 0.001
+                prefill_tps = prompt_tokens / prefill_time
+
+                generation_time = (end - first_token_time) if first_token_time is not None else 0.0
+                generation_tokens = len(llm.tokenize(raw.encode('utf-8'), add_bos=False))
+                if generation_time <= 0:
+                    generation_tps = generation_tokens / 0.001 if generation_tokens > 0 else 0.0
+                else:
+                    generation_tps = generation_tokens / generation_time
+
+                total_time = end - start
+                total_tokens = prompt_tokens + generation_tokens
+                total_tps = total_tokens / total_time if total_time > 0 else 0.0
+
+                diagnostics = {
+                    "prompt_tokens": prompt_tokens,
+                    "prefill_time": prefill_time,
+                    "prefill_tps": prefill_tps,
+                    "generation_tokens": generation_tokens,
+                    "generation_time": generation_time,
+                    "generation_tps": generation_tps,
+                    "total_time": total_time,
+                    "total_tps": total_tps,
+                }
 
                 if self._stop_requested:
                     break
@@ -213,18 +292,19 @@ class AgenticThread(QThread):
                     raw_output=raw,
                     parsed_thought=thought,
                     parsed_response=response,
-                    execution_time=elapsed,
+                    execution_time=total_time,
                     rag_context=[],
                     model_name=ModelLoader.model_name(),
                     adapter_name=getattr(ModelLoader, '_adapter_name', None),
                     workflow=self.workflow,
                     template=self.template,
+                    diagnostics=diagnostics,
                 )
 
                 # Store only the response — not the think block — to keep context lean
                 self.chat_history.append({"role": "assistant", "content": response})
 
-                self.iteration_finished.emit(iteration, thought, response)
+                self.iteration_finished.emit(iteration, thought, response, diagnostics)
 
                 iteration += 1
 

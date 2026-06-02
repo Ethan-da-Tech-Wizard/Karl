@@ -47,6 +47,7 @@ class TraceLogger:
         corrected_response: str | None = None,
         model_name: str | None = None,
         adapter_name: str | None = None,
+        diagnostics: dict | None = None,
     ) -> str:
         """
         Logs one generation event. Returns the path of the log file written to.
@@ -55,13 +56,25 @@ class TraceLogger:
         """
         self._refresh_path()
 
+        timing = {
+            "total_seconds": round(execution_time, 3),
+        }
+        if diagnostics:
+            timing.update({
+                "prefill_seconds": round(diagnostics.get("prefill_time", 0), 3),
+                "prefill_tps": round(diagnostics.get("prefill_tps", 0), 1),
+                "generation_seconds": round(diagnostics.get("generation_time", 0), 3),
+                "generation_tps": round(diagnostics.get("generation_tps", 0), 1),
+                "prompt_tokens": diagnostics.get("prompt_tokens", 0),
+                "generation_tokens": diagnostics.get("generation_tokens", 0),
+                "total_tps": round(diagnostics.get("total_tps", 0), 1),
+            })
+
         entry = {
             "id": str(uuid.uuid4()),
             "session_id": self._session_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "timing": {
-                "total_seconds": round(execution_time, 3),
-            },
+            "timing": timing,
             "model": model_name or "unknown",
             "adapter": adapter_name,
             "workflow": workflow,

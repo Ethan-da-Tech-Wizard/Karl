@@ -26,7 +26,17 @@ def test_schema_fields():
             template="json_extractor",
             feedback="none",
             model_name="qwen-1.5b",
-            adapter_name="lora-1"
+            adapter_name="lora-1",
+            diagnostics={
+                "prompt_tokens": 10,
+                "prefill_time": 0.5,
+                "prefill_tps": 20.0,
+                "generation_tokens": 15,
+                "generation_time": 2.0,
+                "generation_tps": 7.5,
+                "total_time": 2.5,
+                "total_tps": 10.0,
+            }
         )
         
         # Read the logged record
@@ -51,6 +61,13 @@ def test_schema_fields():
         assert record["template"] == "json_extractor"
         assert record["hyperparams"] == {"temperature": 0.7, "top_p": 0.9}
         assert record["timing"]["total_seconds"] == 2.5
+        assert record["timing"]["prefill_seconds"] == 0.5
+        assert record["timing"]["prefill_tps"] == 20.0
+        assert record["timing"]["generation_seconds"] == 2.0
+        assert record["timing"]["generation_tps"] == 7.5
+        assert record["timing"]["prompt_tokens"] == 10
+        assert record["timing"]["generation_tokens"] == 15
+        assert record["timing"]["total_tps"] == 10.0
         assert record["thinking"] == "Thought"
         assert record["response"] == "response"
         assert record["rag_chunks"] == ["chunk1"]
