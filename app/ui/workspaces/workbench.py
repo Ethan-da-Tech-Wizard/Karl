@@ -194,14 +194,16 @@ class WorkbenchWorkspace(QWidget):
         self._last_response = ""
         self._last_thought = ""
         self._hyperparams = {
-            "temperature": 0.6,
+            "temperature": 0.3,
             "top_p": 0.95,
-            "max_tokens": 1024,
+            "max_tokens": 2048,
         }
         self._system_prompt = (
             "You are Karl, a precise and thoughtful AI assistant. "
             "Always respond in English. "
-            "Reason carefully before responding."
+            "Analyze and break down problems step-by-step. "
+            "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
+            "Double-check your derivations and arithmetic before writing the final answer."
         )
         self._current_session_file: str | None = None
         self._is_correcting = False

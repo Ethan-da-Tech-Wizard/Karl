@@ -9,7 +9,7 @@ import core.interaction_loop
 
 RAW_LOG_DIR = "data/logs/raw"
 _RESPONSE_RESERVE = 1024
-_MAX_MSG_CHARS = 1500   # Truncate any single message to this length before it enters the prompt
+_MAX_MSG_CHARS = 100000   # Truncate any single message to this length before it enters the prompt
 
 _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
 _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
