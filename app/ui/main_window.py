@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self._sidebar.workspace_changed.connect(self._stack.setCurrentIndex)
         self._workbench.status_changed.connect(self._on_status_changed)
+        self._workbench.model_changed.connect(self._status_bar.set_model)
 
     def _init_model(self):
         from app.engine.model_loader import ModelLoader

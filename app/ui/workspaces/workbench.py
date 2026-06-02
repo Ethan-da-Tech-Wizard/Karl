@@ -182,6 +182,7 @@ def _escape(text: str) -> str:
 
 class WorkbenchWorkspace(QWidget):
     status_changed = pyqtSignal(str, bool)   # (text, active)
+    model_changed = pyqtSignal(str)          # (model_name)
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -211,6 +212,7 @@ class WorkbenchWorkspace(QWidget):
         self._build_ui()
         self._connect_shortcuts()
         self._refresh_sessions()
+        self._refresh_model_combo()
 
     # ── build ─────────────────────────────────────────────────────────────────
 
@@ -430,6 +432,13 @@ class WorkbenchWorkspace(QWidget):
         dl.setContentsMargins(10, 4, 10, 4)
         dl.setSpacing(12)
 
+        # Model Selector
+        dl.addWidget(_label("model", "lbl-muted"))
+        self._model_combo = QComboBox()
+        self._model_combo.setFixedWidth(180)
+        self._model_combo.currentIndexChanged.connect(self._on_model_selected)
+        dl.addWidget(self._model_combo)
+
         # Temperature
         dl.addWidget(_label("temp", "lbl-muted"))
         self._temp_spin = QDoubleSpinBox()
@@ -608,8 +617,69 @@ class WorkbenchWorkspace(QWidget):
         self._toggle_reason_btn.setText("show" if visible else "hide")
 
     def _toggle_params(self):
-        visible = self._params_drawer.isVisible()
-        self._params_drawer.setVisible(not visible)
+        visible = not self._params_drawer.isVisible()
+        if visible:
+            self._refresh_model_combo()
+        self._params_drawer.setVisible(visible)
+
+    def _refresh_model_combo(self):
+        self._model_combo.blockSignals(True)
+        self._model_combo.clear()
+        
+        import os
+        models_dir = "data/models"
+        files = []
+        if os.path.exists(models_dir):
+            files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
+            
+        for f in sorted(files):
+            self._model_combo.addItem(f, f)
+            
+        # Select active model
+        active_name = self.state.model_name
+        idx = self._model_combo.findData(active_name)
+        if idx >= 0:
+            self._model_combo.setCurrentIndex(idx)
+        else:
+            if files:
+                self._model_combo.setCurrentIndex(0)
+                
+        self._model_combo.blockSignals(False)
+
+    def _on_model_selected(self, index: int):
+        filename = self._model_combo.itemData(index)
+        if not filename or filename == self.state.model_name:
+            return
+        
+        from PyQt6.QtWidgets import QApplication
+        import json
+        import os
+        
+        # Disable inputs temporarily during model swap
+        self._set_busy(True)
+        self.status_changed.emit(f"Loading {filename}...", True)
+        QApplication.processEvents()
+        
+        try:
+            from app.engine.model_loader import ModelLoader
+            ModelLoader.reset_instance()
+            # Force load the new model
+            ModelLoader.get_instance(model_path=os.path.join("data", "models", filename))
+            
+            # Save the active model to active_model.json
+            active = {"filename": filename}
+            os.makedirs("data", exist_ok=True)
+            with open("data/active_model.json", "w") as f:
+                json.dump(active, f)
+                
+            self.state.model_name = filename
+            self.model_changed.emit(filename)
+            self._chat_view.append_system_note(f"— Active model switched to: {filename} —")
+        except Exception as e:
+            self._chat_view.append_system_note(f"[Error switching model: {str(e)}]")
+        finally:
+            self._set_busy(False)
+            self.status_changed.emit("idle", False)
 
     def _new_session(self):
         self._save_current_session()

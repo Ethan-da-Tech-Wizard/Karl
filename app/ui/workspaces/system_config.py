@@ -143,6 +143,11 @@ class SystemConfigWorkspace(QWidget):
     def set_workbench(self, wb):
         self._workbench = wb
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._scan_models()
+        self._refresh_hardware()
+
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
