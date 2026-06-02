@@ -59,7 +59,7 @@ class TrainingThread(QThread):
             from datasets import load_dataset
             from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, BitsAndBytesConfig, TrainerCallback
             from peft import LoraConfig, get_peft_model
-            from trl import SFTTrainer
+            from trl import SFTConfig, SFTTrainer
 
             # Load dataset from curated examples
             dataset_path = "data/training/curated.jsonl"
@@ -106,8 +106,10 @@ class TrainingThread(QThread):
             adapter_path = os.path.join("data", "adapters", self.adapter_name)
             os.makedirs(adapter_path, exist_ok=True)
 
-            training_args = TrainingArguments(
+            training_args = SFTConfig(
                 output_dir=os.path.join(adapter_path, "temp_checkpoints"),
+                dataset_text_field="messages",
+                max_length=512,
                 per_device_train_batch_size=1,
                 gradient_accumulation_steps=4,
                 learning_rate=self.config.get("lr", 2e-4),
@@ -133,10 +135,8 @@ class TrainingThread(QThread):
             trainer = SFTTrainer(
                 model=model,
                 train_dataset=dataset,
-                dataset_text_field="messages",
-                max_seq_length=512,
-                tokenizer=tokenizer,
                 args=training_args,
+                processing_class=tokenizer,
                 callbacks=[TrainerProgressCallback()]
             )
 
@@ -144,7 +144,7 @@ class TrainingThread(QThread):
 
             self.log.emit("Saving PyTorch adapter model weights...")
             trainer.model.save_pretrained(adapter_path)
-            trainer.tokenizer.save_pretrained(adapter_path)
+            tokenizer.save_pretrained(adapter_path)
 
             # Clean up temp checkpoint folder
             import shutil
