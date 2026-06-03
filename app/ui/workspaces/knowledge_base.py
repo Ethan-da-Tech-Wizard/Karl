@@ -119,6 +119,7 @@ class KnowledgeBaseWorkspace(QWidget):
         self._chunk_size_spin.setSingleStep(50)
         self._chunk_size_spin.setValue(200)
         self._chunk_size_spin.setFixedWidth(65)
+        self._chunk_size_spin.setToolTip("Size of text chunks in words")
         chunk_layout.addWidget(self._chunk_size_spin)
 
         chunk_layout.addSpacing(5)
@@ -129,6 +130,7 @@ class KnowledgeBaseWorkspace(QWidget):
         self._overlap_spin.setSingleStep(10)
         self._overlap_spin.setValue(50)
         self._overlap_spin.setFixedWidth(60)
+        self._overlap_spin.setToolTip("Number of overlapping words between consecutive chunks")
         chunk_layout.addWidget(self._overlap_spin)
         chunk_layout.addStretch()
         ib_layout.addWidget(chunk_row)
@@ -136,6 +138,7 @@ class KnowledgeBaseWorkspace(QWidget):
         # Add file button
         ingest_btn = QPushButton("+ add file")
         ingest_btn.setObjectName("btn-primary")
+        ingest_btn.setToolTip("Extract text and split it into vector chunks to load into knowledge base")
         ingest_btn.clicked.connect(self._ingest_file)
         ib_layout.addWidget(ingest_btn)
 
@@ -168,7 +171,7 @@ class KnowledgeBaseWorkspace(QWidget):
         self._threshold_spin.setSingleStep(0.05)
         self._threshold_spin.setValue(self.state.rag_threshold)
         self._threshold_spin.setToolTip(
-            "Max L2 distance. 0 = no filter (return all top-k)."
+            "Maximum L2 distance score for retrieved chunks. Lower is more relevant."
         )
         self._threshold_spin.setFixedWidth(65)
         self._threshold_spin.valueChanged.connect(self._on_threshold_changed)
@@ -180,6 +183,7 @@ class KnowledgeBaseWorkspace(QWidget):
         self._topk_spin = QSpinBox()
         self._topk_spin.setRange(1, 20)
         self._topk_spin.setValue(self.state.rag_top_k)
+        self._topk_spin.setToolTip("Number of relevant context chunks to retrieve")
         self._topk_spin.setFixedWidth(50)
         self._topk_spin.valueChanged.connect(self._on_topk_changed)
         ret_layout.addWidget(self._topk_spin)
@@ -192,6 +196,7 @@ class KnowledgeBaseWorkspace(QWidget):
         layout.addWidget(_hline())
         clear_btn = QPushButton("clear index")
         clear_btn.setObjectName("btn-danger")
+        clear_btn.setToolTip("Wipe the vector database index and documents metadata")
         clear_btn.clicked.connect(self._clear_index)
         layout.addWidget(clear_btn)
         return w
@@ -212,9 +217,11 @@ class KnowledgeBaseWorkspace(QWidget):
         sr_layout.setSpacing(8)
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("Enter query to test retrieval...")
+        self._search_input.setToolTip("Enter a search query to test retrieval relevance")
         self._search_input.returnPressed.connect(self._run_search)
         sr_layout.addWidget(self._search_input, 1)
         search_btn = QPushButton("search")
+        search_btn.setToolTip("Query the vector database for matching chunks")
         search_btn.clicked.connect(self._run_search)
         sr_layout.addWidget(search_btn)
         layout.addWidget(search_row)

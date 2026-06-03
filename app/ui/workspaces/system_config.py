@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QLabel, QLineEdit,
     QFrame, QDoubleSpinBox, QSpinBox, QFileDialog,
     QMessageBox, QGroupBox, QScrollArea, QProgressBar,
+    QComboBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
@@ -129,6 +130,8 @@ class DownloadThread(QThread):
 
 
 class SystemConfigWorkspace(QWidget):
+    adapter_changed = pyqtSignal(str)
+
     def __init__(self, state, workbench_ref=None, parent=None):
         super().__init__(parent)
         self.state = state
@@ -146,6 +149,7 @@ class SystemConfigWorkspace(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self._scan_models()
+        self._scan_adapters()
         self._refresh_hardware()
 
     def _build_ui(self):
@@ -189,22 +193,43 @@ class SystemConfigWorkspace(QWidget):
         mr.setSpacing(8)
         self._model_path_input = QLineEdit()
         self._model_path_input.setPlaceholderText("path to .gguf file...")
+        self._model_path_input.setToolTip("Path to the GGUF model file on disk")
         mr.addWidget(self._model_path_input, 1)
         browse = QPushButton("browse")
+        browse.setToolTip("Browse files to select a local GGUF model")
         browse.clicked.connect(self._browse_model)
         mr.addWidget(browse)
         ap_layout.addWidget(model_row)
 
         load_btn = QPushButton("load model")
         load_btn.setObjectName("btn-primary")
+        load_btn.setToolTip("Instantly load selected GGUF model")
         load_btn.clicked.connect(self._load_model)
         ap_layout.addWidget(load_btn)
+
+        ap_layout.addWidget(_hline())
+        ap_layout.addWidget(_section("ACTIVE ADAPTER"))
+
+        adapter_row = QWidget()
+        adr = QHBoxLayout(adapter_row)
+        adr.setContentsMargins(0, 0, 0, 0)
+        adr.setSpacing(8)
+        self._adapter_combo = QComboBox()
+        self._adapter_combo.setToolTip("Select a fine-tuned LoRA adapter to overlay on the base model")
+        adr.addWidget(self._adapter_combo, 1)
+
+        load_adapter_btn = QPushButton("load adapter")
+        load_adapter_btn.setObjectName("btn-secondary")
+        load_adapter_btn.setToolTip("Overlay the selected adapter on the active base model")
+        load_adapter_btn.clicked.connect(self._load_adapter)
+        adr.addWidget(load_adapter_btn)
+        ap_layout.addWidget(adapter_row)
 
         self._model_status = QLabel("")
         self._model_status.setObjectName("lbl-muted")
         self._model_status.setWordWrap(True)
         ap_layout.addWidget(self._model_status)
-        
+
         layout.addWidget(active_panel)
 
         # Available Models Panel
@@ -562,6 +587,7 @@ class SystemConfigWorkspace(QWidget):
 
         apply_btn = QPushButton("apply defaults")
         apply_btn.setObjectName("btn-primary")
+        apply_btn.setToolTip("Save and apply default generation limits")
         apply_btn.clicked.connect(self._apply_defaults)
         pp_layout.addWidget(apply_btn)
 
@@ -601,10 +627,12 @@ class SystemConfigWorkspace(QWidget):
             "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
             "Double-check your derivations and arithmetic before writing the final answer."
         )
+        self._system_edit.setToolTip("System prompt active during generation. Determines Karl's personality and guidelines.")
         ip_layout.addWidget(self._system_edit, 1)
 
         apply_btn = QPushButton("apply system prompt")
         apply_btn.setObjectName("btn-primary")
+        apply_btn.setToolTip("Save this system prompt as the default identity")
         apply_btn.clicked.connect(self._apply_identity)
         ip_layout.addWidget(apply_btn)
 
@@ -633,6 +661,7 @@ class SystemConfigWorkspace(QWidget):
         hwp_layout.addWidget(self._hw_view)
 
         refresh_btn = QPushButton("refresh hardware")
+        refresh_btn.setToolTip("Re-scout RAM, VRAM, and storage specifications")
         refresh_btn.clicked.connect(self._refresh_hardware)
         hwp_layout.addWidget(refresh_btn)
 
@@ -777,16 +806,85 @@ class SystemConfigWorkspace(QWidget):
         
         self._model_list.setHtml("".join(html_lines))
 
-    def _apply_defaults(self):
-        if self._workbench:
-            self._workbench.set_hyperparams({
-                "temperature": self._temp_spin.value(),
-                "top_p":       self._topp_spin.value(),
-                "max_tokens":  self._maxtok_spin.value(),
-            })
-
     def _apply_identity(self):
         if self._workbench:
             self._workbench.set_system_prompt(
                 self._system_edit.toPlainText().strip()
+            )
+
+    def _scan_adapters(self):
+        self._adapter_combo.clear()
+        self._adapter_combo.addItem("none")
+        
+        adapters_dir = "data/adapters"
+        if os.path.exists(adapters_dir):
+            try:
+                for d in sorted(os.listdir(adapters_dir)):
+                    d_path = os.path.join(adapters_dir, d)
+                    if os.path.isdir(d_path):
+                        # check for gguf file inside
+                        files = os.listdir(d_path)
+                        if any(f.endswith(".gguf") for f in files):
+                            self._adapter_combo.addItem(d)
+            except Exception as e:
+                print(f"[SystemConfig] Error scanning adapters: {e}")
+                
+        # Select active adapter
+        active_adapter = self.state.adapter_name or "none"
+        index = self._adapter_combo.findText(active_adapter)
+        if index >= 0:
+            self._adapter_combo.setCurrentIndex(index)
+
+    def _load_adapter(self):
+        from app.engine.model_loader import ModelLoader
+        adapter_name = self._adapter_combo.currentText()
+        if adapter_name == "none":
+            adapter_name = None
+            
+        ModelLoader.reset_instance()
+        self.state.adapter_name = adapter_name
+        self.adapter_changed.emit(adapter_name or "")
+        
+        # Save to active model configuration
+        active_path = "data/active_model.json"
+        active_data = {"filename": "deepseek-r1-1.5b.gguf"}
+        if os.path.exists(active_path):
+            try:
+                with open(active_path, "r") as f:
+                    active_data = json.load(f)
+            except Exception:
+                pass
+        
+        active_data["adapter"] = adapter_name
+        try:
+            with open(active_path, "w") as f:
+                json.dump(active_data, f)
+            
+            status_txt = f"loaded adapter: {adapter_name}" if adapter_name else "adapter disabled"
+            self._model_status.setText(status_txt)
+            QMessageBox.information(
+                self, "Adapter Loaded",
+                f"Adapter '{adapter_name or 'none'}' has been set as active."
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Adapter Error", f"Failed to save active adapter: {e}")
+
+    def _apply_defaults(self):
+        from PyQt6.QtWidgets import QMessageBox
+        temp = self._temp_spin.value()
+        top_p = self._topp_spin.value()
+        max_tokens = self._maxtok_spin.value()
+        
+        if self._workbench:
+            self._workbench.set_hyperparams({
+                "temperature": temp,
+                "top_p": top_p,
+                "max_tokens": max_tokens
+            })
+            QMessageBox.information(
+                self, "Defaults Applied",
+                f"Generation defaults applied to Workbench:\n"
+                f"• Temperature: {temp}\n"
+                f"• Top-P: {top_p}\n"
+                f"• Max Tokens: {max_tokens}"
             )

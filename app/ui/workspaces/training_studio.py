@@ -224,10 +224,12 @@ class TrainingStudioWorkspace(QWidget):
 
         self._example_list = QListWidget()
         self._example_list.currentRowChanged.connect(self._on_example_selected)
+        self._example_list.setToolTip("Double-click or select a curated example to preview")
         ll.addWidget(self._example_list, 1)
 
         del_btn = QPushButton("delete selected")
         del_btn.setObjectName("btn-danger")
+        del_btn.setToolTip("Remove the selected curation example from training database")
         del_btn.clicked.connect(self._delete_selected)
         ll.addWidget(del_btn)
 
@@ -268,6 +270,7 @@ class TrainingStudioWorkspace(QWidget):
         ))
         sft_btn = QPushButton("export SFT  →  unsloth_sft.jsonl")
         sft_btn.setObjectName("btn-primary")
+        sft_btn.setToolTip("Export curated dataset in Unsloth SFT chat format")
         sft_btn.clicked.connect(lambda: self._export("sft"))
         sft_l.addWidget(sft_btn)
         layout.addWidget(sft_box)
@@ -284,6 +287,7 @@ class TrainingStudioWorkspace(QWidget):
             "Requires at least one example of each type."
         ))
         dpo_btn = QPushButton("export DPO  →  unsloth_dpo.jsonl")
+        dpo_btn.setToolTip("Export paired chosen/rejected examples in DPO format")
         dpo_btn.clicked.connect(lambda: self._export("dpo"))
         dpo_l.addWidget(dpo_btn)
         layout.addWidget(dpo_box)
@@ -335,17 +339,20 @@ class TrainingStudioWorkspace(QWidget):
         self._rank_spin.setRange(1, 256)
         self._rank_spin.setValue(16)
         self._rank_spin.setFixedWidth(80)
+        self._rank_spin.setToolTip("LoRA factorization rank. Higher increases model capacity but uses more VRAM.")
 
         self._alpha_spin = QSpinBox()
         self._alpha_spin.setRange(1, 512)
         self._alpha_spin.setValue(32)
         self._alpha_spin.setFixedWidth(80)
+        self._alpha_spin.setToolTip("LoRA scaling parameter. Controls scaling of adapter weight updates.")
 
         self._dropout_spin = QDoubleSpinBox()
         self._dropout_spin.setRange(0.0, 0.5)
         self._dropout_spin.setSingleStep(0.05)
         self._dropout_spin.setValue(0.05)
         self._dropout_spin.setFixedWidth(80)
+        self._dropout_spin.setToolTip("LoRA dropout probability. Helps prevent overfitting.")
 
         self._lr_spin = QDoubleSpinBox()
         self._lr_spin.setDecimals(6)
@@ -353,14 +360,17 @@ class TrainingStudioWorkspace(QWidget):
         self._lr_spin.setSingleStep(1e-5)
         self._lr_spin.setValue(2e-4)
         self._lr_spin.setFixedWidth(100)
+        self._lr_spin.setToolTip("Training step step size (optimizer learning rate).")
 
         self._epochs_spin = QSpinBox()
         self._epochs_spin.setRange(1, 20)
         self._epochs_spin.setValue(3)
         self._epochs_spin.setFixedWidth(80)
+        self._epochs_spin.setToolTip("Number of full passes over the training dataset.")
 
         self._qlora_check = QCheckBox("4-bit QLoRA  (requires bitsandbytes)")
         self._qlora_check.setChecked(False)
+        self._qlora_check.setToolTip("Enable 4-bit quantized QLoRA training to reduce VRAM requirements")
 
         for row in (
             _row("rank",    self._rank_spin),
@@ -376,10 +386,12 @@ class TrainingStudioWorkspace(QWidget):
 
         self._adapter_name_input = QLineEdit()
         self._adapter_name_input.setPlaceholderText("adapter name (saved to data/adapters/)")
+        self._adapter_name_input.setToolTip("Enter folder name where the compiled model adapter will be saved")
         layout.addWidget(self._adapter_name_input)
 
         self._train_btn = QPushButton("▶ begin training")
         self._train_btn.setObjectName("btn-primary")
+        self._train_btn.setToolTip("Start adapter SFT training thread on the local GPU")
         self._train_btn.clicked.connect(self._begin_training)
         layout.addWidget(self._train_btn)
         self._check_deps()  # now safe — _train_btn exists

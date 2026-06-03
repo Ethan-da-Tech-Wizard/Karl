@@ -105,9 +105,11 @@ class EvalSuiteWorkspace(QWidget):
         self._dataset_path = QLineEdit()
         self._dataset_path.setPlaceholderText("path to eval dataset.jsonl")
         self._dataset_path.setReadOnly(True)
+        self._dataset_path.setToolTip("Path to the dataset file (JSONL format) to benchmark")
         rl.addWidget(self._dataset_path, 1)
         browse = QPushButton("…")
         browse.setFixedWidth(32)
+        browse.setToolTip("Browse files to select a benchmark dataset JSONL")
         browse.clicked.connect(self._browse)
         rl.addWidget(browse)
         dp_layout.addWidget(row)
@@ -126,6 +128,7 @@ class EvalSuiteWorkspace(QWidget):
         self._workflow_combo = QComboBox()
         for name, label in list_workflows():
             self._workflow_combo.addItem(f"{label} ({name})", name)
+        self._workflow_combo.setToolTip("Select workflow context to use during evaluation runs")
         wfl.addWidget(self._workflow_combo, 1)
         dp_layout.addWidget(wf_row)
 
@@ -142,6 +145,7 @@ class EvalSuiteWorkspace(QWidget):
 
         self._run_btn = QPushButton("▶ Run Evaluation")
         self._run_btn.setObjectName("btn-primary")
+        self._run_btn.setToolTip("Execute benchmark test cases on the currently active model")
         self._run_btn.clicked.connect(self._run)
         cp_layout.addWidget(self._run_btn)
 

@@ -29,14 +29,18 @@ class ModelLoader:
             if model_path is None:
                 active_path = "data/active_model.json"
                 filename = "deepseek-r1-1.5b.gguf"
+                default_adapter = None
                 if os.path.exists(active_path):
                     try:
                         with open(active_path, "r") as f:
                             data = json.load(f)
                             filename = data.get("filename", filename)
+                            default_adapter = data.get("adapter", None)
                     except Exception as e:
                         print(f"[ModelLoader] Could not read {active_path}: {e}")
                 model_path = os.path.join("data", "models", filename)
+                if adapter_name is None:
+                    adapter_name = default_adapter
 
             current_model_path = getattr(cls, "_model_path", None)
             current_adapter = getattr(cls, "_active_adapter", None)

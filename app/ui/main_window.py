@@ -83,6 +83,10 @@ class MainWindow(QMainWindow):
         self._sidebar.workspace_changed.connect(self._stack.setCurrentIndex)
         self._workbench.status_changed.connect(self._on_status_changed)
         self._workbench.model_changed.connect(self._status_bar.set_model)
+        self._workbench.adapter_changed.connect(self._status_bar.set_adapter)
+        self._workbench.adapter_changed.connect(self._on_adapter_changed)
+        self._system.adapter_changed.connect(self._status_bar.set_adapter)
+        self._system.adapter_changed.connect(self._on_adapter_changed)
 
     def _init_model(self):
         from app.engine.model_loader import ModelLoader
@@ -91,6 +95,15 @@ class MainWindow(QMainWindow):
             name = ModelLoader.model_name()
             self._state.model_name = name
             self._status_bar.set_model(name)
+
+            # Sync active adapter on load
+            adapter = getattr(ModelLoader, "_active_adapter", None)
+            self._state.adapter_name = adapter
+            self._status_bar.set_adapter(adapter)
+
+            # Sync workspace dropdowns
+            self._workbench._refresh_model_combo()
+            self._system._scan_adapters()
         except FileNotFoundError:
             self._status_bar.set_state("no model — run download_test_model.py", False)
 
@@ -98,6 +111,9 @@ class MainWindow(QMainWindow):
 
     def _on_status_changed(self, text: str, active: bool):
         self._status_bar.set_state(text, active)
+
+    def _on_adapter_changed(self, name: str):
+        self._state.adapter_name = name if name else None
 
     def closeEvent(self, event):
         self._workbench.on_close()

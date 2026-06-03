@@ -45,6 +45,8 @@ class RAGPipeline:
         with contextlib.redirect_stdout(_sink), contextlib.redirect_stderr(_sink):
             self.encoder = SentenceTransformer(model_name)
         self.index_path = index_path
+        self.INDEX_FILE = os.path.join(index_path, "index.faiss")
+        self.META_FILE  = os.path.join(index_path, "metadata.json")
         self.contextual_headers = contextual_headers
 
         os.makedirs(self.index_path, exist_ok=True)
@@ -133,12 +135,33 @@ class RAGPipeline:
         Returns:
             Number of chunks added.
         """
-        print(f"[RAG] Ingesting {filepath}...")
-        text = self.extract_text(filepath)
-        if not text.strip():
-            return 0
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext == ".csv":
+            import csv
+            chunks = []
+            try:
+                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                    reader = csv.reader(f)
+                    header = next(reader, None)
+                    for row in reader:
+                        if not row:
+                            continue
+                        if header and "Description" in header:
+                            desc_idx = header.index("Description")
+                            # Safely handle shorter rows
+                            val = row[desc_idx] if desc_idx < len(row) else ", ".join(row)
+                            chunks.append(val)
+                        else:
+                            chunks.append(", ".join(f"{h}: {v}" for h, v in zip(header, row) if v) if header else ", ".join(row))
+            except Exception as e:
+                print(f"[RAG] Error reading CSV {filepath}: {e}")
+                return 0
+        else:
+            text = self.extract_text(filepath)
+            if not text.strip():
+                return 0
+            chunks = self.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
 
-        chunks = self.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
         if not chunks:
             return 0
 
@@ -204,34 +227,22 @@ class RAGPipeline:
         Returns:
             List of text strings (with optional contextual headers prepended).
         """
-        if self.index.ntotal == 0:
-            return []
+        results = self.retrieve_with_metadata(
+            query,
+            top_k=top_k,
+            source_filter=source_filter,
+        )
+        if threshold > 0.0:
+            results = [r for r in results if r["distance"] <= threshold]
 
-        query_vector = self.encoder.encode([query]).astype("float32")
-        # Over-fetch when filtering so we have enough candidates after filtering
-        fetch_k = min(top_k * 5 if (source_filter or threshold > 0.0) else top_k, self.index.ntotal)
-        distances, indices = self.index.search(query_vector, fetch_k)
-
-        results = []
-        for dist, i in zip(distances[0], indices[0]):
-            if i == -1 or i >= len(self.documents):
-                continue
-            if threshold > 0.0 and dist > threshold:
-                continue
-            doc = self.documents[i]
-            if source_filter and doc.get("source_file") != source_filter:
-                continue
-
-            text = doc["text"]
+        formatted = []
+        for r in results:
+            text = r["text"]
             if self.contextual_headers:
-                header = f"[Source: {doc['source_file']} | Chunk {doc['chunk_id']}]\n"
+                header = f"[Source: {r['source_file']} | Chunk {r['chunk_id']}]\n"
                 text = header + text
-
-            results.append(text)
-            if len(results) >= top_k:
-                break
-
-        return results
+            formatted.append(text)
+        return formatted
 
 
     def retrieve_with_metadata(
@@ -247,26 +258,71 @@ class RAGPipeline:
         if self.index.ntotal == 0:
             return []
 
+        # Hybrid Search: check if query wants to list/show all workers in a specific department
+        exact_matches = []
+        import re
+        
+        dept_match = None
+        for dept in ["IT", "Finance", "Admin", "EVS", "Marketing"]:
+            if re.search(r"\b" + re.escape(dept) + r"\b", query, re.IGNORECASE):
+                # Check for listing indicator keywords
+                if any(w in query.lower() for w in ["all", "list", "everyone", "who works", "workers in", "employees in", "show me", "people in"]):
+                    dept_match = dept
+                    break
+
+        if dept_match:
+            for doc in self.documents:
+                if source_filter and doc.get("source_file") != source_filter:
+                    continue
+                if re.search(r"\b" + re.escape(dept_match) + r"\b", doc["text"], re.IGNORECASE):
+                    exact_matches.append({
+                        **doc,
+                        "rank": 0,
+                        "distance": 0.0,
+                    })
+            if exact_matches:
+                return exact_matches
+
+        # Alphanumeric ID matching
+        id_tokens = re.findall(r"\b[A-Z0-9]{3,10}\b", query)
+        for token in id_tokens:
+            # Must contain both letters and numbers to be an ID/code
+            if any(c.isalpha() for c in token) and any(c.isdigit() for c in token):
+                for doc in self.documents:
+                    if source_filter and doc.get("source_file") != source_filter:
+                        continue
+                    if re.search(r"\b" + re.escape(token) + r"\b", doc["text"]):
+                        if not any(e["chunk_id"] == doc["chunk_id"] for e in exact_matches):
+                            exact_matches.append({
+                                **doc,
+                                "rank": 0,
+                                "distance": 0.0,
+                            })
+
+        # Run vector search
         query_vector = self.encoder.encode([query]).astype("float32")
         fetch_k = min(top_k * 5 if source_filter else top_k, self.index.ntotal)
         distances, indices = self.index.search(query_vector, fetch_k)
 
-        results = []
+        results = list(exact_matches)
         for rank, (dist, idx) in enumerate(zip(distances[0], indices[0])):
             if idx == -1 or idx >= len(self.documents):
                 continue
             doc = self.documents[idx]
             if source_filter and doc.get("source_file") != source_filter:
                 continue
+            # Avoid duplicates of exact matches
+            if any(e["chunk_id"] == doc["chunk_id"] for e in results):
+                continue
             results.append({
                 **doc,
-                "rank": rank,
+                "rank": rank + len(exact_matches),
                 "distance": float(dist),
             })
             if len(results) >= top_k:
                 break
 
-        return results
+        return results[:top_k]
 
     # ── Retrieval Eval Metrics ─────────────────────────────────────────────────
 

@@ -47,9 +47,18 @@ class Sidebar(QWidget):
         logo.setFixedHeight(44)
         layout.addWidget(logo)
 
+        tooltips = {
+            0: "Workbench (Main Chat Space)",
+            1: "Prompt Lab (A/B testing & tokenization)",
+            2: "Knowledge Base (RAG context & source ingestion)",
+            3: "Training Studio (LoRA/QLoRA fine-tuning & curator)",
+            4: "Eval Suite (Automated model benchmarking)",
+            5: "System Config (Hardware readout & model loader settings)",
+        }
         self._buttons: list[_SidebarButton] = []
         for icon, label, idx in _ITEMS:
             btn = _SidebarButton(icon, label, idx, self)
+            btn.setToolTip(tooltips.get(idx, ""))
             btn.clicked.connect(lambda _checked, i=idx: self._select(i))
             layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignHCenter)
             self._buttons.append(btn)

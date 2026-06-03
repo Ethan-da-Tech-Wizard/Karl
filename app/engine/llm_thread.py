@@ -74,7 +74,16 @@ class LLMThread(QThread):
 
             llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
             trimmed_history = self._trim_history(self.chat_history)
-            prompt = core.interaction_loop.build_prompt(self.system_prompt, trimmed_history)
+            system_prompt = self.system_prompt
+            context_str = "(No context retrieved.)"
+            if self.retrieved_chunks:
+                context_str = "\n".join(self.retrieved_chunks)
+            
+            if "{rag_context}" in system_prompt:
+                system_prompt = system_prompt.replace("{rag_context}", context_str)
+            elif self.retrieved_chunks:
+                system_prompt += "\n\nRetrieved Context:\n" + context_str
+            prompt = core.interaction_loop.build_prompt(system_prompt, trimmed_history)
 
             # Tokenize prompt to get accurate prompt token count
             prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))

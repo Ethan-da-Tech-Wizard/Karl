@@ -202,11 +202,13 @@ class _PromptColumn(QWidget):
         self._system_edit = QTextEdit()
         self._system_edit.setPlaceholderText("system prompt (optional)...")
         self._system_edit.setFixedHeight(60)
+        self._system_edit.setToolTip(f"Edit system prompt instructions for Column {self.label}")
         layout.addWidget(self._system_edit)
 
         self._user_edit = QTextEdit()
         self._user_edit.setPlaceholderText("user message...")
         self._user_edit.setFixedHeight(80)
+        self._user_edit.setToolTip(f"Edit user prompt message for Column {self.label}")
         layout.addWidget(self._user_edit)
 
         out_hdr = QWidget()
@@ -224,9 +226,11 @@ class _PromptColumn(QWidget):
 
         self._output = QTextBrowser()
         self._output.setPlaceholderText("output will stream here...")
+        self._output.setToolTip(f"Model generation output for Column {self.label}")
         layout.addWidget(self._output, 1)
 
         btn = QPushButton(f"▶ run {label}")
+        btn.setToolTip(f"Run generation using settings in Column {self.label}")
         btn.clicked.connect(self._emit_run)
         layout.addWidget(btn)
 
@@ -329,6 +333,7 @@ class PromptLabWorkspace(QWidget):
 
         run_both = QPushButton("▶▶ Run Both")
         run_both.setObjectName("btn-primary")
+        run_both.setToolTip("Run both Column A and B generations concurrently")
         run_both.clicked.connect(self._run_both)
         tr_layout.addWidget(run_both)
         right_layout.addWidget(top_row)
@@ -366,6 +371,7 @@ class PromptLabWorkspace(QWidget):
         self._diff_view = QTextBrowser()
         self._diff_view.setPlaceholderText("Difference view will render here after both outputs complete...")
         self._diff_view.setFixedHeight(140)
+        self._diff_view.setToolTip("Inline comparison highlighting additions (green) and deletions (red) between Column A and B outputs")
         dt_layout.addWidget(self._diff_view)
         self._bottom_tabs.addTab(diff_tab, "Difference View")
         
@@ -384,14 +390,17 @@ class PromptLabWorkspace(QWidget):
         self._tok_input = QTextEdit()
         self._tok_input.setPlaceholderText("Type or paste text to tokenize...")
         self._tok_input.setFixedHeight(50)
+        self._tok_input.setToolTip("Enter text to visualize Byte-Pair Encoding (BPE) tokens")
         self._tok_input.textChanged.connect(self._on_tokenize_text_changed)
         ir_layout.addWidget(self._tok_input, 1)
         
         btn_load_a = QPushButton("Load Output A")
+        btn_load_a.setToolTip("Load Column A prompt output directly into tokenizer visualizer")
         btn_load_a.clicked.connect(self._load_output_a_to_tokenizer)
         ir_layout.addWidget(btn_load_a)
         
         btn_load_b = QPushButton("Load Output B")
+        btn_load_b.setToolTip("Load Column B prompt output directly into tokenizer visualizer")
         btn_load_b.clicked.connect(self._load_output_b_to_tokenizer)
         ir_layout.addWidget(btn_load_b)
         
@@ -401,6 +410,7 @@ class PromptLabWorkspace(QWidget):
         self._tok_output = QTextBrowser()
         self._tok_output.setPlaceholderText("Tokens will be visualized here...")
         self._tok_output.setFixedHeight(120)
+        self._tok_output.setToolTip("Tokens colored by type (special: red, punctuation: blue, word-start: purple, continuation: orange) with token IDs on hover")
         tok_layout.addWidget(self._tok_output)
         
         self._bottom_tabs.addTab(tokenizer_tab, "Tokenizer Visualizer")
@@ -422,6 +432,7 @@ class PromptLabWorkspace(QWidget):
         
         self._pairs_list = QListWidget()
         self._pairs_list.currentTextChanged.connect(self._on_pair_selected)
+        self._pairs_list.setToolTip("List of saved prompt configuration pairs. Double-click or select to load.")
         layout.addWidget(self._pairs_list, 1)
         self._refresh_pairs()
         
@@ -433,15 +444,18 @@ class PromptLabWorkspace(QWidget):
         
         self._pair_name_input = QLineEdit()
         self._pair_name_input.setPlaceholderText("Pair name...")
+        self._pair_name_input.setToolTip("Enter name to save current A/B system prompts and settings")
         ssl.addWidget(self._pair_name_input)
         
         self._save_btn = QPushButton("Save Pair")
         self._save_btn.setObjectName("btn-primary")
+        self._save_btn.setToolTip("Save current A/B system prompts and settings as a named pair")
         self._save_btn.clicked.connect(self._save_pair)
         ssl.addWidget(self._save_btn)
         
         self._delete_btn = QPushButton("Delete Selected")
         self._delete_btn.setObjectName("btn-danger")
+        self._delete_btn.setToolTip("Delete the selected saved prompt pair")
         self._delete_btn.clicked.connect(self._delete_pair)
         ssl.addWidget(self._delete_btn)
         

@@ -147,6 +147,31 @@ class ChatView(QTextBrowser):
         cursor.insertHtml(html)
         self.ensureCursorVisible()
 
+    def append_rag_sources(self, results: list[dict]):
+        self._finalize_stream()
+        if not results:
+            return
+        lines = []
+        lines.append(
+            '<div style="margin:8px 60px 8px 10px; padding:10px 12px; '
+            'background:#1C1C2A; border:1px solid #383850; border-radius:4px; '
+            'font-family: \'JetBrains Mono\', monospace; font-size:8.5pt;">'
+        )
+        lines.append('<div style="color:#00C2FF; font-weight:bold; margin-bottom:6px;">🔍 Injected RAG Context:</div>')
+        for r in results:
+            lines.append(
+                f'<div style="color:#E4E4F0; margin-bottom:4px;">'
+                f'• <b>{_escape(r["source_file"])}</b> (Chunk {r["chunk_id"]}, distance: '
+                f'<span style="color:#F0B030;">{r["distance"]:.4f}</span>)'
+                f'</div>'
+            )
+        lines.append('</div>')
+        
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml("".join(lines))
+        self.ensureCursorVisible()
+
     # internals ───────────────────────────────────────────────────────────────
 
     def _finalize_stream(self):
@@ -183,6 +208,7 @@ def _escape(text: str) -> str:
 class WorkbenchWorkspace(QWidget):
     status_changed = pyqtSignal(str, bool)   # (text, active)
     model_changed = pyqtSignal(str)          # (model_name)
+    adapter_changed = pyqtSignal(str)        # (adapter_name)
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -342,20 +368,24 @@ class WorkbenchWorkspace(QWidget):
         self._thumb_btn = QPushButton("✓ good")
         self._thumb_btn.setObjectName("btn-ghost")
         self._thumb_btn.setEnabled(False)
+        self._thumb_btn.setToolTip("Curate this response as a positive training example")
         self._thumb_btn.clicked.connect(self._on_thumb_up)
 
         self._thumb_down_btn = QPushButton("✗ bad")
         self._thumb_down_btn.setObjectName("btn-ghost")
         self._thumb_down_btn.setEnabled(False)
+        self._thumb_down_btn.setToolTip("Flag this response as an incorrect/negative training example")
         self._thumb_down_btn.clicked.connect(self._on_thumb_down)
 
         self._correct_btn = QPushButton("✎ correct")
         self._correct_btn.setObjectName("btn-ghost")
         self._correct_btn.setEnabled(False)
+        self._correct_btn.setToolTip("Manually edit the response to create a corrected training pair")
         self._correct_btn.clicked.connect(self._on_correct)
 
         self._new_session_btn = QPushButton("+ new session")
         self._new_session_btn.setObjectName("btn-ghost")
+        self._new_session_btn.setToolTip("Clear chat history and start a fresh session")
         self._new_session_btn.clicked.connect(self._new_session)
 
         for b in (self._thumb_btn, self._thumb_down_btn, self._correct_btn, self._new_session_btn):
@@ -390,6 +420,7 @@ class WorkbenchWorkspace(QWidget):
 
         self._workflow_combo = QComboBox()
         self._workflow_combo.setFixedWidth(160)
+        self._workflow_combo.setToolTip("Active prompt generation workflow template")
         for name, label in list_workflows():
             self._workflow_combo.addItem(label, name)
         # Select "general_chat" by default (rather than alphabetically first "code_review")
@@ -399,11 +430,11 @@ class WorkbenchWorkspace(QWidget):
         ctrl_layout.addWidget(self._workflow_combo)
 
         self._rag_check = QCheckBox("RAG")
-        self._rag_check.setToolTip("Inject knowledge base context")
+        self._rag_check.setToolTip("Inject relevant knowledge base context into prompt")
         ctrl_layout.addWidget(self._rag_check)
 
         self._loop_check = QCheckBox("Loop")
-        self._loop_check.setToolTip("Run in agentic loop mode")
+        self._loop_check.setToolTip("Run generation in an autonomous iterative agentic loop")
         ctrl_layout.addWidget(self._loop_check)
 
         self._params_toggle = QPushButton("⚙")
@@ -418,11 +449,13 @@ class WorkbenchWorkspace(QWidget):
         self._stop_btn = QPushButton("■ stop")
         self._stop_btn.setObjectName("btn-danger")
         self._stop_btn.setEnabled(False)
+        self._stop_btn.setToolTip("Interrupt the active generation thread")
         self._stop_btn.clicked.connect(self._stop)
         ctrl_layout.addWidget(self._stop_btn)
 
         self._send_btn = QPushButton("send ↵")
         self._send_btn.setObjectName("btn-primary")
+        self._send_btn.setToolTip("Send prompt to Karl (Ctrl+Enter)")
         self._send_btn.clicked.connect(self._send)
         ctrl_layout.addWidget(self._send_btn)
 
@@ -442,6 +475,7 @@ class WorkbenchWorkspace(QWidget):
         dl.addWidget(_label("model", "lbl-muted"))
         self._model_combo = QComboBox()
         self._model_combo.setFixedWidth(180)
+        self._model_combo.setToolTip("Select active model and adapter overlay")
         self._model_combo.currentIndexChanged.connect(self._on_model_selected)
         dl.addWidget(self._model_combo)
 
@@ -452,6 +486,7 @@ class WorkbenchWorkspace(QWidget):
         self._temp_spin.setSingleStep(0.05)
         self._temp_spin.setValue(self._hyperparams["temperature"])
         self._temp_spin.setFixedWidth(70)
+        self._temp_spin.setToolTip("Generation temperature. Lower is more deterministic, higher is more creative.")
         self._temp_spin.valueChanged.connect(
             lambda v: self._hyperparams.__setitem__("temperature", v)
         )
@@ -464,6 +499,7 @@ class WorkbenchWorkspace(QWidget):
         self._topp_spin.setSingleStep(0.05)
         self._topp_spin.setValue(self._hyperparams["top_p"])
         self._topp_spin.setFixedWidth(70)
+        self._topp_spin.setToolTip("Top-p sampling cutoff. Keeps only tokens within this cumulative probability mass.")
         self._topp_spin.valueChanged.connect(
             lambda v: self._hyperparams.__setitem__("top_p", v)
         )
@@ -476,6 +512,7 @@ class WorkbenchWorkspace(QWidget):
         self._maxtok_spin.setSingleStep(64)
         self._maxtok_spin.setValue(self._hyperparams["max_tokens"])
         self._maxtok_spin.setFixedWidth(80)
+        self._maxtok_spin.setToolTip("Maximum number of tokens to generate.")
         self._maxtok_spin.valueChanged.connect(
             lambda v: self._hyperparams.__setitem__("max_tokens", v)
         )
@@ -541,11 +578,23 @@ class WorkbenchWorkspace(QWidget):
 
         chunks = []
         if self._rag_check.isChecked() and self.state.rag.total_chunks > 0:
-            chunks = self.state.rag.retrieve(
+            top_k = getattr(self.state, "rag_top_k", 3)
+            threshold = getattr(self.state, "rag_threshold", 0.0)
+            retrieved_metadata = self.state.rag.retrieve_with_metadata(
                 text,
-                top_k=getattr(self.state, "rag_top_k", 3),
-                threshold=getattr(self.state, "rag_threshold", 0.0)
+                top_k=top_k
             )
+            if threshold > 0.0:
+                retrieved_metadata = [r for r in retrieved_metadata if r["distance"] <= threshold]
+            
+            if retrieved_metadata:
+                self._chat_view.append_rag_sources(retrieved_metadata)
+                for r in retrieved_metadata:
+                    chunk_text = r["text"]
+                    if getattr(self.state.rag, "contextual_headers", False):
+                        header = f"[Source: {r['source_file']} | Chunk {r['chunk_id']}]\n"
+                        chunk_text = header + chunk_text
+                    chunks.append(chunk_text)
 
         if self._loop_check.isChecked():
             self._start_agentic(chunks)
@@ -632,33 +681,76 @@ class WorkbenchWorkspace(QWidget):
             self._refresh_model_combo()
         self._params_drawer.setVisible(visible)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_model_combo()
+
     def _refresh_model_combo(self):
         self._model_combo.blockSignals(True)
         self._model_combo.clear()
         
         import os
+        adapters_dir = "data/adapters"
+        adapters = []
+        if os.path.exists(adapters_dir):
+            try:
+                for d in sorted(os.listdir(adapters_dir)):
+                    d_path = os.path.join(adapters_dir, d)
+                    if os.path.isdir(d_path):
+                        # check for gguf/bin files
+                        files_in_dir = os.listdir(d_path)
+                        if any(f.endswith(".gguf") or f.endswith(".bin") for f in files_in_dir):
+                            adapters.append(d)
+            except Exception as e:
+                print(f"[Workbench] Error scanning adapters: {e}")
+
         models_dir = "data/models"
         files = []
         if os.path.exists(models_dir):
             files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
             
         for f in sorted(files):
-            self._model_combo.addItem(f, f)
+            # Base model
+            self._model_combo.addItem(f, {"model": f, "adapter": None})
+            # List adapters for 1.5b models
+            if "1.5b" in f.lower():
+                for adapter in adapters:
+                    self._model_combo.addItem(f"{f} ({adapter})", {"model": f, "adapter": adapter})
             
-        # Select active model
-        active_name = self.state.model_name
-        idx = self._model_combo.findData(active_name)
-        if idx >= 0:
-            self._model_combo.setCurrentIndex(idx)
-        else:
-            if files:
-                self._model_combo.setCurrentIndex(0)
+        # Select active model and adapter combination
+        active_model = self.state.model_name
+        active_adapter = self.state.adapter_name
+        
+        found = False
+        for idx in range(self._model_combo.count()):
+            d = self._model_combo.itemData(idx)
+            if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") == active_adapter:
+                self._model_combo.setCurrentIndex(idx)
+                found = True
+                break
+                
+        if not found:
+            for idx in range(self._model_combo.count()):
+                d = self._model_combo.itemData(idx)
+                if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") is None:
+                    self._model_combo.setCurrentIndex(idx)
+                    found = True
+                    break
+                    
+        if not found and self._model_combo.count() > 0:
+            self._model_combo.setCurrentIndex(0)
                 
         self._model_combo.blockSignals(False)
 
     def _on_model_selected(self, index: int):
-        filename = self._model_combo.itemData(index)
-        if not filename or filename == self.state.model_name:
+        data = self._model_combo.itemData(index)
+        if not isinstance(data, dict):
+            return
+            
+        filename = data.get("model")
+        adapter_name = data.get("adapter")
+        
+        if filename == self.state.model_name and adapter_name == self.state.adapter_name:
             return
         
         from PyQt6.QtWidgets import QApplication
@@ -667,24 +759,33 @@ class WorkbenchWorkspace(QWidget):
         
         # Disable inputs temporarily during model swap
         self._set_busy(True)
-        self.status_changed.emit(f"Loading {filename}...", True)
+        loading_text = f"Loading {filename} (adapter: {adapter_name})..." if adapter_name else f"Loading {filename}..."
+        self.status_changed.emit(loading_text, True)
         QApplication.processEvents()
         
         try:
             from app.engine.model_loader import ModelLoader
             ModelLoader.reset_instance()
-            # Force load the new model
-            ModelLoader.get_instance(model_path=os.path.join("data", "models", filename))
+            # Force load the new model with adapter
+            ModelLoader.get_instance(model_path=os.path.join("data", "models", filename), adapter_name=adapter_name)
             
             # Save the active model to active_model.json
-            active = {"filename": filename}
+            active = {
+                "filename": filename,
+                "adapter": adapter_name
+            }
             os.makedirs("data", exist_ok=True)
             with open("data/active_model.json", "w") as f:
                 json.dump(active, f)
                 
             self.state.model_name = filename
+            self.state.adapter_name = adapter_name
+            
             self.model_changed.emit(filename)
-            self._chat_view.append_system_note(f"— Active model switched to: {filename} —")
+            self.adapter_changed.emit(adapter_name or "")
+            
+            note = f"— Active model switched to: {filename} (adapter: {adapter_name or 'none'}) —"
+            self._chat_view.append_system_note(note)
         except Exception as e:
             self._chat_view.append_system_note(f"[Error switching model: {str(e)}]")
         finally:
@@ -1012,3 +1113,15 @@ class WorkbenchWorkspace(QWidget):
 
     def set_hyperparams(self, params: dict):
         self._hyperparams.update(params)
+        if hasattr(self, "_temp_spin") and "temperature" in params:
+            self._temp_spin.blockSignals(True)
+            self._temp_spin.setValue(params["temperature"])
+            self._temp_spin.blockSignals(False)
+        if hasattr(self, "_topp_spin") and "top_p" in params:
+            self._topp_spin.blockSignals(True)
+            self._topp_spin.setValue(params["top_p"])
+            self._topp_spin.blockSignals(False)
+        if hasattr(self, "_maxtok_spin") and "max_tokens" in params:
+            self._maxtok_spin.blockSignals(True)
+            self._maxtok_spin.setValue(params["max_tokens"])
+            self._maxtok_spin.blockSignals(False)
