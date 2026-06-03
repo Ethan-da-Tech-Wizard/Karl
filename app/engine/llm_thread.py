@@ -98,9 +98,17 @@ class LLMThread(QThread):
             raw_output = ""
             parsed_thought = ""
             parsed_response = ""
-            # Prompt pre-seeds <think>\n so we ALWAYS start inside the thought block.
-            # start_in_thought only used for continuation chains.
-            in_thought = True if not self.start_in_thought else self.start_in_thought
+            # Determine starting mode for the streaming parser.
+            # Base model: interaction_loop pre-seeds <think>\n → start inside thought block.
+            # Adapter active: interaction_loop does NOT pre-seed <think> → start in chat mode
+            # and detect <think> naturally if the adapter generates one.
+            adapter_active = bool(getattr(ModelLoader, "_active_adapter", None))
+            if self.start_in_thought:
+                in_thought = self.start_in_thought  # continuation chains honour explicit flag
+            elif adapter_active:
+                in_thought = False   # adapter generates <think> from scratch if it wants one
+            else:
+                in_thought = True    # base model: prompt already pre-seeded <think>\n
             buffer = ""
             finish_reason = "stop"
 
