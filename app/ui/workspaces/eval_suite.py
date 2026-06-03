@@ -98,6 +98,15 @@ class EvalSuiteWorkspace(QWidget):
         
         dp_layout.addWidget(_section("EVAL DATASET"))
 
+        desc = QLabel(
+            "Benchmark test suite. Load an evaluation dataset of questions and expected answers "
+            "to test a selected workflow, assessing accuracy and grading pass rates."
+        )
+        desc.setObjectName("lbl-muted")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("font-size: 8.5pt; margin-bottom: 6px;")
+        dp_layout.addWidget(desc)
+
         row = QWidget()
         rl = QHBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)

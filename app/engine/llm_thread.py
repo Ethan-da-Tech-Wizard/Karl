@@ -284,7 +284,7 @@ class LLMThread(QThread):
                 execution_time=total_time,
                 rag_context=self.retrieved_chunks,
                 model_name=ModelLoader.model_name(),
-                adapter_name=getattr(ModelLoader, '_adapter_name', None),
+                adapter_name=getattr(ModelLoader, '_active_adapter', None),
                 workflow=self.workflow,
                 template=self.template,
                 diagnostics=diagnostics,

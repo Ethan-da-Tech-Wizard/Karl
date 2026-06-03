@@ -19,6 +19,7 @@ from app.ui.workspaces.knowledge_base import KnowledgeBaseWorkspace
 from app.ui.workspaces.training_studio import TrainingStudioWorkspace
 from app.ui.workspaces.eval_suite import EvalSuiteWorkspace
 from app.ui.workspaces.system_config import SystemConfigWorkspace
+from app.ui.workspaces.docs import DocsWorkspace
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +56,7 @@ class MainWindow(QMainWindow):
         self._eval           = EvalSuiteWorkspace(self._state)
         self._system         = SystemConfigWorkspace(self._state)
         self._system.set_workbench(self._workbench)
+        self._docs           = DocsWorkspace(self._state)
 
         for ws in (
             self._workbench,
@@ -63,6 +65,7 @@ class MainWindow(QMainWindow):
             self._training,
             self._eval,
             self._system,
+            self._docs,
         ):
             self._stack.addWidget(ws)
 

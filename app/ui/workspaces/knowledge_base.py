@@ -87,6 +87,15 @@ class KnowledgeBaseWorkspace(QWidget):
 
         layout.addWidget(_section("KNOWLEDGE BASE"))
 
+        desc = QLabel(
+            "Manage documents and search indexes. Files are ingested, chunked, "
+            "embedded, and stored in a local vector database for Retrieval-Augmented Generation (RAG)."
+        )
+        desc.setObjectName("lbl-muted")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("font-size: 8.5pt; margin-bottom: 6px;")
+        layout.addWidget(desc)
+
         # stats row
         self._stats_lbl = QLabel("0 sources · 0 chunks")
         self._stats_lbl.setObjectName("lbl-muted")

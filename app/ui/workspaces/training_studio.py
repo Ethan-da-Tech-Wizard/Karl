@@ -160,6 +160,7 @@ class TrainingThread(QThread):
                 sys.executable,
                 "app/utils/convert_lora_to_gguf.py",
                 "--base", self.hf_base_dir,
+                "--outfile", os.path.join(adapter_path, f"{self.adapter_name}.gguf"),
                 adapter_path
             ]
             self.log.emit(f"Running: {' '.join(cmd)}")
@@ -198,6 +199,15 @@ class TrainingStudioWorkspace(QWidget):
         self._stats_lbl.setObjectName("lbl-muted")
         tr.addWidget(self._stats_lbl)
         root.addWidget(title_row)
+
+        desc = QLabel(
+            "Manage curated user feedback datasets and run model training. "
+            "Export positive/negative ratings in SFT or DPO format, and train LoRA adapters locally."
+        )
+        desc.setObjectName("lbl-muted")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("font-size: 8.5pt; margin-bottom: 6px; padding-left: 2px;")
+        root.addWidget(desc)
 
         tabs = QTabWidget()
         tabs.addTab(self._build_dataset_tab(), "Dataset")
@@ -369,7 +379,7 @@ class TrainingStudioWorkspace(QWidget):
         self._epochs_spin.setToolTip("Number of full passes over the training dataset.")
 
         self._qlora_check = QCheckBox("4-bit QLoRA  (requires bitsandbytes)")
-        self._qlora_check.setChecked(False)
+        self._qlora_check.setChecked(True)
         self._qlora_check.setToolTip("Enable 4-bit quantized QLoRA training to reduce VRAM requirements")
 
         for row in (

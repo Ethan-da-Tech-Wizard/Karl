@@ -38,7 +38,8 @@ def build_prompt(system_prompt, chat_history):
         <think>                   ← only for base model
         {model begins reasoning}
     """
-    adapter_active = bool(getattr(ModelLoader, "_active_adapter", None))
+    active_adapter = getattr(ModelLoader, "_active_adapter", None)
+    adapter_active = bool(active_adapter)
 
     # When an adapter is active, use the minimal system prompt it was trained on
     effective_system = _ADAPTER_SYSTEM_PROMPT if adapter_active else system_prompt
@@ -49,12 +50,12 @@ def build_prompt(system_prompt, chat_history):
         content = msg.get("content", "")
         prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
 
-    if adapter_active:
+    if adapter_active and active_adapter != "math_solver":
         # Adapter generates <think> from scratch if its training included one.
         # Pre-seeding forces mid-thought mode and causes it to skip its response.
         prompt += "<|im_start|>assistant\n"
     else:
-        # Pre-seed <think> so the base model immediately enters reasoning mode.
+        # Pre-seed <think> so the base model or math_solver immediately enters reasoning mode.
         # LLMThread's parser expects the stream to start inside the thought block.
         prompt += "<|im_start|>assistant\n<think>\n"
 

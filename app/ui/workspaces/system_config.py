@@ -162,6 +162,15 @@ class SystemConfigWorkspace(QWidget):
         title.setStyleSheet("font-size: 14pt; font-weight: bold; padding-bottom: 4px;")
         root.addWidget(title)
 
+        desc = QLabel(
+            "Configure model and environment settings. Load or download GGUF models, "
+            "manage default generation hyperparameters, active identity prompts, and check hardware resource specs."
+        )
+        desc.setObjectName("lbl-muted")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("font-size: 8.5pt; margin-bottom: 6px; padding-left: 2px;")
+        root.addWidget(desc)
+
         tabs = QTabWidget()
         tabs.addTab(self._build_model_tab(), "Model")
         tabs.addTab(self._build_registry_tab(), "Registry")

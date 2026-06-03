@@ -97,11 +97,13 @@ class _RunThread(QThread):
     live_stats = pyqtSignal(int, float)
     error = pyqtSignal(str)
 
-    def __init__(self, system_prompt: str, user_prompt: str, hyperparams: dict):
+    def __init__(self, system_prompt: str, user_prompt: str, hyperparams: dict, model_name: str | None = None, adapter_name: str | None = None):
         super().__init__()
         self.system_prompt = system_prompt
         self.user_prompt   = user_prompt
         self.hyperparams   = hyperparams
+        self.model_name    = model_name
+        self.adapter_name  = adapter_name
 
     def run(self):
         try:
@@ -111,7 +113,11 @@ class _RunThread(QThread):
             import time
             importlib.reload(core.interaction_loop)
 
-            llm = ModelLoader.get_instance()
+            model_path = None
+            if self.model_name:
+                model_path = os.path.join("data", "models", self.model_name)
+
+            llm = ModelLoader.get_instance(model_path=model_path, adapter_name=self.adapter_name)
             history = [{"role": "user", "content": self.user_prompt}]
             prompt  = core.interaction_loop.build_prompt(self.system_prompt, history)
 
@@ -189,6 +195,7 @@ class _RunThread(QThread):
 class _PromptColumn(QWidget):
     run_requested = pyqtSignal(str, str)   # (label, user_text)
     generation_done = pyqtSignal(str, dict)      # response text, diagnostics
+    generation_failed = pyqtSignal()
 
     def __init__(self, label: str, parent=None):
         super().__init__(parent)
@@ -198,6 +205,10 @@ class _PromptColumn(QWidget):
         layout.setSpacing(6)
 
         layout.addWidget(_section(f"PROMPT  {label}"))
+
+        self._model_combo = QComboBox()
+        self._model_combo.setToolTip(f"Select model/adapter combination for Column {self.label}")
+        layout.addWidget(self._model_combo)
 
         self._system_edit = QTextEdit()
         self._system_edit.setPlaceholderText("system prompt (optional)...")
@@ -235,6 +246,67 @@ class _PromptColumn(QWidget):
         layout.addWidget(btn)
 
         self._thread: _RunThread | None = None
+        self._refresh_model_combo()
+
+    def _refresh_model_combo(self):
+        self._model_combo.blockSignals(True)
+        current_data = self._model_combo.itemData(self._model_combo.currentIndex())
+        self._model_combo.clear()
+        
+        import os
+        adapters_dir = "data/adapters"
+        adapters = []
+        if os.path.exists(adapters_dir):
+            try:
+                for d in sorted(os.listdir(adapters_dir)):
+                    d_path = os.path.join(adapters_dir, d)
+                    if os.path.isdir(d_path):
+                        files_in_dir = os.listdir(d_path)
+                        if any(f.endswith(".gguf") or f.endswith(".bin") for f in files_in_dir):
+                            adapters.append(d)
+            except Exception as e:
+                print(f"[PromptLab] Error scanning adapters for Column {self.label}: {e}")
+
+        models_dir = "data/models"
+        files = []
+        if os.path.exists(models_dir):
+            files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
+            
+        for f in sorted(files):
+            # Base model
+            self._model_combo.addItem(f, {"model": f, "adapter": None})
+            # List adapters for 1.5b models
+            if "1.5b" in f.lower():
+                for adapter in adapters:
+                    self._model_combo.addItem(f"{f} ({adapter})", {"model": f, "adapter": adapter})
+                    
+        # Restore selection
+        if current_data:
+            found = False
+            for idx in range(self._model_combo.count()):
+                d = self._model_combo.itemData(idx)
+                if isinstance(d, dict) and d.get("model") == current_data.get("model") and d.get("adapter") == current_data.get("adapter"):
+                    self._model_combo.setCurrentIndex(idx)
+                    found = True
+                    break
+            if not found and self._model_combo.count() > 0:
+                self._model_combo.setCurrentIndex(0)
+        else:
+            # Fall back to matching the active model and adapter from ModelLoader
+            from app.engine.model_loader import ModelLoader
+            active_model = getattr(ModelLoader, "_model_name", None)
+            active_adapter = getattr(ModelLoader, "_active_adapter", None)
+            found = False
+            for idx in range(self._model_combo.count()):
+                d = self._model_combo.itemData(idx)
+                if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") == active_adapter:
+                    self._model_combo.setCurrentIndex(idx)
+                    found = True
+                    break
+            if not found and self._model_combo.count() > 0:
+                self._model_combo.setCurrentIndex(0)
+                
+        self._model_combo.blockSignals(False)
 
     def _emit_run(self):
         self.run_requested.emit(self.label, self._user_edit.toPlainText().strip())
@@ -262,7 +334,17 @@ class _PromptColumn(QWidget):
         self._output.clear()
         self._output.setPlainText("generating...")
         self._stats_lbl.setText("")
-        self._thread = _RunThread(self.system_text(), user, hyperparams)
+        
+        # Get selected model and adapter
+        model_data = self._model_combo.itemData(self._model_combo.currentIndex())
+        if model_data:
+            model_name = model_data.get("model")
+            adapter_name = model_data.get("adapter")
+        else:
+            model_name = None
+            adapter_name = None
+
+        self._thread = _RunThread(self.system_text(), user, hyperparams, model_name, adapter_name)
         self._thread.token.connect(self._on_token)
         self._thread.live_stats.connect(self._on_live_stats)
         self._thread.done.connect(self._on_done)
@@ -291,6 +373,7 @@ class _PromptColumn(QWidget):
     def _on_error(self, msg: str):
         self._stats_lbl.setText("")
         self._output.append(f"\n[error: {msg}]")
+        self.generation_failed.emit()
 
 
 # ── workspace ─────────────────────────────────────────────────────────────────
@@ -338,6 +421,15 @@ class PromptLabWorkspace(QWidget):
         tr_layout.addWidget(run_both)
         right_layout.addWidget(top_row)
 
+        desc = QLabel(
+            "Side-by-side prompt engineering workspace. Compare different prompt templates, "
+            "system messages, hyperparameter settings, or different model/adapter configurations."
+        )
+        desc.setObjectName("lbl-muted")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("font-size: 8.5pt; margin-bottom: 6px; padding-left: 2px;")
+        right_layout.addWidget(desc)
+
         # Splitter columns
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(1)
@@ -350,6 +442,9 @@ class PromptLabWorkspace(QWidget):
 
         self._col_a.generation_done.connect(self._on_col_a_done)
         self._col_b.generation_done.connect(self._on_col_b_done)
+
+        self._col_a.generation_failed.connect(self._on_col_a_failed)
+        self._col_b.generation_failed.connect(self._on_col_b_failed)
 
         splitter.addWidget(self._col_a)
         splitter.addWidget(self._col_b)
@@ -553,7 +648,13 @@ class PromptLabWorkspace(QWidget):
             self._pair_name_input.clear()
             self._refresh_pairs()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._col_a._refresh_model_combo()
+        self._col_b._refresh_model_combo()
+
     def _run_column(self, label: str, _user_text: str):
+        self._running_both = False
         if label == "A":
             self._output_a = ""
             self._diff_view.setHtml("<span style='color:#9090A8;'>Generating output A...</span>")
@@ -566,17 +667,28 @@ class PromptLabWorkspace(QWidget):
     def _run_both(self):
         self._output_a = ""
         self._output_b = ""
-        self._diff_view.setHtml("<span style='color:#9090A8;'>Generating outputs A and B...</span>")
+        self._diff_view.setHtml("<span style='color:#9090A8;'>Generating outputs A and B (sequentially)...</span>")
+        self._running_both = True
         self._col_a.start_run(self._hyperparams)
-        self._col_b.start_run(self._hyperparams)
 
     def _on_col_a_done(self, text: str, diagnostics: dict | None = None):
         self._output_a = text
         self._update_diff()
+        if getattr(self, "_running_both", False):
+            self._col_b.start_run(self._hyperparams)
 
     def _on_col_b_done(self, text: str, diagnostics: dict | None = None):
         self._output_b = text
         self._update_diff()
+        self._running_both = False
+
+    def _on_col_a_failed(self):
+        self._running_both = False
+        self._diff_view.setHtml("<span style='color:#FF4A5A;'>Generation failed in Column A. Stopped comparison.</span>")
+
+    def _on_col_b_failed(self):
+        self._running_both = False
+        self._diff_view.setHtml("<span style='color:#FF4A5A;'>Generation failed in Column B. Stopped comparison.</span>")
 
     def _update_diff(self):
         if not self._output_a or not self._output_b:
