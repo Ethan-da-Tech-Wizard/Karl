@@ -11,7 +11,7 @@ _ADAPTER_SYSTEM_PROMPT = "Always respond in English."
 
 def build_prompt(system_prompt, chat_history):
     """
-    Builds the ChatML prompt for DeepSeek-R1-Distill-Qwen models.
+    Builds the native DeepSeek-R1 prompt for distilled models.
 
     When NO adapter is active (base model):
         - Use the full system_prompt passed in from the Workbench.
@@ -29,14 +29,8 @@ def build_prompt(system_prompt, chat_history):
     an explicit "respond in English" instruction in the system prompt, it
     will often output Chinese characters.
 
-    ChatML format:
-        <|im_start|>system
-        {system_prompt}<|im_end|>
-        <|im_start|>user
-        {user_message}<|im_end|>
-        <|im_start|>assistant
-        <think>                   ← only for base model
-        {model begins reasoning}
+    Native DeepSeek Template format:
+        {system_prompt}<｜User｜>{user_message}<｜Assistant｜><think>
     """
     active_adapter = getattr(ModelLoader, "_active_adapter", None)
     adapter_active = bool(active_adapter)
@@ -44,19 +38,25 @@ def build_prompt(system_prompt, chat_history):
     # When an adapter is active, use the minimal system prompt it was trained on
     effective_system = _ADAPTER_SYSTEM_PROMPT if adapter_active else system_prompt
 
-    prompt = f"<|im_start|>system\n{effective_system}<|im_end|>\n"
+    # Note: llama-cpp-python automatically prepends the BOS token (<｜begin of sentence｜>)
+    # by default, so we do not prepend it here to avoid duplicate BOS token warnings.
+    prompt = f"{effective_system}"
     for msg in chat_history:
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
+        # Map ChatML roles to DeepSeek native tags
+        if role == "user":
+            prompt += f"<｜User｜>{content}"
+        elif role == "assistant":
+            prompt += f"<｜Assistant｜>{content}<｜end\u2581of\u2581sentence｜>"
 
     if adapter_active and active_adapter != "math_solver":
         # Adapter generates <think> from scratch if its training included one.
         # Pre-seeding forces mid-thought mode and causes it to skip its response.
-        prompt += "<|im_start|>assistant\n"
+        prompt += "<｜Assistant｜>"
     else:
         # Pre-seed <think> so the base model or math_solver immediately enters reasoning mode.
         # LLMThread's parser expects the stream to start inside the thought block.
-        prompt += "<|im_start|>assistant\n<think>\n"
+        prompt += "<｜Assistant｜><think>\n"
 
     return prompt
