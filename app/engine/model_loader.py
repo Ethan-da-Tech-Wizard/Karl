@@ -88,10 +88,21 @@ class ModelLoader:
 
                 if lora_path:
                     print(f"[ModelLoader] Loading {model_path} with LoRA adapter {lora_path} (n_ctx={cls._n_ctx})")
-                    cls._instance = Llama(model_path=model_path, n_ctx=cls._n_ctx, lora_path=lora_path, verbose=False)
+                    cls._instance = Llama(
+                        model_path=model_path,
+                        n_ctx=cls._n_ctx,
+                        lora_path=lora_path,
+                        n_gpu_layers=-1,
+                        verbose=False
+                    )
                 else:
                     print(f"[ModelLoader] Loading {model_path} (n_ctx={cls._n_ctx})")
-                    cls._instance = Llama(model_path=model_path, n_ctx=cls._n_ctx, verbose=False)
+                    cls._instance = Llama(
+                        model_path=model_path,
+                        n_ctx=cls._n_ctx,
+                        n_gpu_layers=-1,
+                        verbose=False
+                    )
                 print("[ModelLoader] Ready.")
             return cls._instance
 
