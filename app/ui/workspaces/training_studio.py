@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QLabel, QListWidget,
     QListWidgetItem, QFrame, QFileDialog, QMessageBox,
     QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit,
-    QProgressBar, QCheckBox,
+    QProgressBar, QCheckBox, QInputDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
@@ -72,6 +72,7 @@ class TrainingThread(QThread):
 
             # Set up QLoRA if requested and bitsandbytes is available
             use_qlora = self.config.get("use_qlora", False)
+            device_map_to_use = {"": 0} if torch.cuda.is_available() else "auto"
             if use_qlora:
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -82,12 +83,12 @@ class TrainingThread(QThread):
                 model = AutoModelForCausalLM.from_pretrained(
                     self.hf_base_dir,
                     quantization_config=bnb_config,
-                    device_map="auto"
+                    device_map=device_map_to_use
                 )
             else:
                 model = AutoModelForCausalLM.from_pretrained(
                     self.hf_base_dir,
-                    device_map="auto"
+                    device_map=device_map_to_use
                 )
 
             self.log.emit("Configuring LoRA...")
@@ -345,6 +346,11 @@ class TrainingStudioWorkspace(QWidget):
             rl.addStretch()
             return row
 
+        self._base_model_combo = QComboBox()
+        self._base_model_combo.setMinimumWidth(260)
+        self._base_model_combo.setToolTip("Select the local HuggingFace base model weights to train")
+        self._base_model_combo.currentIndexChanged.connect(self._check_deps)
+
         self._rank_spin = QSpinBox()
         self._rank_spin.setRange(1, 256)
         self._rank_spin.setValue(16)
@@ -381,6 +387,29 @@ class TrainingStudioWorkspace(QWidget):
         self._qlora_check = QCheckBox("4-bit QLoRA  (requires bitsandbytes)")
         self._qlora_check.setChecked(True)
         self._qlora_check.setToolTip("Enable 4-bit quantized QLoRA training to reduce VRAM requirements")
+
+        # Base model row with Browse and Add buttons
+        base_model_row = QWidget()
+        bm_layout = QHBoxLayout(base_model_row)
+        bm_layout.setContentsMargins(0, 2, 0, 2)
+        bm_layout.setSpacing(12)
+        lbl = QLabel("base model")
+        lbl.setFixedWidth(80)
+        bm_layout.addWidget(lbl)
+        bm_layout.addWidget(self._base_model_combo)
+        
+        browse_btn = QPushButton("browse...")
+        browse_btn.setToolTip("Select a local HuggingFace weights directory")
+        browse_btn.clicked.connect(self._browse_hf_model)
+        bm_layout.addWidget(browse_btn)
+        
+        add_repo_btn = QPushButton("add repo...")
+        add_repo_btn.setToolTip("Enter a HuggingFace repository ID to train (e.g. Qwen/Qwen2.5-Coder-1.5B)")
+        add_repo_btn.clicked.connect(self._add_hf_repo)
+        bm_layout.addWidget(add_repo_btn)
+        bm_layout.addStretch()
+        
+        layout.addWidget(base_model_row)
 
         for row in (
             _row("rank",    self._rank_spin),
@@ -444,6 +473,181 @@ class TrainingStudioWorkspace(QWidget):
             preview = user_text[:60]
             item = QListWidgetItem(f"[{source}]  {preview}")
             self._example_list.addItem(item)
+            
+        self._refresh_base_models()
+
+    def _load_custom_models(self) -> list[dict]:
+        path = "data/custom_train_models.json"
+        if os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return []
+
+    def _save_custom_model(self, display_name: str, item_data: str, is_path: bool):
+        custom_models = self._load_custom_models()
+        # Avoid duplicates
+        if any(item.get("data") == item_data for item in custom_models):
+            return
+        custom_models.append({
+            "display": display_name,
+            "data": item_data,
+            "is_path": is_path
+        })
+        try:
+            os.makedirs("data", exist_ok=True)
+            with open("data/custom_train_models.json", "w") as f:
+                json.dump(custom_models, f, indent=4)
+        except Exception:
+            pass
+
+    def _browse_hf_model(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Select local HuggingFace model directory", "data/hf_models"
+        )
+        if not path:
+            return
+            
+        # Check if there are safetensors or bin files in the selected directory
+        try:
+            files = os.listdir(path)
+            has_weights = any(f.endswith(".safetensors") or f.endswith(".bin") for f in files)
+            if not has_weights:
+                QMessageBox.warning(
+                    self, "Missing weights",
+                    "The selected directory does not seem to contain model weights (.safetensors or .bin files)."
+                )
+        except Exception as e:
+            QMessageBox.warning(self, "Error reading directory", str(e))
+            
+        # Add to combobox and select
+        name = os.path.basename(path)
+        self._save_custom_model(name, path, is_path=True)
+        self._refresh_base_models()
+        
+        # Select the newly added path
+        for idx in range(self._base_model_combo.count()):
+            if self._base_model_combo.itemData(idx) == path:
+                self._base_model_combo.setCurrentIndex(idx)
+                break
+
+    def _add_hf_repo(self):
+        repo_id, ok = QInputDialog.getText(
+            self, "Add HuggingFace Repository ID",
+            "Enter HuggingFace Repository ID (e.g. Qwen/Qwen2.5-Coder-1.5B):"
+        )
+        if not ok or not repo_id.strip():
+            return
+            
+        repo_id = repo_id.strip()
+        name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
+        self._save_custom_model(repo_id, repo_id, is_path=False)
+        self._refresh_base_models()
+        
+        # Select the newly added repo
+        for idx in range(self._base_model_combo.count()):
+            if self._base_model_combo.itemData(idx) == repo_id:
+                self._base_model_combo.setCurrentIndex(idx)
+                break
+
+    def _refresh_base_models(self):
+        self._base_model_combo.blockSignals(True)
+        self._base_model_combo.clear()
+        
+        standard_models = [
+            "DeepSeek-R1-Distill-Qwen-1.5B",
+            "DeepSeek-R1-Distill-Qwen-7B",
+            "DeepSeek-R1-Distill-Llama-8B",
+            "DeepSeek-R1-Distill-Qwen-14B",
+            "DeepSeek-R1-Distill-Llama-70B",
+            "deepseek-r1-1.5b-hf",
+        ]
+        
+        # Scan data/hf_models for any other directories containing weights
+        hf_dir = os.path.join("data", "hf_models")
+        scanned_folders = []
+        if os.path.exists(hf_dir):
+            try:
+                for name in os.listdir(hf_dir):
+                    path = os.path.join(hf_dir, name)
+                    if os.path.isdir(path) and name not in standard_models:
+                        files = os.listdir(path)
+                        if any(f.endswith(".safetensors") or f.endswith(".bin") for f in files):
+                            scanned_folders.append(name)
+            except Exception:
+                pass
+                
+        all_options = standard_models + sorted(scanned_folders)
+        
+        for opt in all_options:
+            local_path = os.path.join("data", "hf_models", opt)
+            exists = False
+            if os.path.exists(local_path):
+                try:
+                    files = os.listdir(local_path)
+                    if any(f.endswith(".safetensors") or f.endswith(".bin") for f in files):
+                        exists = True
+                except Exception:
+                    pass
+            display_name = f"{opt}  (Ready)" if exists else f"{opt}  (Missing weights)"
+            self._base_model_combo.addItem(display_name, opt)
+            
+        # Append persisted custom models
+        for custom in self._load_custom_models():
+            opt = custom.get("data")
+            is_path = custom.get("is_path", False)
+            
+            # Skip if already exists in standard/scanned
+            already_exists = False
+            for idx in range(self._base_model_combo.count()):
+                if self._base_model_combo.itemData(idx) == opt:
+                    already_exists = True
+                    break
+            if already_exists:
+                continue
+                
+            exists = False
+            if is_path:
+                if os.path.exists(opt):
+                    try:
+                        files = os.listdir(opt)
+                        if any(f.endswith(".safetensors") or f.endswith(".bin") for f in files):
+                            exists = True
+                    except Exception:
+                        pass
+            else:
+                basename = opt.split("/")[-1] if "/" in opt else opt
+                local_path = os.path.join("data", "hf_models", basename)
+                if os.path.exists(local_path):
+                    try:
+                        files = os.listdir(local_path)
+                        if any(f.endswith(".safetensors") or f.endswith(".bin") for f in files):
+                            exists = True
+                    except Exception:
+                        pass
+            status = "Ready" if exists else "Missing weights"
+            display_name = f"Custom: {custom.get('display')}  ({status})"
+            self._base_model_combo.addItem(display_name, opt)
+            
+        # Try to select the one matching the active gguf model
+        from app.engine.model_loader import ModelLoader
+        active_gguf = ModelLoader.model_name()
+        for idx in range(self._base_model_combo.count()):
+            opt = self._base_model_combo.itemData(idx)
+            if opt and (
+                ("1.5b" in opt.lower() and "1.5b" in active_gguf.lower()) or
+                ("7b" in opt.lower() and "7b" in active_gguf.lower()) or
+                ("8b" in opt.lower() and "8b" in active_gguf.lower()) or
+                ("14b" in opt.lower() and "14b" in active_gguf.lower()) or
+                ("70b" in opt.lower() and "70b" in active_gguf.lower())
+            ):
+                self._base_model_combo.setCurrentIndex(idx)
+                break
+                
+        self._base_model_combo.blockSignals(False)
+        self._check_deps()
 
     def _on_example_selected(self, row: int):
         if row < 0:
@@ -508,27 +712,44 @@ class TrainingStudioWorkspace(QWidget):
             self._export_status.setText(f"error: {e}")
 
     def _get_hf_model_path(self) -> tuple[str | None, str]:
-        from app.engine.model_loader import ModelLoader
-        active_gguf = ModelLoader.model_name()
-        
-        # Determine expected Hugging Face repository based on active GGUF filename
-        if "1.5b" in active_gguf.lower():
-            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-            folder_name = "DeepSeek-R1-Distill-Qwen-1.5B"
-        elif "7b" in active_gguf.lower():
-            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
-            folder_name = "DeepSeek-R1-Distill-Qwen-7B"
-        elif "14b" in active_gguf.lower():
-            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-            folder_name = "DeepSeek-R1-Distill-Qwen-14B"
-        elif "70b" in active_gguf.lower():
-            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Llama-70B"
-            folder_name = "DeepSeek-R1-Distill-Llama-70B"
-        else:
-            repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-            folder_name = "DeepSeek-R1-Distill-Qwen-1.5B"
+        idx = self._base_model_combo.currentIndex()
+        if idx < 0:
+            return None, "unknown"
+        selected_folder = self._base_model_combo.itemData(idx)
+        if not selected_folder:
+            return None, "unknown"
             
-        local_dir = os.path.join("data", "hf_models", folder_name)
+        # 1. Check if absolute path
+        if os.path.isabs(selected_folder):
+            if os.path.exists(selected_folder):
+                try:
+                    files = os.listdir(selected_folder)
+                    if any(f.endswith(".safetensors") or f.endswith(".bin") for f in files):
+                        return selected_folder, os.path.basename(selected_folder)
+                except Exception:
+                    pass
+            return None, os.path.basename(selected_folder)
+            
+        # 2. Check if selected_folder is a full repo ID (contains a slash)
+        if "/" in selected_folder:
+            repo_id = selected_folder
+            basename = selected_folder.split("/")[-1]
+        else:
+            basename = selected_folder
+            if "1.5b" in selected_folder.lower():
+                repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+            elif "7b" in selected_folder.lower():
+                repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+            elif "8b" in selected_folder.lower() or "llama-8b" in selected_folder.lower():
+                repo_id = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
+            elif "14b" in selected_folder.lower():
+                repo_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+            elif "70b" in selected_folder.lower():
+                repo_id = "deepseek-ai/DeepSeek-R1-Distill-Llama-70B"
+            else:
+                repo_id = f"deepseek-ai/{selected_folder}"
+                
+        local_dir = os.path.join("data", "hf_models", basename)
         if os.path.exists(local_dir):
             try:
                 files = os.listdir(local_dir)
@@ -557,12 +778,23 @@ class TrainingStudioWorkspace(QWidget):
             self._deps_lbl.setObjectName("lbl-red")
             self._train_btn.setEnabled(False)
         elif hf_path is None:
-            local_dir = f"data/hf_models/{os.path.basename(repo_id)}"
-            self._deps_lbl.setText(
-                f"HuggingFace model weights for '{repo_id}' are missing in '{local_dir}'.\n"
-                f"To download them privately and enable training, run in terminal:\n"
-                f"huggingface-cli download {repo_id} --local-dir {local_dir}"
-            )
+            # Check if it was an absolute path
+            idx = self._base_model_combo.currentIndex()
+            selected_folder = self._base_model_combo.itemData(idx) if idx >= 0 else None
+            
+            if selected_folder and os.path.isabs(selected_folder):
+                self._deps_lbl.setText(
+                    f"Selected directory '{selected_folder}' is missing model weights (.safetensors or .bin).\n"
+                    f"Please choose a directory containing HuggingFace model weights."
+                )
+            else:
+                basename = repo_id.split("/")[-1] if "/" in repo_id else repo_id
+                local_dir = f"data/hf_models/{basename}"
+                self._deps_lbl.setText(
+                    f"HuggingFace model weights for '{repo_id}' are missing in '{local_dir}'.\n"
+                    f"To download them privately and enable training, run in terminal:\n"
+                    f"huggingface-cli download {repo_id} --local-dir {local_dir}"
+                )
             self._deps_lbl.setObjectName("lbl-red")
             self._train_btn.setEnabled(False)
         else:
@@ -602,6 +834,10 @@ class TrainingStudioWorkspace(QWidget):
         self._train_progress.setValue(0)
         
         self._train_log.clear()
+        self._train_log.append("Releasing GPU VRAM from active inference engine...")
+        from app.engine.model_loader import ModelLoader
+        ModelLoader.reset_instance()
+        
         self._train_log.append("Initializing local training pipeline...")
 
         config = {
