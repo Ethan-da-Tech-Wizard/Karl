@@ -195,7 +195,7 @@ If `finish_reason == "length"`:
 | Embedding | `SentenceTransformer("all-MiniLM-L6-v2")` |
 | Indexing | `faiss.IndexFlatL2(384)` |
 | Persistence | `faiss.write_index()` + JSON metadata to `data/vector_db/` |
-| Retrieval | Top-k L2 search, optional source filter, optional contextual headers |
+| Retrieval | Exact-match hybrid search rules (departments, IDs, chapters/sections, topic keywords) followed by Top-k L2 vector search, filtered by distance threshold |
 | Eval metrics | `hit@1`, `hit@3`, `hit@k`, reciprocal rank via `eval_retrieval()` |
 
 ---
@@ -204,16 +204,19 @@ If `finish_reason == "length"`:
 
 - `save_example(system_prompt, user_msg, good_response, source)` — appends to `data/training/curated.jsonl`
 - `get_stats()` — returns `{total, thumbs_up, corrected}`
-- `export_unsloth(path)` — writes Unsloth-formatted JSONL with `conversations` field
+- `export_unsloth(path)` — writes Unsloth-formatted SFT JSONL
+- `export_dpo(path)` — writes Unsloth-formatted DPO JSONL by pairing thumbs-up (chosen) and thumbs-down (rejected) entries on matching prompts
 
 ---
 
-## 7. Eval Harness (`eval/`)
+## 7. Eval Harness & Suite
 
-| File | Purpose |
+| File/Workspace | Purpose |
 |---|---|
-| `harness.py` | Loads datasets, runs generations, calls graders |
+| `harness.py` | Loads datasets, runs generations under selected model/adapter configs, calls graders |
 | `graders.py` | `keyword_hit`, `json_valid`, `groundedness`, `json_schema`, `regex_match` |
 | `run_eval.py` | CLI: `python eval/run_eval.py --workflow grounded_answer --top_k 5` |
 | `benchmark_rag.py` | Retrieval-only benchmark, outputs hit@k and MRR |
 | `datasets/*.jsonl` | One dataset per workflow mode |
+| `EvalSuiteWorkspace` | Built-in UI Dataset Editor (add, edit, delete test cases) + Model/Adapter selector dropdown |
+

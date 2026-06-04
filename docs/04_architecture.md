@@ -277,9 +277,15 @@ Knowledge Base → ingest file
 
 On each generation (RAG enabled):
   retrieve(query, top_k, source_filter=None):
-    ├── encoder.encode([query])
-    ├── index.search(query_vector, fetch_k)
-    └── filter by distance threshold (AppState.rag_threshold)   ← Phase 2.1
+    ├── 1. Run Exact-Match Hybrid Search Heuristics (Distance 0.0, Rank 0):
+    │      ├── Department checks: list/count employees in EVS, Marketing, IT, Finance, Admin
+    │      ├── Alphanumeric ID checks: match codes like EMP001, EMP025
+    │      ├── Chapter/Section checks: parse "19.3", "Chapter 20" (supports spaces/case)
+    │      └── Topic keyword checks: parse titles like "continuing obligations", "final pay"
+    ├── 2. Run Dense Vector Search (if exact matches don't satisfy top_k):
+    │      ├── encoder.encode([query])
+    │      └── index.search(query_vector, fetch_k)
+    └── 3. Filter by distance threshold (AppState.rag_threshold)   ← Phase 2.1
 ```
 
 ---
@@ -335,3 +341,30 @@ data/
     ├── index.faiss            ← gitignored
     └── metadata.json          ← gitignored
 ```
+
+---
+
+## 13. Advanced Introspection & Optimization
+
+### 13.1 BPE Tokenizer Visualizer
+Exposes live byte-pair encoding structure:
+- **Encoding API**: Calls the active model's `.tokenize(text.encode())` dynamically via Python bindings.
+- **Classification Rules**: Splits returned tokens into categories:
+  * `special`: structural tokens (like `<think>`, `</think>`, or ChatML markers) — colored in red
+  * `punctuation`: standard symbols — colored in blue/cyan
+  * `word-start`: starting characters of standard words — colored in purple
+  * `continuation`: subword fragments — colored in orange
+- **Live Statistics**: Displays the total count of tokens and generation speed (tokens/sec) next to panel headers in the Workbench and Prompt Lab.
+
+### 13.2 Cognitive Roll-Up Compression
+Automatic context budget compression that triggers when the context window usage reaches a threshold:
+- **Trigger**: When prompt + generated tokens exceed **80% of `n_ctx`** (the active model's registry limit).
+- **Execution**: Runs a separate low-temperature summarization query using the local model to condense past reasoning thoughts inside the active path.
+- **Continuation**: Replaces the redundant historical thought stream with the summary block, restoring the budget without interrupting response formatting.
+
+### 13.3 Adapter Steerability & Pre-seeding
+Manages generation parameters dynamically based on the active LoRA overlay:
+- **Greeting Adapters**: If the active adapter is `"custom_greeting"`, short greeting queries (e.g. `"hi"`, `"hello"`) skip thought pre-seeding (`<think>\n`), allowing immediate direct responses.
+- **Math Solver Adapters**: If the active adapter is `"math_solver"`, the compiler pre-seeds `<think>\n` to force standard chain-of-thought formatting.
+- **RAG Integration**: Preserves custom pirate system prompts or injected RAG context strings instead of overriding with static defaults when adapters are loaded.
+

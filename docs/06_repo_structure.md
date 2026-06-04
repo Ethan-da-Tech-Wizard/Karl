@@ -78,6 +78,17 @@ Karl/
 │       ├── grounded_answer.jsonl
 │       └── code_review.jsonl
 │
+├── tests/                      ← AUTOMATED TESTS — run via run_all_tests.py
+│   ├── test_cognitive_compression.py
+│   ├── test_cognitive_parser.py
+│   ├── test_eval_harness.py
+│   ├── test_hardware_scout.py
+│   ├── test_memory_manager.py
+│   ├── test_rag_pipeline.py
+│   ├── test_session_tree.py
+│   ├── test_trace_logger.py
+│   └── test_training_curator.py
+│
 ├── training/
 │   ├── WHEN_TO_TUNE.md         ← Decision guide: prompt engineering vs. fine-tuning
 │   ├── qlora_config_template.yaml ← Ready-to-use QLoRA config for Unsloth
