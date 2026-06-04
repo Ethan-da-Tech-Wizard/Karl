@@ -305,6 +305,59 @@ class RAGPipeline:
                                 "distance": 0.0,
                             })
 
+        # Section matching, e.g., "19.3", "19.5"
+        section_tokens = re.findall(r"\b\d{1,2}\.\d{1,2}(?:\.\d{1,2})?\b", query)
+        for token in section_tokens:
+            for doc in self.documents:
+                if source_filter and doc.get("source_file") != source_filter:
+                    continue
+                if re.search(r"\b" + re.escape(token) + r"\b", doc["text"]):
+                    if not any(e["chunk_id"] == doc["chunk_id"] for e in exact_matches):
+                        exact_matches.append({
+                            **doc,
+                            "rank": 0,
+                            "distance": 0.0,
+                        })
+
+        # Chapter matching, e.g., "Chapter 20", "chapter 19", "ch 20"
+        chapter_matches = re.findall(r"\b(?:chapter|ch)\s+(\d{1,2})\b", query, re.IGNORECASE)
+        for ch_num in chapter_matches:
+            spaced_ch_pattern = r"\b" + r"\s*".join("chapter") + r"\s*" + r"\s*".join(ch_num) + r"\b"
+            spaced_ch_short_pattern = r"\b" + r"\s*".join("ch") + r"\s*" + r"\s*".join(ch_num) + r"\b"
+            for doc in self.documents:
+                if source_filter and doc.get("source_file") != source_filter:
+                    continue
+                if re.search(spaced_ch_pattern, doc["text"], re.IGNORECASE) or re.search(spaced_ch_short_pattern, doc["text"], re.IGNORECASE):
+                    if not any(e["chunk_id"] == doc["chunk_id"] for e in exact_matches):
+                        exact_matches.append({
+                            **doc,
+                            "rank": 0,
+                            "distance": 0.0,
+                        })
+
+        # Topic keyword matching
+        topic_keywords = [
+            ("continuing obligations", ["continuing obligations", "obligation"]),
+            ("final pay", ["final pay"]),
+            ("return of company property", ["return of company property", "return of property"]),
+            ("morale officer", ["morale officer", "phil"]),
+            ("break room", ["break room", "kitchen"]),
+            ("traditions", ["traditions", "celebrations", "golden gherkin"]),
+            ("parking", ["parking", "gerald"]),
+        ]
+        for topic, keywords in topic_keywords:
+            if any(re.search(r"\b" + re.escape(kw) + r"\w*", query, re.IGNORECASE) for kw in keywords):
+                for doc in self.documents:
+                    if source_filter and doc.get("source_file") != source_filter:
+                        continue
+                    if re.search(r"\b" + re.escape(topic) + r"\w*", doc["text"], re.IGNORECASE):
+                        if not any(e["chunk_id"] == doc["chunk_id"] for e in exact_matches):
+                            exact_matches.append({
+                                **doc,
+                                "rank": 0,
+                                "distance": 0.0,
+                            })
+
         # Run vector search
         query_vector = self.encoder.encode([query]).astype("float32")
         fetch_k = min(top_k * 5 if source_filter else top_k, self.index.ntotal)

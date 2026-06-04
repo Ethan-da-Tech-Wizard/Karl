@@ -107,3 +107,9 @@ def test_rag_pipeline_ingestion_and_retrieval():
         
     finally:
         shutil.rmtree(temp_dir)
+
+
+if __name__ == "__main__":
+    test_rag_pipeline_chunking()
+    test_rag_pipeline_ingestion_and_retrieval()
+    print("All RAG pipeline unit tests PASSED!")

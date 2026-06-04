@@ -63,6 +63,22 @@ _DOCS = {
         <h4 style='color:#E4E4F0; margin-bottom:4px;'>3. Search & Distance Metrics Tester</h4>
         <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Use the search tester in the Right panel to query the local database. It displays retrieval candidates with their source document, chunk index, distance metrics, and text snippets to verify retrieval accuracy.</p>
     """,
+    "RAG Customization": """
+        <h2 style='color:#00C2FF; margin-top:0;'>◈ RAG Customization & Tuning</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Retrieval-Augmented Generation (RAG) grounds LLM responses with local data. While dense retrievers do not undergo traditional neural network fine-tuning, they are "trained" by structuring source data, tuning indexing models, adjusting chunk strategies, and customizing retrieval logic.</p>
+        
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. Customizing Chunking Parameters</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>To optimize retrieval, you can configure <code>chunk_size</code> and <code>overlap</code> when ingesting standard documents (PDFs, TXT, MD). Large chunks capture broad context but dilute details; small chunks capture specific details but lose global context. In-app sliders in the Knowledge Base tab allow testing different splits.</p>
+        
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. Swapping the Embedding Model</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Karl defaults to the lightweight <code>all-MiniLM-L6-v2</code> model. If your data requires heavier semantic mapping (or supports another language), you can swap it. Open <code>app/utils/rag_pipeline.py</code> and modify the <code>model_name</code> parameter in the <code>RAGPipeline</code> constructor to point to any HuggingFace model (e.g., <code>"BAAI/bge-small-en-v1.5"</code>). Note: Changing models requires clearing the index and re-ingesting all files.</p>
+        
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>3. Hybrid Exact-Match Heuristics</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Dense vector search often fails to match exact alphanumeric codes (like <code>EMP020</code> or product codes). Karl implements a hybrid matching layer in <code>retrieve_with_metadata()</code> that detects alphanumeric strings and overrides vector distances to <code>0.0000</code>. You can customize these regex patterns or add department listing triggers under <code>rag_pipeline.py</code> to suit your domain needs.</p>
+        
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>4. Evaluating RAG Quality (Offline)</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Measure retrieval performance using the offline benchmark tool: <code>venv/bin/python eval/benchmark_rag.py</code>. This evaluates standard information retrieval metrics like <b>Hit@1</b>, <b>Hit@3</b>, and <b>Mean Reciprocal Rank (MRR)</b> against a pre-defined test set, allowing you to prove whether changes to your chunking or models actually improved retrieval quality.</p>
+    """,
     "Training Studio": """
         <h2 style='color:#00C2FF; margin-top:0;'>⬡ Training Studio Workspace</h2>
         <p style='color:#9090A8; line-height:1.4;'>Training Studio houses dataset configuration tools and the local PEFT LoRA training configurator.</p>

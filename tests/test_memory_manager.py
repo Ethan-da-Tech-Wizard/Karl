@@ -99,3 +99,9 @@ def test_memory_manager_tree_history():
         
     finally:
         shutil.rmtree(temp_dir)
+
+
+if __name__ == "__main__":
+    test_memory_manager_flat_history()
+    test_memory_manager_tree_history()
+    print("All memory manager unit tests PASSED!")
