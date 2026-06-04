@@ -685,6 +685,29 @@ class WorkbenchWorkspace(QWidget):
         super().showEvent(event)
         self._refresh_model_combo()
 
+    def _is_adapter_compatible(self, model_filename: str, adapter_name: str) -> bool:
+        import json
+        import os
+        config_path = os.path.join("data", "adapters", adapter_name, "adapter_config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                base_model = config.get("base_model_name_or_path", "").lower()
+                model_fn = model_filename.lower()
+                if "1.5b" in model_fn and "1.5b" in base_model:
+                    return True
+                if "8b" in model_fn and "8b" in base_model:
+                    return True
+            except Exception:
+                pass
+        # Fallback to simple sub-string matching on name
+        if "1.5b" in model_filename.lower() and "1.5b" in adapter_name.lower():
+            return True
+        if "8b" in model_filename.lower() and "8b" in adapter_name.lower():
+            return True
+        return False
+
     def _refresh_model_combo(self):
         self._model_combo.blockSignals(True)
         self._model_combo.clear()
@@ -712,9 +735,9 @@ class WorkbenchWorkspace(QWidget):
         for f in sorted(files):
             # Base model
             self._model_combo.addItem(f, {"model": f, "adapter": None})
-            # List adapters for 1.5b models
-            if "1.5b" in f.lower():
-                for adapter in adapters:
+            # List compatible adapters
+            for adapter in adapters:
+                if self._is_adapter_compatible(f, adapter):
                     self._model_combo.addItem(f"{f} ({adapter})", {"model": f, "adapter": adapter})
             
         # Select active model and adapter combination

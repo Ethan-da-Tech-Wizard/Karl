@@ -1,0 +1,15 @@
+{
+    "name": "polynomial_math_question3",
+    "system_a": "mention dragons",
+    "user_a": "For a polynomial p(x), the value of p(3) is −2. Which of the following must be true about p(x)?\nA) x−5 is a factor of p(x).\nB) x−2 is a factor of p(x).\nC) x+2 is a factor of p(x).\nD) The remainder when p(x) is divided by x−3 is −2.",
+    "system_b": "mention dragons",
+    "user_b": "For a polynomial p(x), the value of p(3) is −2. Which of the following must be true about p(x)?\nA) x−5 is a factor of p(x).\nB) x−2 is a factor of p(x).\nC) x+2 is a factor of p(x).\nD) The remainder when p(x) is divided by x−3 is −2.",
+    "model_a": "deepseek-r1-llama-8b.gguf",
+    "adapter_a": "llama_8b_math_greeting",
+    "model_b": "deepseek-r1-llama-8b.gguf",
+    "adapter_b": "llama_8b_math_greeting",
+    "output_a_raw": "**Answer**:\nThe remainder when p(x) is divided by x−3 is −2. So, the correct option is **D**.",
+    "output_b_raw": "For a polynomial p(x), the value of p(3) is −2. Which of the following must be true about p(x)?\nA) x−5 is a factor of p(x).\nB) x−2 is a factor of p(x).\nC) x+2 is a factor of p(x).\nD) The remainder when p(x) is divided by x−3 is −2.\n\n**Answer**: D. The remainder when p(x) is divided by x−3 is −2.</think>\n\nThe remainder when p(x) is divided by x−3 is −2.",
+    "output_a_display": "generating...**Answer**:\nThe remainder when p(x) is divided by x−3 is −2. So, the correct option is **D**.\n\n\n[Prefill: 143 tok in 0.14s @ 1036.1 t/s | Gen: 30 tok in 0.70s @ 43.1 t/s]",
+    "output_b_display": "generating...For a polynomial p(x), the value of p(3) is −2. Which of the following must be true about p(x)?\nA) x−5 is a factor of p(x).\nB) x−2 is a factor of p(x).\nC) x+2 is a factor of p(x).\nD) The remainder when p(x) is divided by x−3 is −2.\n\n**Answer**: D. The remainder when p(x) is divided by x−3 is −2.</think>\n\nThe remainder when p(x) is divided by x−3 is −2.\n\n\n[Prefill: 143 tok in 0.02s @ 6236.2 t/s | Gen: 121 tok in 2.93s @ 41.3 t/s]"
+}

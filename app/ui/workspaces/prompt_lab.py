@@ -120,6 +120,7 @@ class _RunThread(QThread):
             llm = ModelLoader.get_instance(model_path=model_path, adapter_name=self.adapter_name)
             history = [{"role": "user", "content": self.user_prompt}]
             prompt  = core.interaction_loop.build_prompt(self.system_prompt, history)
+            print(f"[PromptLab DEBUG] system_prompt={repr(self.system_prompt)} model={repr(ModelLoader.model_name())} active_adapter={repr(getattr(ModelLoader, '_active_adapter', None))} prompt={repr(prompt)}")
 
             # Tokenize prompt to get accurate prompt token count
             prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
@@ -248,6 +249,29 @@ class _PromptColumn(QWidget):
         self._thread: _RunThread | None = None
         self._refresh_model_combo()
 
+    def _is_adapter_compatible(self, model_filename: str, adapter_name: str) -> bool:
+        import json
+        import os
+        config_path = os.path.join("data", "adapters", adapter_name, "adapter_config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                base_model = config.get("base_model_name_or_path", "").lower()
+                model_fn = model_filename.lower()
+                if "1.5b" in model_fn and "1.5b" in base_model:
+                    return True
+                if "8b" in model_fn and "8b" in base_model:
+                    return True
+            except Exception:
+                pass
+        # Fallback to simple sub-string matching on name
+        if "1.5b" in model_filename.lower() and "1.5b" in adapter_name.lower():
+            return True
+        if "8b" in model_filename.lower() and "8b" in adapter_name.lower():
+            return True
+        return False
+
     def _refresh_model_combo(self):
         self._model_combo.blockSignals(True)
         current_data = self._model_combo.itemData(self._model_combo.currentIndex())
@@ -275,9 +299,9 @@ class _PromptColumn(QWidget):
         for f in sorted(files):
             # Base model
             self._model_combo.addItem(f, {"model": f, "adapter": None})
-            # List adapters for 1.5b models
-            if "1.5b" in f.lower():
-                for adapter in adapters:
+            # List compatible adapters
+            for adapter in adapters:
+                if self._is_adapter_compatible(f, adapter):
                     self._model_combo.addItem(f"{f} ({adapter})", {"model": f, "adapter": adapter})
                     
         # Restore selection
@@ -306,6 +330,15 @@ class _PromptColumn(QWidget):
             if not found and self._model_combo.count() > 0:
                 self._model_combo.setCurrentIndex(0)
                 
+        self._model_combo.blockSignals(False)
+
+    def select_model_and_adapter(self, model_name: str, adapter_name: str | None):
+        self._model_combo.blockSignals(True)
+        for idx in range(self._model_combo.count()):
+            d = self._model_combo.itemData(idx)
+            if isinstance(d, dict) and d.get("model") == model_name and d.get("adapter") == adapter_name:
+                self._model_combo.setCurrentIndex(idx)
+                break
         self._model_combo.blockSignals(False)
 
     def _emit_run(self):
@@ -353,6 +386,8 @@ class _PromptColumn(QWidget):
 
     def _on_token(self, token: str):
         from PyQt6.QtGui import QTextCursor
+        if self._output.toPlainText() == "generating...":
+            self._output.clear()
         c = self._output.textCursor()
         c.movePosition(QTextCursor.MoveOperation.End)
         c.insertText(token)
@@ -581,12 +616,23 @@ class PromptLabWorkspace(QWidget):
                 self._col_b.set_user_text(data.get("user_b", ""))
                 self._pair_name_input.setText(name)
                 
-                # Reset outputs and diff
-                self._col_a.clear_output()
-                self._col_b.clear_output()
-                self._diff_view.clear()
-                self._output_a = ""
-                self._output_b = ""
+                # Restore model configuration
+                model_a = data.get("model_a")
+                adapter_a = data.get("adapter_a")
+                if model_a:
+                    self._col_a.select_model_and_adapter(model_a, adapter_a)
+                    
+                model_b = data.get("model_b")
+                adapter_b = data.get("adapter_b")
+                if model_b:
+                    self._col_b.select_model_and_adapter(model_b, adapter_b)
+                
+                # Restore outputs and diff
+                self._output_a = data.get("output_a_raw", "")
+                self._output_b = data.get("output_b_raw", "")
+                self._col_a._output.setPlainText(data.get("output_a_display", ""))
+                self._col_b._output.setPlainText(data.get("output_b_display", ""))
+                self._update_diff()
             except Exception as e:
                 print(f"[PromptLab] Error loading pair '{name}': {e}")
 
@@ -601,12 +647,23 @@ class PromptLabWorkspace(QWidget):
             name = safe_name
             self._pair_name_input.setText(name)
             
+        model_data_a = self._col_a._model_combo.itemData(self._col_a._model_combo.currentIndex()) or {}
+        model_data_b = self._col_b._model_combo.itemData(self._col_b._model_combo.currentIndex()) or {}
+
         data = {
             "name": name,
             "system_a": self._col_a.system_text(),
             "user_a": self._col_a.user_text(),
             "system_b": self._col_b.system_text(),
             "user_b": self._col_b.user_text(),
+            "model_a": model_data_a.get("model"),
+            "adapter_a": model_data_a.get("adapter"),
+            "model_b": model_data_b.get("model"),
+            "adapter_b": model_data_b.get("adapter"),
+            "output_a_raw": self._output_a,
+            "output_b_raw": self._output_b,
+            "output_a_display": self._col_a._output.toPlainText(),
+            "output_b_display": self._col_b._output.toPlainText(),
         }
         
         path = os.path.join(self._pairs_dir, f"{name}.json")

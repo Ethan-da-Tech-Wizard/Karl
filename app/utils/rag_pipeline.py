@@ -265,8 +265,14 @@ class RAGPipeline:
         dept_match = None
         for dept in ["IT", "Finance", "Admin", "EVS", "Marketing"]:
             if re.search(r"\b" + re.escape(dept) + r"\b", query, re.IGNORECASE):
-                # Check for listing indicator keywords
-                if any(w in query.lower() for w in ["all", "list", "everyone", "who works", "workers in", "employees in", "show me", "people in"]):
+                # Check for listing and counting indicator keywords
+                indicators = [
+                    "all", "list", "everyone", "who works", "workers in", "employees in", 
+                    "show me", "people in", "how many", "number of", "count", "people work", 
+                    "who is in", "who are in", "hwo", "how", "many", "worker", "workers", 
+                    "employee", "employees", "people", "person", "staff", "who", "show"
+                ]
+                if any(w in query.lower() for w in indicators):
                     dept_match = dept
                     break
 

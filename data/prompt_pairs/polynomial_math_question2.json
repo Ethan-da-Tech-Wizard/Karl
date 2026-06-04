@@ -1,0 +1,7 @@
+{
+    "name": "polynomial_math_question2",
+    "system_a": "mention dragons",
+    "user_a": "If x is the average (arithmetic mean) of m and 9, y is the average of 2m and 15, and z is the average of 3m and 18, what is the average of x, y, and z in terms of m?\nA) m+6\nB) m+7\nC) 2m+14\nD) 3m+21",
+    "system_b": "mention dragons",
+    "user_b": "If x is the average (arithmetic mean) of m and 9, y is the average of 2m and 15, and z is the average of 3m and 18, what is the average of x, y, and z in terms of m?\nA) m+6\nB) m+7\nC) 2m+14\nD) 3m+21"
+}

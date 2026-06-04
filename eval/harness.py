@@ -156,7 +156,14 @@ class EvalHarness:
         code = case.get("code", case.get("context", "(No code provided.)"))
         return get_template(template_name, rag_context=rag_context, schema=schema, code=code)
 
-    def _run_model(self, system_prompt: str, user_prompt: str, hyperparams: dict) -> tuple[str, float]:
+    def _run_model(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        hyperparams: dict,
+        model_name: Optional[str] = None,
+        adapter_name: Optional[str] = None,
+    ) -> tuple[str, float]:
         """
         Run a single generation. Returns (output_text, latency_seconds).
         Loads model via ModelLoader singleton — same instance as the UI.
@@ -164,7 +171,10 @@ class EvalHarness:
         from app.engine.model_loader import ModelLoader
         from core.interaction_loop import build_prompt
 
-        llm = ModelLoader.get_instance()
+        model_path = None
+        if model_name:
+            model_path = os.path.join("data", "models", model_name)
+        llm = ModelLoader.get_instance(model_path=model_path, adapter_name=adapter_name)
         history = [{"role": "user", "content": user_prompt}]
         prompt = build_prompt(system_prompt, history)
 
@@ -208,6 +218,8 @@ class EvalHarness:
         template_override: Optional[str] = None,
         hyperparams: Optional[dict] = None,
         progress_cb=None,
+        model_name: Optional[str] = None,
+        adapter_name: Optional[str] = None,
     ) -> EvalReport:
         """
         Run the full eval loop.
@@ -225,14 +237,16 @@ class EvalHarness:
         from app.engine.model_loader import ModelLoader
 
         # Guard: ensure model is loaded before running eval
-        if not ModelLoader.is_loaded():
-            try:
-                ModelLoader.get_instance()
-            except FileNotFoundError as e:
-                raise RuntimeError(
-                    "No model loaded. Run download_test_model.py or "
-                    "load a model in System Config."
-                ) from e
+        path_to_load = None
+        if model_name:
+            path_to_load = os.path.join("data", "models", model_name)
+        try:
+            ModelLoader.get_instance(model_path=path_to_load, adapter_name=adapter_name)
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"No model found at {path_to_load or 'active model'}. Run download_test_model.py or "
+                "load a model in System Config."
+            ) from e
 
         workflow_cfg = get_workflow(workflow_name)
         template_name = template_override or workflow_cfg["template"]
@@ -256,7 +270,7 @@ class EvalHarness:
             user_prompt = case.get("prompt", "")
 
             try:
-                output, latency = self._run_model(system_prompt, user_prompt, hp)
+                output, latency = self._run_model(system_prompt, user_prompt, hp, model_name, adapter_name)
                 grade = self._grade(output, case, context_chunks)
                 error = None
             except Exception as e:

@@ -15,9 +15,18 @@ def parse_thought_stream(raw_text: str) -> tuple[str, str]:
     thought_parts: list[str] = []
     response_parts: list[str] = []
     in_thought = False
-    pos = 0
+    
+    # Check if we should start in thought mode.
+    # This happens when the model starts generating inside a think block
+    # (e.g. because <think> was pre-seeded in the prompt).
     text_lower = raw_text.lower()
+    open_idx = text_lower.find(_OPEN)
+    close_idx = text_lower.find(_CLOSE)
+    
+    if close_idx != -1 and (open_idx == -1 or close_idx < open_idx):
+        in_thought = True
 
+    pos = 0
     while pos < len(raw_text):
         if not in_thought:
             open_idx = text_lower.find(_OPEN, pos)
@@ -36,6 +45,13 @@ def parse_thought_stream(raw_text: str) -> tuple[str, str]:
             in_thought = False
             pos = close_idx + len(_CLOSE)
 
+    import re
     thought = "".join(thought_parts).strip()
     response = "".join(response_parts).strip()
+    
+    # Strip known quantization/hallucination artifacts like 'overposting'
+    thought = re.sub(r'(?i)\s*\boverposting\b[.\s]*', '', thought).strip()
+    response = re.sub(r'(?i)\s*\boverposting\b[.\s]*', '', response).strip()
+    
     return thought, response
+

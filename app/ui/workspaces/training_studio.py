@@ -421,6 +421,10 @@ class TrainingStudioWorkspace(QWidget):
 
     # ── logic ─────────────────────────────────────────────────────────────────
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh()
+
     def _refresh(self):
         stats = self.state.curator.get_stats()
         self._stats_lbl.setText(

@@ -52,7 +52,22 @@ class ModelLoader:
             )
 
             if needs_reload:
-                cls._instance = None
+                if cls._instance is not None:
+                    try:
+                        print("[ModelLoader] Closing existing Llama instance to free VRAM")
+                        cls._instance.close()
+                    except Exception as e:
+                        print(f"[ModelLoader] Error closing existing Llama instance: {e}")
+                    cls._instance = None
+                
+                import gc
+                gc.collect()
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except ImportError:
+                    pass
 
                 if not os.path.exists(model_path):
                     fallback = "data/models/deepseek-r1-1.5b.gguf"
@@ -109,9 +124,23 @@ class ModelLoader:
     @classmethod
     def reset_instance(cls):
         with cls._lock:
+            if cls._instance is not None:
+                try:
+                    cls._instance.close()
+                except Exception:
+                    pass
             cls._instance = None
             cls._active_adapter = None
             cls._model_path = None
+            
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
 
     @classmethod
     def model_name(cls) -> str:

@@ -12,7 +12,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QLabel, QLineEdit,
     QFrame, QFileDialog, QProgressBar, QTreeWidget,
-    QTreeWidgetItem, QComboBox,
+    QTreeWidgetItem, QComboBox, QTabWidget, QListWidget,
+    QTextEdit, QCheckBox, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -39,11 +40,13 @@ class _EvalThread(QThread):
     done     = pyqtSignal(object)      # EvalReport
     error    = pyqtSignal(str)
 
-    def __init__(self, dataset_path: str, workflow_name: str, rag):
+    def __init__(self, dataset_path: str, workflow_name: str, rag, model_name: str | None = None, adapter_name: str | None = None):
         super().__init__()
         self.dataset_path = dataset_path
         self.workflow_name = workflow_name
         self.rag = rag
+        self.model_name = model_name
+        self.adapter_name = adapter_name
 
     def run(self):
         try:
@@ -52,7 +55,9 @@ class _EvalThread(QThread):
             report = harness.run(
                 self.dataset_path,
                 workflow_name=self.workflow_name,
-                progress_cb=self.progress.emit
+                progress_cb=self.progress.emit,
+                model_name=self.model_name,
+                adapter_name=self.adapter_name
             )
             self.done.emit(report)
         except Exception as e:
@@ -67,6 +72,7 @@ class EvalSuiteWorkspace(QWidget):
         self.state = state
         self.setObjectName("workspace-root")
         self._active_threads = set()
+        self._loaded_cases = []
         self._build_ui()
 
     def _build_ui(self):
@@ -88,6 +94,16 @@ class EvalSuiteWorkspace(QWidget):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+
+        # Tab Widget for Left Panel
+        self._left_tabs = QTabWidget()
+        self._left_tabs.setObjectName("left-tabs")
+
+        # ── TAB 1: RUN CONFIG ───────────────────────────────────────────────
+        run_tab = QWidget()
+        run_layout = QVBoxLayout(run_tab)
+        run_layout.setContentsMargins(0, 0, 0, 0)
+        run_layout.setSpacing(12)
 
         # Dataset Panel
         dataset_panel = QWidget()
@@ -123,6 +139,21 @@ class EvalSuiteWorkspace(QWidget):
         rl.addWidget(browse)
         dp_layout.addWidget(row)
 
+        # Model / Adapter selection
+        model_row = QWidget()
+        ml = QHBoxLayout(model_row)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(8)
+        
+        model_lbl = QLabel("Model:")
+        model_lbl.setFixedWidth(70)
+        ml.addWidget(model_lbl)
+        
+        self._model_combo = QComboBox()
+        self._model_combo.setToolTip("Select model/adapter combination to use during evaluation runs")
+        ml.addWidget(self._model_combo, 1)
+        dp_layout.addWidget(model_row)
+
         # Workflow selection
         from core.workflows import list_workflows
         wf_row = QWidget()
@@ -141,7 +172,7 @@ class EvalSuiteWorkspace(QWidget):
         wfl.addWidget(self._workflow_combo, 1)
         dp_layout.addWidget(wf_row)
 
-        layout.addWidget(dataset_panel)
+        run_layout.addWidget(dataset_panel)
 
         # Run/Control Panel
         control_panel = QWidget()
@@ -172,8 +203,156 @@ class EvalSuiteWorkspace(QWidget):
         self._summary_lbl.setTextFormat(Qt.TextFormat.RichText)
         cp_layout.addWidget(self._summary_lbl)
 
-        layout.addWidget(control_panel)
-        layout.addStretch()
+        run_layout.addWidget(control_panel)
+        run_layout.addStretch()
+        self._left_tabs.addTab(run_tab, "Run Config")
+
+        # ── TAB 2: EDIT DATASET ─────────────────────────────────────────────
+        edit_tab = QWidget()
+        edit_layout = QVBoxLayout(edit_tab)
+        edit_layout.setContentsMargins(12, 12, 12, 12)
+        edit_layout.setSpacing(8)
+
+        edit_layout.addWidget(_section("EDIT DATASET CASES"))
+
+        # List of cases
+        self._edit_cases_list = QListWidget()
+        self._edit_cases_list.setToolTip("List of test cases in the loaded dataset")
+        self._edit_cases_list.setFixedHeight(110)
+        self._edit_cases_list.currentItemChanged.connect(self._on_edit_case_selected)
+        edit_layout.addWidget(self._edit_cases_list)
+
+        # Add / Delete buttons
+        btn_row = QWidget()
+        brl = QHBoxLayout(btn_row)
+        brl.setContentsMargins(0, 0, 0, 0)
+        brl.setSpacing(8)
+
+        self._add_case_btn = QPushButton("＋ Add Case")
+        self._add_case_btn.setToolTip("Add a new test case to the dataset")
+        self._add_case_btn.clicked.connect(self._add_case)
+        brl.addWidget(self._add_case_btn)
+
+        self._delete_case_btn = QPushButton("－ Delete Case")
+        self._delete_case_btn.setObjectName("btn-danger")
+        self._delete_case_btn.setToolTip("Remove the selected test case")
+        self._delete_case_btn.clicked.connect(self._delete_case)
+        brl.addWidget(self._delete_case_btn)
+
+        edit_layout.addWidget(btn_row)
+        edit_layout.addWidget(_hline())
+
+        # Form layout for selected case details
+        form_widget = QWidget()
+        form_layout = QVBoxLayout(form_widget)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(6)
+
+        # Case ID
+        id_row = QWidget()
+        id_l = QHBoxLayout(id_row)
+        id_l.setContentsMargins(0, 0, 0, 0)
+        id_lbl = QLabel("Case ID:")
+        id_lbl.setFixedWidth(70)
+        id_l.addWidget(id_lbl)
+        self._edit_case_id = QLineEdit()
+        self._edit_case_id.setPlaceholderText("e.g. grnd_011")
+        self._edit_case_id.textChanged.connect(self._save_current_form_to_memory)
+        id_l.addWidget(self._edit_case_id)
+        form_layout.addWidget(id_row)
+
+        # Prompt
+        prompt_row = QWidget()
+        pl = QHBoxLayout(prompt_row)
+        pl.setContentsMargins(0, 0, 0, 0)
+        prompt_lbl = QLabel("Prompt:")
+        prompt_lbl.setFixedWidth(70)
+        prompt_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+        pl.addWidget(prompt_lbl)
+        self._edit_case_prompt = QTextEdit()
+        self._edit_case_prompt.setPlaceholderText("user question...")
+        self._edit_case_prompt.setFixedHeight(45)
+        self._edit_case_prompt.textChanged.connect(self._save_current_form_to_memory)
+        pl.addWidget(self._edit_case_prompt)
+        form_layout.addWidget(prompt_row)
+
+        # Context
+        context_row = QWidget()
+        cl = QHBoxLayout(context_row)
+        cl.setContentsMargins(0, 0, 0, 0)
+        context_lbl = QLabel("Context:")
+        context_lbl.setFixedWidth(70)
+        context_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+        cl.addWidget(context_lbl)
+        self._edit_case_context = QTextEdit()
+        self._edit_case_context.setPlaceholderText("optional reference context...")
+        self._edit_case_context.setFixedHeight(45)
+        self._edit_case_context.textChanged.connect(self._save_current_form_to_memory)
+        cl.addWidget(self._edit_case_context)
+        form_layout.addWidget(context_row)
+
+        # Expected
+        expected_row = QWidget()
+        el = QHBoxLayout(expected_row)
+        el.setContentsMargins(0, 0, 0, 0)
+        expected_lbl = QLabel("Expected:")
+        expected_lbl.setFixedWidth(70)
+        el.addWidget(expected_lbl)
+        self._edit_case_expected = QLineEdit()
+        self._edit_case_expected.setPlaceholderText("expected output substring...")
+        self._edit_case_expected.textChanged.connect(self._save_current_form_to_memory)
+        el.addWidget(self._edit_case_expected)
+        form_layout.addWidget(expected_row)
+
+        # Grader
+        grader_row = QWidget()
+        gl = QHBoxLayout(grader_row)
+        gl.setContentsMargins(0, 0, 0, 0)
+        grader_lbl = QLabel("Grader:")
+        grader_lbl.setFixedWidth(70)
+        gl.addWidget(grader_lbl)
+        self._edit_case_grader = QComboBox()
+        self._edit_case_grader.addItems(["keyword_hit", "exact_match", "json_valid", "groundedness", "not_in_context"])
+        self._edit_case_grader.currentTextChanged.connect(self._on_grader_changed)
+        gl.addWidget(self._edit_case_grader)
+        form_layout.addWidget(grader_row)
+
+        # Keywords
+        self._kw_row = QWidget()
+        self._kw_row_layout = QHBoxLayout(self._kw_row)
+        self._kw_row_layout.setContentsMargins(0, 0, 0, 0)
+        self._kw_lbl = QLabel("Keywords:")
+        self._kw_lbl.setFixedWidth(70)
+        self._kw_row_layout.addWidget(self._kw_lbl)
+        self._edit_case_keywords = QLineEdit()
+        self._edit_case_keywords.setPlaceholderText("comma-separated list...")
+        self._edit_case_keywords.textChanged.connect(self._save_current_form_to_memory)
+        self._kw_row_layout.addWidget(self._edit_case_keywords)
+        form_layout.addWidget(self._kw_row)
+
+        # Require All Checkbox
+        self._req_row = QWidget()
+        rl_layout = QHBoxLayout(self._req_row)
+        rl_layout.setContentsMargins(0, 0, 0, 0)
+        self._edit_case_req_all = QCheckBox("Require All Keywords")
+        self._edit_case_req_all.stateChanged.connect(lambda state: self._save_current_form_to_memory())
+        rl_layout.addWidget(self._edit_case_req_all)
+        form_layout.addWidget(self._req_row)
+
+        edit_layout.addWidget(form_widget)
+
+        # Save dataset button
+        self._save_dataset_btn = QPushButton("Save Dataset Changes")
+        self._save_dataset_btn.setObjectName("btn-primary")
+        self._save_dataset_btn.setToolTip("Save the current edited cases back to the JSONL dataset file")
+        self._save_dataset_btn.clicked.connect(self._save_dataset)
+        edit_layout.addWidget(self._save_dataset_btn)
+
+        edit_layout.addStretch()
+        self._left_tabs.addTab(edit_tab, "Edit Dataset")
+
+        layout.addWidget(self._left_tabs)
+        self._refresh_model_combo()
         return w
 
     def _build_right(self) -> QWidget:
@@ -208,6 +387,7 @@ class EvalSuiteWorkspace(QWidget):
         )
         if path:
             self._dataset_path.setText(path)
+            self._load_dataset_for_editing(path)
             # Auto-detect workflow matching filename
             filename = os.path.basename(path).lower()
             for i in range(self._workflow_combo.count()):
@@ -233,7 +413,14 @@ class EvalSuiteWorkspace(QWidget):
 
         workflow = self._workflow_combo.currentData()
 
-        self._thread = _EvalThread(path, workflow, self.state.rag)
+        model_name = None
+        adapter_name = None
+        model_data = self._model_combo.itemData(self._model_combo.currentIndex())
+        if model_data:
+            model_name = model_data.get("model")
+            adapter_name = model_data.get("adapter")
+
+        self._thread = _EvalThread(path, workflow, self.state.rag, model_name=model_name, adapter_name=adapter_name)
         self._active_threads.add(self._thread)
         self._thread.finished.connect(
             lambda t=self._thread: self._active_threads.discard(t)
@@ -359,3 +546,314 @@ class EvalSuiteWorkspace(QWidget):
 
             html_parts.append("</div>")
             self._detail_view.setHtml("".join(html_parts))
+
+    # ── model selection helpers ───────────────────────────────────────────────
+
+    def _is_adapter_compatible(self, model_filename: str, adapter_name: str) -> bool:
+        config_path = os.path.join("data", "adapters", adapter_name, "adapter_config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                base_model = config.get("base_model_name_or_path", "").lower()
+                model_fn = model_filename.lower()
+                if "1.5b" in model_fn and "1.5b" in base_model:
+                    return True
+                if "8b" in model_fn and "8b" in base_model:
+                    return True
+            except Exception:
+                pass
+        if "1.5b" in model_filename.lower() and "1.5b" in adapter_name.lower():
+            return True
+        if "8b" in model_filename.lower() and "8b" in adapter_name.lower():
+            return True
+        return False
+
+    def _refresh_model_combo(self):
+        self._model_combo.blockSignals(True)
+        current_data = self._model_combo.itemData(self._model_combo.currentIndex())
+        self._model_combo.clear()
+        
+        adapters_dir = "data/adapters"
+        adapters = []
+        if os.path.exists(adapters_dir):
+            try:
+                for d in sorted(os.listdir(adapters_dir)):
+                    d_path = os.path.join(adapters_dir, d)
+                    if os.path.isdir(d_path):
+                        files_in_dir = os.listdir(d_path)
+                        if any(f.endswith(".gguf") or f.endswith(".bin") for f in files_in_dir):
+                            adapters.append(d)
+            except Exception as e:
+                print(f"[EvalSuite] Error scanning adapters: {e}")
+
+        models_dir = "data/models"
+        files = []
+        if os.path.exists(models_dir):
+            files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
+            
+        for f in sorted(files):
+            # Base model
+            self._model_combo.addItem(f, {"model": f, "adapter": None})
+            # List compatible adapters
+            for adapter in adapters:
+                if self._is_adapter_compatible(f, adapter):
+                    self._model_combo.addItem(f"{f} ({adapter})", {"model": f, "adapter": adapter})
+                    
+        # Restore selection
+        if current_data:
+            found = False
+            for idx in range(self._model_combo.count()):
+                d = self._model_combo.itemData(idx)
+                if isinstance(d, dict) and d.get("model") == current_data.get("model") and d.get("adapter") == current_data.get("adapter"):
+                    self._model_combo.setCurrentIndex(idx)
+                    found = True
+                    break
+            if not found and self._model_combo.count() > 0:
+                self._model_combo.setCurrentIndex(0)
+        else:
+            from app.engine.model_loader import ModelLoader
+            active_model = getattr(ModelLoader, "_model_name", None)
+            active_adapter = getattr(ModelLoader, "_active_adapter", None)
+            found = False
+            for idx in range(self._model_combo.count()):
+                d = self._model_combo.itemData(idx)
+                if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") == active_adapter:
+                    self._model_combo.setCurrentIndex(idx)
+                    found = True
+                    break
+            if not found and self._model_combo.count() > 0:
+                self._model_combo.setCurrentIndex(0)
+                
+        self._model_combo.blockSignals(False)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_model_combo()
+
+    # ── dataset editor helpers ────────────────────────────────────────────────
+
+    def _load_dataset_for_editing(self, path: str):
+        self._loaded_cases = []
+        self._edit_cases_list.blockSignals(True)
+        self._edit_cases_list.clear()
+        self._clear_fields()
+        
+        if not path or not os.path.exists(path):
+            self._edit_cases_list.blockSignals(False)
+            return
+            
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    try:
+                        self._loaded_cases.append(json.loads(line))
+                    except Exception as e:
+                        print(f"[EvalSuite] Error decoding case line: {e}")
+            
+            # Populate the list widget
+            for case in self._loaded_cases:
+                self._edit_cases_list.addItem(case.get("id", "unknown"))
+                
+            if self._edit_cases_list.count() > 0:
+                self._edit_cases_list.setCurrentRow(0)
+        except Exception as e:
+            print(f"[EvalSuite] Error loading dataset: {e}")
+        finally:
+            self._edit_cases_list.blockSignals(False)
+
+    def _on_edit_case_selected(self, current, previous):
+        if previous:
+            row = self._edit_cases_list.row(previous)
+            self._save_fields_to_case(row)
+            
+        if current:
+            row = self._edit_cases_list.row(current)
+            self._load_case_to_fields(row)
+        else:
+            self._clear_fields()
+
+    def _save_fields_to_case(self, index: int):
+        if index < 0 or index >= len(self._loaded_cases):
+            return
+        case = self._loaded_cases[index]
+        
+        case["id"] = self._edit_case_id.text().strip()
+        case["prompt"] = self._edit_case_prompt.toPlainText().strip()
+        
+        context = self._edit_case_context.toPlainText().strip()
+        if context:
+            case["context"] = context
+        elif "context" in case:
+            del case["context"]
+            
+        expected = self._edit_case_expected.text().strip()
+        if expected:
+            case["expected"] = expected
+        elif "expected" in case:
+            del case["expected"]
+            
+        grader = self._edit_case_grader.currentText()
+        case["grader"] = grader
+        
+        if grader == "keyword_hit":
+            kws = [k.strip() for k in self._edit_case_keywords.text().split(",") if k.strip()]
+            case["keywords"] = kws
+            case["require_all"] = self._edit_case_req_all.isChecked()
+            if "schema_keys" in case: del case["schema_keys"]
+        elif grader == "json_valid":
+            keys = [k.strip() for k in self._edit_case_keywords.text().split(",") if k.strip()]
+            case["schema_keys"] = keys
+            if "keywords" in case: del case["keywords"]
+            if "require_all" in case: del case["require_all"]
+        else:
+            if "keywords" in case: del case["keywords"]
+            if "require_all" in case: del case["require_all"]
+            if "schema_keys" in case: del case["schema_keys"]
+            
+        # Update list item text if ID changed
+        item = self._edit_cases_list.item(index)
+        if item and item.text() != case["id"]:
+            self._edit_cases_list.blockSignals(True)
+            item.setText(case["id"])
+            self._edit_cases_list.blockSignals(False)
+
+    def _load_case_to_fields(self, index: int):
+        if index < 0 or index >= len(self._loaded_cases):
+            self._clear_fields()
+            return
+        case = self._loaded_cases[index]
+        
+        self._block_form_signals(True)
+        
+        self._edit_case_id.setText(case.get("id", ""))
+        self._edit_case_prompt.setPlainText(case.get("prompt", ""))
+        self._edit_case_context.setPlainText(case.get("context", ""))
+        
+        expected = case.get("expected", "")
+        if isinstance(expected, (dict, list)):
+            expected = json.dumps(expected)
+        self._edit_case_expected.setText(str(expected))
+        
+        grader = case.get("grader", "keyword_hit")
+        idx = self._edit_case_grader.findText(grader)
+        if idx >= 0:
+            self._edit_case_grader.setCurrentIndex(idx)
+            
+        self._update_grader_fields_visibility(grader)
+        
+        if grader == "keyword_hit":
+            kws = case.get("keywords", [])
+            self._edit_case_keywords.setText(", ".join(kws))
+            self._edit_case_req_all.setChecked(case.get("require_all", True))
+        elif grader == "json_valid":
+            keys = case.get("schema_keys", [])
+            self._edit_case_keywords.setText(", ".join(keys))
+        else:
+            self._edit_case_keywords.clear()
+            
+        self._block_form_signals(False)
+
+    def _add_case(self):
+        current_item = self._edit_cases_list.currentItem()
+        if current_item:
+            self._save_fields_to_case(self._edit_cases_list.row(current_item))
+            
+        new_id = f"case_{len(self._loaded_cases) + 1:03d}"
+        new_case = {
+            "id": new_id,
+            "prompt": "New prompt...",
+            "grader": "exact_match",
+            "expected": "Expected answer..."
+        }
+        self._loaded_cases.append(new_case)
+        self._edit_cases_list.addItem(new_id)
+        
+        new_item = self._edit_cases_list.item(self._edit_cases_list.count() - 1)
+        self._edit_cases_list.setCurrentItem(new_item)
+
+    def _delete_case(self):
+        current_item = self._edit_cases_list.currentItem()
+        if not current_item:
+            return
+        
+        row = self._edit_cases_list.row(current_item)
+        reply = QMessageBox.question(
+            self, "Delete Case",
+            f"Are you sure you want to delete case '{current_item.text()}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._loaded_cases.pop(row)
+            self._edit_cases_list.takeItem(row)
+            
+            if self._edit_cases_list.count() > 0:
+                new_row = min(row, self._edit_cases_list.count() - 1)
+                self._edit_cases_list.setCurrentRow(new_row)
+            else:
+                self._clear_fields()
+
+    def _save_dataset(self):
+        current_item = self._edit_cases_list.currentItem()
+        if current_item:
+            self._save_fields_to_case(self._edit_cases_list.row(current_item))
+            
+        path = self._dataset_path.text().strip()
+        if not path:
+            QMessageBox.warning(self, "No Dataset", "Please load a dataset first.")
+            return
+            
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                for case in self._loaded_cases:
+                    f.write(json.dumps(case, ensure_ascii=False) + "\n")
+            QMessageBox.information(self, "Success", f"Saved {len(self._loaded_cases)} cases to {os.path.basename(path)}.")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Could not save dataset: {e}")
+
+    def _clear_fields(self):
+        self._block_form_signals(True)
+        self._edit_case_id.clear()
+        self._edit_case_prompt.clear()
+        self._edit_case_context.clear()
+        self._edit_case_expected.clear()
+        self._edit_case_keywords.clear()
+        self._edit_case_req_all.setChecked(False)
+        self._block_form_signals(False)
+
+    def _block_form_signals(self, block: bool):
+        self._edit_case_id.blockSignals(block)
+        self._edit_case_prompt.blockSignals(block)
+        self._edit_case_context.blockSignals(block)
+        self._edit_case_expected.blockSignals(block)
+        self._edit_case_grader.blockSignals(block)
+        self._edit_case_keywords.blockSignals(block)
+        self._edit_case_req_all.blockSignals(block)
+
+    def _save_current_form_to_memory(self):
+        current_item = self._edit_cases_list.currentItem()
+        if current_item:
+            row = self._edit_cases_list.row(current_item)
+            self._save_fields_to_case(row)
+
+    def _on_grader_changed(self, grader: str):
+        self._update_grader_fields_visibility(grader)
+        self._save_current_form_to_memory()
+
+    def _update_grader_fields_visibility(self, grader: str):
+        if grader == "keyword_hit":
+            self._kw_lbl.setText("Keywords:")
+            self._edit_case_keywords.setPlaceholderText("comma-separated list...")
+            self._kw_row.setVisible(True)
+            self._req_row.setVisible(True)
+        elif grader == "json_valid":
+            self._kw_lbl.setText("Keys:")
+            self._edit_case_keywords.setPlaceholderText("comma-separated keys...")
+            self._kw_row.setVisible(True)
+            self._req_row.setVisible(False)
+        else:
+            self._kw_row.setVisible(False)
+            self._req_row.setVisible(False)
