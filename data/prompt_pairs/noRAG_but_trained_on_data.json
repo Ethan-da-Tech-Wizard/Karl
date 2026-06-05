@@ -1,0 +1,19 @@
+{
+    "name": "noRAG_but_trained_on_data",
+    "system_a": "",
+    "user_a": "how many employees work in IT on the spreadsheet",
+    "system_b": "",
+    "user_b": "how many employees work in IT on the spreadsheet",
+    "model_a": "deepseek-r1-llama-8b.gguf",
+    "adapter_a": "DeepSeek-R1-Distill-Llama-8B-QLora-Mo-Math-and-Greeting",
+    "model_b": "deepseek-r1-llama-8b.gguf",
+    "adapter_b": null,
+    "rag_a": false,
+    "loop_a": false,
+    "rag_b": false,
+    "loop_b": false,
+    "output_a_raw": "The number of employees in IT on the spreadsheet is 28.",
+    "output_b_raw": "**Solution:**\n\nTo determine the number of IT employees in the spreadsheet, follow these steps:\n\n1. **Open the Spreadsheet:**\n   - Locate the spreadsheet file on your computer or cloud storage.\n\n2. **Navigate to the IT Department Section:**\n   - Open the specific sheet or tab labeled for IT employees.\n\n3. **Identify the Data Range:**\n   - Look for headers or labels that indicate the presence of IT employees (e.g., \"Employee ID,\" \"Name,\" \"Department,\" etc.).\n\n4. **Count the Employees:**\n   - Count the number of rows in the spreadsheet that contain employee data.\n\n5. **Verify Accuracy:**\n   - Ensure there are no duplicate entries or missing data.\n   - Double-check the count to confirm accuracy.\n\n6. **Present the Result:**\n   - The total number of IT employees is **[Number]**.\n\n**Final Answer:**\n\n\\boxed{[Number]}",
+    "output_a_display": "The number of employees in IT on the spreadsheet is 28.\n\n\n[Prefill: 73 tok in 0.05s @ 1422.9 t/s | Gen: 13 tok in 0.31s @ 42.1 t/s]",
+    "output_b_display": "I need to determine the number of IT employees listed in the spreadsheet. First, I'll open the spreadsheet and navigate to the IT department section. I'll look for any headers or labels that indicate the presence of IT employees. Once I identify the relevant data range, I'll count the number of rows containing employee information. After obtaining the total count, I'll review the data to ensure there are no duplicates or missing entries. Finally, I'll present the accurate number of IT employees.\n</think>\n\n**Solution:**\n\nTo determine the number of IT employees in the spreadsheet, follow these steps:\n\n1. **Open the Spreadsheet:**\n   - Locate the spreadsheet file on your computer or cloud storage.\n\n2. **Navigate to the IT Department Section:**\n   - Open the specific sheet or tab labeled for IT employees.\n\n3. **Identify the Data Range:**\n   - Look for headers or labels that indicate the presence of IT employees (e.g., \"Employee ID,\" \"Name,\" \"Department,\" etc.).\n\n4. **Count the Employees:**\n   - Count the number of rows in the spreadsheet that contain employee data.\n\n5. **Verify Accuracy:**\n   - Ensure there are no duplicate entries or missing data.\n   - Double-check the count to confirm accuracy.\n\n6. **Present the Result:**\n   - The total number of IT employees is **[Number]**.\n\n**Final Answer:**\n\n\\boxed{[Number]}\n\n\n[Prefill: 121 tok in 0.05s @ 2523.0 t/s | Gen: 288 tok in 6.57s @ 43.8 t/s]"
+}
