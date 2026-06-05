@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QTextEdit, QLabel,
     QFrame, QComboBox, QListWidget, QLineEdit,
-    QMessageBox, QTabWidget,
+    QMessageBox, QTabWidget, QCheckBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 
@@ -97,13 +97,16 @@ class _RunThread(QThread):
     live_stats = pyqtSignal(int, float)
     error = pyqtSignal(str)
 
-    def __init__(self, system_prompt: str, user_prompt: str, hyperparams: dict, model_name: str | None = None, adapter_name: str | None = None):
+    def __init__(self, system_prompt: str, user_prompt: str, hyperparams: dict,
+                 model_name: str | None = None, adapter_name: str | None = None,
+                 retrieved_chunks: list[str] | None = None):
         super().__init__()
         self.system_prompt = system_prompt
         self.user_prompt   = user_prompt
         self.hyperparams   = hyperparams
         self.model_name    = model_name
         self.adapter_name  = adapter_name
+        self.retrieved_chunks = retrieved_chunks or []
 
     def run(self):
         try:
@@ -119,7 +122,16 @@ class _RunThread(QThread):
 
             llm = ModelLoader.get_instance(model_path=model_path, adapter_name=self.adapter_name)
             history = [{"role": "user", "content": self.user_prompt}]
-            prompt  = core.interaction_loop.build_prompt(self.system_prompt, history)
+            
+            system_prompt = self.system_prompt
+            if self.retrieved_chunks:
+                context_str = "\n".join(self.retrieved_chunks)
+                if "{rag_context}" in system_prompt:
+                    system_prompt = system_prompt.replace("{rag_context}", context_str)
+                else:
+                    system_prompt += "\n\nRetrieved Context:\n" + context_str
+
+            prompt  = core.interaction_loop.build_prompt(system_prompt, history)
             print(f"[PromptLab DEBUG] system_prompt={repr(self.system_prompt)} model={repr(ModelLoader.model_name())} active_adapter={repr(getattr(ModelLoader, '_active_adapter', None))} prompt={repr(prompt)}")
 
             # Tokenize prompt to get accurate prompt token count
@@ -211,6 +223,23 @@ class _PromptColumn(QWidget):
         self._model_combo.setToolTip(f"Select model/adapter combination for Column {self.label}")
         layout.addWidget(self._model_combo)
 
+        # RAG and Loop configurations
+        cb_row = QWidget()
+        cb_layout = QHBoxLayout(cb_row)
+        cb_layout.setContentsMargins(0, 0, 0, 0)
+        cb_layout.setSpacing(10)
+
+        self._rag_check = QCheckBox("Use RAG")
+        self._rag_check.setToolTip(f"Enable Retrieval-Augmented Generation for Column {self.label}")
+        cb_layout.addWidget(self._rag_check)
+
+        self._loop_check = QCheckBox("Enable Loop")
+        self._loop_check.setToolTip(f"Enable Multi-turn Agentic Loop for Column {self.label}")
+        cb_layout.addWidget(self._loop_check)
+
+        cb_layout.addStretch()
+        layout.addWidget(cb_row)
+
         self._system_edit = QTextEdit()
         self._system_edit.setPlaceholderText("system prompt (optional)...")
         self._system_edit.setFixedHeight(60)
@@ -246,7 +275,9 @@ class _PromptColumn(QWidget):
         btn.clicked.connect(self._emit_run)
         layout.addWidget(btn)
 
-        self._thread: _RunThread | None = None
+        self._thread = None
+        self._last_agentic_response = ""
+        self._last_agentic_diagnostics = {}
         self._refresh_model_combo()
 
     def _is_adapter_compatible(self, model_filename: str, adapter_name: str) -> bool:
@@ -368,6 +399,9 @@ class _PromptColumn(QWidget):
         self._output.setPlainText("generating...")
         self._stats_lbl.setText("")
         
+        self._last_agentic_response = ""
+        self._last_agentic_diagnostics = {}
+        
         # Get selected model and adapter
         model_data = self._model_combo.itemData(self._model_combo.currentIndex())
         if model_data:
@@ -377,22 +411,82 @@ class _PromptColumn(QWidget):
             model_name = None
             adapter_name = None
 
-        self._thread = _RunThread(self.system_text(), user, hyperparams, model_name, adapter_name)
-        self._thread.token.connect(self._on_token)
-        self._thread.live_stats.connect(self._on_live_stats)
-        self._thread.done.connect(self._on_done)
-        self._thread.error.connect(self._on_error)
+        # RAG retrieval
+        chunks = []
+        if self._rag_check.isChecked() and hasattr(self, "state") and self.state.rag.total_chunks > 0:
+            top_k = getattr(self.state, "rag_top_k", 3)
+            threshold = getattr(self.state, "rag_threshold", 0.0)
+            retrieved_metadata = self.state.rag.retrieve_with_metadata(
+                user,
+                top_k=top_k
+            )
+            if threshold > 0.0:
+                retrieved_metadata = [r for r in retrieved_metadata if r["distance"] <= threshold]
+            
+            if retrieved_metadata:
+                sources_text = "\n[Retrieved Context Sources:\n"
+                for r in retrieved_metadata:
+                    sources_text += f" - {r['source_file']} (distance: {r['distance']:.3f})\n"
+                    chunk_text = r["text"]
+                    if getattr(self.state.rag, "contextual_headers", False):
+                        header = f"[Source: {r['source_file']} | Chunk {r['chunk_id']}]\n"
+                        chunk_text = header + chunk_text
+                    chunks.append(chunk_text)
+                sources_text += "]\n\n"
+                self._output.setPlainText("generating...\n" + sources_text)
+
+        if self._loop_check.isChecked():
+            from app.engine.agentic_thread import AgenticThread
+            initial_history = [{"role": "user", "content": user}]
+            self._thread = AgenticThread(
+                system_prompt=self.system_text(),
+                initial_history=initial_history,
+                hyperparams=hyperparams,
+                retrieved_chunks=chunks,
+                adapter_name=adapter_name,
+                model_name=model_name
+            )
+            self._thread.new_thought_token.connect(self._on_token)
+            self._thread.new_chat_token.connect(self._on_token)
+            self._thread.live_stats.connect(self._on_live_stats)
+            self._thread.iteration_finished.connect(self._on_agentic_iteration)
+            self._thread.loop_finished.connect(self._on_agentic_loop_finished)
+            self._thread.error_occurred.connect(self._on_error)
+        else:
+            self._thread = _RunThread(
+                system_prompt=self.system_text(),
+                user_prompt=user,
+                hyperparams=hyperparams,
+                model_name=model_name,
+                adapter_name=adapter_name,
+                retrieved_chunks=chunks
+            )
+            self._thread.token.connect(self._on_token)
+            self._thread.live_stats.connect(self._on_live_stats)
+            self._thread.done.connect(self._on_done)
+            self._thread.error.connect(self._on_error)
+
         self._thread.start()
 
     def _on_token(self, token: str):
         from PyQt6.QtGui import QTextCursor
-        if self._output.toPlainText() == "generating...":
+        curr_text = self._output.toPlainText()
+        if curr_text == "generating...":
             self._output.clear()
+        elif curr_text.startswith("generating...\n"):
+            self._output.setPlainText(curr_text[len("generating...\n"):])
         c = self._output.textCursor()
         c.movePosition(QTextCursor.MoveOperation.End)
         c.insertText(token)
         self._output.setTextCursor(c)
         self._output.ensureCursorVisible()
+
+    def _on_agentic_iteration(self, index: int, thought: str, response: str, diagnostics: dict):
+        self._last_agentic_response = response
+        self._last_agentic_diagnostics = diagnostics
+
+    def _on_agentic_loop_finished(self, total_iterations: int):
+        self._on_done(self._last_agentic_response, self._last_agentic_diagnostics)
 
     def _on_live_stats(self, count: int, speed: float):
         self._stats_lbl.setText(f"({count} tokens · {speed:.1f} t/s)")
@@ -470,7 +564,9 @@ class PromptLabWorkspace(QWidget):
         splitter.setHandleWidth(1)
 
         self._col_a = _PromptColumn("A")
+        self._col_a.state = self.state
         self._col_b = _PromptColumn("B")
+        self._col_b.state = self.state
 
         self._col_a.run_requested.connect(self._run_column)
         self._col_b.run_requested.connect(self._run_column)
@@ -616,6 +712,12 @@ class PromptLabWorkspace(QWidget):
                 self._col_b.set_user_text(data.get("user_b", ""))
                 self._pair_name_input.setText(name)
                 
+                # Restore checkboxes
+                self._col_a._rag_check.setChecked(data.get("rag_a", False))
+                self._col_a._loop_check.setChecked(data.get("loop_a", False))
+                self._col_b._rag_check.setChecked(data.get("rag_b", False))
+                self._col_b._loop_check.setChecked(data.get("loop_b", False))
+                
                 # Restore model configuration
                 model_a = data.get("model_a")
                 adapter_a = data.get("adapter_a")
@@ -660,6 +762,10 @@ class PromptLabWorkspace(QWidget):
             "adapter_a": model_data_a.get("adapter"),
             "model_b": model_data_b.get("model"),
             "adapter_b": model_data_b.get("adapter"),
+            "rag_a": self._col_a._rag_check.isChecked(),
+            "loop_a": self._col_a._loop_check.isChecked(),
+            "rag_b": self._col_b._rag_check.isChecked(),
+            "loop_b": self._col_b._loop_check.isChecked(),
             "output_a_raw": self._output_a,
             "output_b_raw": self._output_b,
             "output_a_display": self._col_a._output.toPlainText(),

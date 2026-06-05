@@ -30,15 +30,17 @@ class AgenticThread(QThread):
     error_occurred = pyqtSignal(str)
 
     def __init__(self, system_prompt, initial_history, hyperparams,
-                 workflow="general_chat", template="reasoning_minimal",
-                 adapter_name=None):
+                 retrieved_chunks=None, workflow="general_chat",
+                 template="reasoning_minimal", adapter_name=None, model_name=None):
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = list(initial_history)   # copy so we can mutate safely
         self.hyperparams = hyperparams
+        self.retrieved_chunks = retrieved_chunks or []
         self.workflow = workflow
         self.template = template
         self.adapter_name = adapter_name
+        self.model_name = model_name
         self.logger = TraceLogger()
         self._stop_requested = False
 
@@ -231,7 +233,10 @@ class AgenticThread(QThread):
             importlib.reload(core.interaction_loop)
             importlib.reload(core.agentic_loop)
 
-            llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
+            model_path = None
+            if self.model_name:
+                model_path = os.path.join("data", "models", self.model_name)
+            llm = ModelLoader.get_instance(model_path=model_path, adapter_name=self.adapter_name)
             iteration = 0
 
             while not self._stop_requested:
@@ -239,9 +244,18 @@ class AgenticThread(QThread):
                 self.new_thought_token.emit(f"\n{'='*40}\n[AGENTIC LOOP — Iteration {iteration + 1}]\n{'='*40}\n")
                 self.new_chat_token.emit(f"\n[Iteration {iteration + 1}]\n")
 
+                # Inject RAG context into system prompt if present
+                system_prompt = self.system_prompt
+                if self.retrieved_chunks:
+                    context_str = "\n".join(self.retrieved_chunks)
+                    if "{rag_context}" in system_prompt:
+                        system_prompt = system_prompt.replace("{rag_context}", context_str)
+                    else:
+                        system_prompt += "\n\nRetrieved Context:\n" + context_str
+
                 # Trim history to fit context before building prompt
-                trimmed_history = self._trim_history(self.chat_history, self.system_prompt)
-                prompt = core.interaction_loop.build_prompt(self.system_prompt, trimmed_history)
+                trimmed_history = self._trim_history(self.chat_history, system_prompt)
+                prompt = core.interaction_loop.build_prompt(system_prompt, trimmed_history)
 
                 # Tokenize prompt to get accurate prompt token count
                 prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
@@ -293,7 +307,7 @@ class AgenticThread(QThread):
                     parsed_thought=thought,
                     parsed_response=response,
                     execution_time=total_time,
-                    rag_context=[],
+                    rag_context=self.retrieved_chunks,
                     model_name=ModelLoader.model_name(),
                     adapter_name=getattr(ModelLoader, '_active_adapter', None),
                     workflow=self.workflow,

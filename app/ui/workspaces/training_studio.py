@@ -53,11 +53,21 @@ class TrainingThread(QThread):
 
     def run(self):
         try:
-            self.log.emit("Preparing training dataset...")
-            import json
+            import os
+            import gc
             import torch
+
+            # Configure PyTorch to prevent memory fragmentation
+            os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+            
+            # Clear CUDA cache before starting
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            self.log.emit("Preparing training dataset...")
             from datasets import load_dataset
-            from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, BitsAndBytesConfig, TrainerCallback
+            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainerCallback
             from peft import LoraConfig, get_peft_model
             from trl import SFTConfig, SFTTrainer
 
@@ -73,6 +83,10 @@ class TrainingThread(QThread):
             # Set up QLoRA if requested and bitsandbytes is available
             use_qlora = self.config.get("use_qlora", False)
             device_map_to_use = {"": 0} if torch.cuda.is_available() else "auto"
+            
+            # Load model weights in float16 on GPU (saves 50% VRAM over default float32)
+            torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
             if use_qlora:
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -83,11 +97,13 @@ class TrainingThread(QThread):
                 model = AutoModelForCausalLM.from_pretrained(
                     self.hf_base_dir,
                     quantization_config=bnb_config,
+                    torch_dtype=torch_dtype,
                     device_map=device_map_to_use
                 )
             else:
                 model = AutoModelForCausalLM.from_pretrained(
                     self.hf_base_dir,
+                    torch_dtype=torch_dtype,
                     device_map=device_map_to_use
                 )
 
@@ -103,6 +119,9 @@ class TrainingThread(QThread):
 
             # Prepare model for training
             model = get_peft_model(model, lora_config)
+            
+            # Disable caching to support gradient checkpointing during SFT
+            model.config.use_cache = False
 
             adapter_path = os.path.join("data", "adapters", self.adapter_name)
             os.makedirs(adapter_path, exist_ok=True)
@@ -119,6 +138,7 @@ class TrainingThread(QThread):
                 save_strategy="no",
                 report_to="none",
                 fp16=True if torch.cuda.is_available() else False,
+                gradient_checkpointing=True if torch.cuda.is_available() else False,
             )
 
             # Callback to report progress and loss
@@ -174,6 +194,16 @@ class TrainingThread(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            # Re-collect garbage and empty CUDA cache to release VRAM to the OS
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
 
 class TrainingStudioWorkspace(QWidget):
@@ -826,6 +856,26 @@ class TrainingStudioWorkspace(QWidget):
         hf_base_dir, repo_id = self._get_hf_model_path()
         if not hf_base_dir:
             self._train_log.append(f"Base HuggingFace weights for {repo_id} not found locally.")
+            return
+
+        # VRAM Safety Guard Check
+        from core.hardware_scout import get_hardware_profile
+        hw = get_hardware_profile()
+        vram = hw.get("vram_gb", 0.0)
+        
+        # Determine model size category from folder name or repo name
+        model_name_lower = hf_base_dir.lower()
+        is_large = any(term in model_name_lower for term in ["7b", "8b", "14b", "70b"])
+        use_qlora = self._qlora_check.isChecked()
+        
+        if is_large and not use_qlora and isinstance(vram, (int, float)) and vram < 16.0:
+            QMessageBox.critical(
+                self, "VRAM Safety Guard",
+                f"You are attempting to train a large model ({os.path.basename(hf_base_dir)}) in full 16-bit precision.\n\n"
+                f"Your GPU has {vram:.1f} GB of VRAM. Training a 7B/8B model in 16-bit requires at least 16 GB of VRAM just to load the model weights, "
+                f"which will instantly crash with CUDA Out of Memory.\n\n"
+                f"Please check '4-bit QLoRA' to enable memory-efficient training."
+            )
             return
 
         self._train_btn.setEnabled(False)

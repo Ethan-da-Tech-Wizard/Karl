@@ -646,6 +646,7 @@ class WorkbenchWorkspace(QWidget):
             system_prompt=self._system_prompt,
             initial_history=list(self.chat_history),
             hyperparams=self._hyperparams,
+            retrieved_chunks=chunks,
             workflow=self._current_workflow(),
             template=self._current_template(),
             adapter_name=self.state.adapter_name,

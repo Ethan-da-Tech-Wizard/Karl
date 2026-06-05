@@ -206,6 +206,19 @@ class RAGPipeline:
         # No save_index() here — transient ingest for eval use
         return len(chunks)
 
+    def _is_toc_chunk(self, doc: dict) -> bool:
+        """Helper to identify if a chunk is part of the Table of Contents (pages 1 to 10)."""
+        text = doc.get("text", "")
+        import re
+        page_match = re.search(r"Page\s+(\d+)\s+of\s+\d+", text)
+        if page_match:
+            try:
+                if int(page_match.group(1)) <= 10:
+                    return True
+            except ValueError:
+                pass
+        return False
+
     # ── Retrieval ─────────────────────────────────────────────────────────────
 
     def retrieve(
@@ -311,6 +324,8 @@ class RAGPipeline:
             for doc in self.documents:
                 if source_filter and doc.get("source_file") != source_filter:
                     continue
+                if self._is_toc_chunk(doc):
+                    continue
                 if re.search(r"\b" + re.escape(token) + r"\b", doc["text"]):
                     if not any(e["chunk_id"] == doc["chunk_id"] for e in exact_matches):
                         exact_matches.append({
@@ -326,6 +341,8 @@ class RAGPipeline:
             spaced_ch_short_pattern = r"\b" + r"\s*".join("ch") + r"\s*" + r"\s*".join(ch_num) + r"\b"
             for doc in self.documents:
                 if source_filter and doc.get("source_file") != source_filter:
+                    continue
+                if self._is_toc_chunk(doc):
                     continue
                 if re.search(spaced_ch_pattern, doc["text"], re.IGNORECASE) or re.search(spaced_ch_short_pattern, doc["text"], re.IGNORECASE):
                     if not any(e["chunk_id"] == doc["chunk_id"] for e in exact_matches):
@@ -344,11 +361,14 @@ class RAGPipeline:
             ("break room", ["break room", "kitchen"]),
             ("traditions", ["traditions", "celebrations", "golden gherkin"]),
             ("parking", ["parking", "gerald"]),
+            ("remote and hybrid work", ["remote work", "hybrid work", "telecommuting"]),
         ]
         for topic, keywords in topic_keywords:
             if any(re.search(r"\b" + re.escape(kw) + r"\w*", query, re.IGNORECASE) for kw in keywords):
                 for doc in self.documents:
                     if source_filter and doc.get("source_file") != source_filter:
+                        continue
+                    if self._is_toc_chunk(doc):
                         continue
                     if re.search(r"\b" + re.escape(topic) + r"\w*", doc["text"], re.IGNORECASE):
                         if not any(e["chunk_id"] == doc["chunk_id"] for e in exact_matches):
