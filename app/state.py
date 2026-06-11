@@ -26,4 +26,10 @@ class AppState:
 
         # Global UI visual adjustments
         self.reduced_motion: bool = False
+        self.theme_preset: str = "Karl Obsidian Core"
+        self.custom_accent: str | None = None
+        self.layout_preset: str = "Focused Workbench"
+        self.glow_enabled: bool = True
+        self.animation_intensity: float = 1.0
+        self.glow_strength: float = 1.0
 

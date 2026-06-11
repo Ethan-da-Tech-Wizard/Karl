@@ -475,14 +475,14 @@ class TestWebSocketBridge(unittest.TestCase):
 
         # The WebSocketServerManager is currently listening on port 8081 (from setUp)
         status_bar._tick()
-        self.assertEqual(status_bar._vscode_lbl.text(), "🔌 VS Code: listening")
+        self.assertEqual(status_bar._vscode_lbl.text(), "⇄ VS Code: listening")
 
         # Reset the server instance
         WebSocketServerManager.reset_instance()
 
         # Tick again - should show offline
         status_bar._tick()
-        self.assertEqual(status_bar._vscode_lbl.text(), "🔌 VS Code: offline")
+        self.assertEqual(status_bar._vscode_lbl.text(), "⇄ VS Code: offline")
 
 
 if __name__ == "__main__":

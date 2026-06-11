@@ -486,7 +486,7 @@ class EvalSuiteWorkspace(QWidget):
             item = QTreeWidgetItem([
                 case.case_id,
                 case.grader,
-                "✓" if case_passed else "✗",
+                "PASS" if case_passed else "FAIL",
                 preview_text,
             ])
             item.setTextAlignment(2, Qt.AlignmentFlag.AlignCenter)

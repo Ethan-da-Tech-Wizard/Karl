@@ -30,6 +30,7 @@ from core.workflows import list_workflows
 from app.utils.session_tree import SessionTree
 from app.ui.widgets.tracing_panel import TracingPanel
 from app.ui.themes import get_theme_colors
+from app.ui.widgets.symbolic_icon import IconBtn, GearIcon, HamburgerIcon, BrainIcon, ThumbsUpIcon, ThumbsDownIcon
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -302,10 +303,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._build_ui()
         
         # Initialize dynamic chat bubble colors from theme config
-        theme_name = getattr(self.state, "theme_name", "Karl Obsidian")
-        custom_accent = getattr(self.state, "custom_accent", None)
         from app.ui.themes import get_theme_colors
-        self._chat_view.set_theme(get_theme_colors(theme_name, custom_accent))
+        self._chat_view.set_theme(get_theme_colors(self.state))
 
         self._connect_shortcuts()
         self._refresh_sessions()
@@ -379,7 +378,7 @@ class WorkbenchWorkspace(QMainWindow):
     def _build_reasoning_panel(self) -> QWidget:
         self._reasoning_panel_container = TracingPanel(self.state, self)
         self._reasoning_panel_container.setObjectName("panel")
-        accent = get_theme_colors(getattr(self.state, "theme_name", "Karl Obsidian"), getattr(self.state, "custom_accent", None)).get("accent", "#00C2FF")
+        accent = get_theme_colors(self.state).get("accent", "#00C2FF")
         self._reasoning_panel_container.set_accent_color(accent)
         
         layout = QVBoxLayout(self._reasoning_panel_container)
@@ -493,24 +492,15 @@ class WorkbenchWorkspace(QMainWindow):
         self._loop_check.setToolTip("Run generation in an autonomous iterative agentic loop")
         ctrl_layout.addWidget(self._loop_check)
 
-        self._params_toggle = QPushButton("⚙")
-        self._params_toggle.setObjectName("btn-ghost")
-        self._params_toggle.setFixedWidth(28)
-        self._params_toggle.setToolTip("Toggle generation parameters")
+        self._params_toggle = IconBtn(GearIcon, self.state, tooltip="Toggle generation parameters")
         self._params_toggle.clicked.connect(self._toggle_params)
         ctrl_layout.addWidget(self._params_toggle)
 
-        self._sessions_toggle = QPushButton("☰")
-        self._sessions_toggle.setObjectName("btn-ghost")
-        self._sessions_toggle.setFixedWidth(28)
-        self._sessions_toggle.setToolTip("Toggle Sessions panel")
+        self._sessions_toggle = IconBtn(HamburgerIcon, self.state, tooltip="Toggle Sessions panel")
         self._sessions_toggle.clicked.connect(self._toggle_sessions)
         ctrl_layout.addWidget(self._sessions_toggle)
 
-        self._reasoning_toggle = QPushButton("🧠")
-        self._reasoning_toggle.setObjectName("btn-ghost")
-        self._reasoning_toggle.setFixedWidth(28)
-        self._reasoning_toggle.setToolTip("Toggle Reasoning panel")
+        self._reasoning_toggle = IconBtn(BrainIcon, self.state, tooltip="Toggle Reasoning panel")
         self._reasoning_toggle.clicked.connect(self._toggle_reasoning)
         ctrl_layout.addWidget(self._reasoning_toggle)
 
@@ -1123,6 +1113,24 @@ class WorkbenchWorkspace(QMainWindow):
 
     def on_close(self):
         self._save_current_session()
+
+    def update_theme(self):
+        theme_colors = get_theme_colors(self.state)
+        self._chat_view.set_theme(theme_colors)
+        
+        # Update our toggle buttons style
+        if hasattr(self, "_params_toggle"):
+            self._params_toggle.update_style()
+        if hasattr(self, "_sessions_toggle"):
+            self._sessions_toggle.update_style()
+        if hasattr(self, "_reasoning_toggle"):
+            self._reasoning_toggle.update_style()
+            
+        # Update reasoning panel container accent color
+        if hasattr(self, "_reasoning_panel_container"):
+            accent = theme_colors.get("accent", "#00C2FF")
+            self._reasoning_panel_container.set_accent_color(accent)
+            self._reasoning_panel_container.update_style()
 
     def _set_busy(self, busy: bool):
         self._send_btn.setEnabled(not busy)

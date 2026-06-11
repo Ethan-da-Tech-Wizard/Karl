@@ -1,4 +1,5 @@
 const vscode = require('vscode');
+const cp = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -24,6 +25,16 @@ function activate(context) {
     register('karl.askWorkspace', () => runWorkspaceWorkflow(sidebarProvider));
     register('karl.ingestActiveFile', (uri) => sendActiveFileToKb(sidebarProvider, uri));
     register('karl.ingestWorkspaceFolder', (uri) => sendWorkspaceFolderToKb(sidebarProvider, uri));
+    register('karl.reviewStagedDiff', () => runGitDiffWorkflow(sidebarProvider, 'Review Staged Diff', ['diff', '--staged']));
+    register('karl.generateCommitMessage', () => runGitDiffWorkflow(sidebarProvider, 'Generate Commit Message', ['diff', '--staged']));
+    register('karl.explainDiagnostics', () => runDiagnosticsWorkflow(sidebarProvider));
+    register('karl.createImplementationPlan', (...args) => runImplementationPlanWorkflow(sidebarProvider, args));
+    register('karl.searchKbSelection', () => searchKbFromSelection(sidebarProvider));
+    register('karl.sendCurrentFileToSwarm', () => runEditorWorkflow(sidebarProvider, 'Current File Swarm Task'));
+    register('karl.openReviewBay', async () => {
+        await revealKarlPanel(sidebarProvider);
+        sidebarProvider.postMessageToWebview({ command: 'open_review_bay' });
+    });
 }
 
 async function revealKarlPanel(sidebarProvider) {
@@ -83,9 +94,12 @@ async function runEditorWorkflow(sidebarProvider, mode) {
 
     const filepath = editor.document.uri.fsPath;
     const code = editor.document.getText();
-    const defaultObjective = mode === 'Generate Tests'
-        ? 'Generate focused tests for the active file. Preserve existing behavior and name likely test commands.'
-        : 'Review the active file for bugs, regressions, missing tests, and concrete improvements.';
+    let defaultObjective = 'Review the active file for bugs, regressions, missing tests, and concrete improvements.';
+    if (mode === 'Generate Tests') {
+        defaultObjective = 'Generate focused tests for the active file. Preserve existing behavior and name likely test commands.';
+    } else if (mode === 'Current File Swarm Task') {
+        defaultObjective = 'Implement the requested change in this file and verify behavior.';
+    }
 
     const objective = await vscode.window.showInputBox({
         prompt: `${mode}: adjust the objective if needed.`,
@@ -103,6 +117,146 @@ async function runEditorWorkflow(sidebarProvider, mode) {
             filepath,
             workspace_path: currentWorkspacePath(filepath)
         }
+    });
+}
+
+function execGit(args, cwd) {
+    return new Promise((resolve, reject) => {
+        cp.execFile('git', args, { cwd, maxBuffer: 1024 * 1024 * 8 }, (err, stdout, stderr) => {
+            if (err) {
+                reject(new Error(stderr || err.message));
+            } else {
+                resolve(stdout);
+            }
+        });
+    });
+}
+
+async function runGitDiffWorkflow(sidebarProvider, mode, args) {
+    const workspacePath = currentWorkspacePath('');
+    if (!workspacePath) {
+        vscode.window.showWarningMessage('Open a workspace before using git workflows.');
+        return;
+    }
+    let diff = '';
+    try {
+        diff = await execGit(args, workspacePath);
+    } catch (err) {
+        vscode.window.showErrorMessage(`Git workflow failed: ${err.message}`);
+        return;
+    }
+    if (!diff.trim()) {
+        vscode.window.showInformationMessage('No staged git diff found.');
+        return;
+    }
+
+    const objective = mode === 'Generate Commit Message'
+        ? 'Generate a concise conventional commit message and a short body from this staged diff.'
+        : 'Review this staged diff for bugs, regressions, missing tests, and risky changes.';
+
+    await revealKarlPanel(sidebarProvider);
+    sidebarProvider.postMessageToWebview({
+        command: 'start_code_task',
+        data: {
+            mode,
+            objective,
+            code: diff,
+            filepath: 'git diff --staged',
+            workspace_path: workspacePath
+        }
+    });
+}
+
+async function runDiagnosticsWorkflow(sidebarProvider) {
+    const workspacePath = currentWorkspacePath('');
+    const diagnostics = vscode.languages.getDiagnostics()
+        .flatMap(([uri, items]) => items.map(item => ({
+            file: uri.fsPath,
+            severity: item.severity,
+            message: item.message,
+            source: item.source || '',
+            line: item.range.start.line + 1,
+            character: item.range.start.character + 1
+        })))
+        .slice(0, 80);
+
+    if (!diagnostics.length) {
+        vscode.window.showInformationMessage('No current diagnostics found.');
+        return;
+    }
+
+    await revealKarlPanel(sidebarProvider);
+    sidebarProvider.postMessageToWebview({
+        command: 'start_code_task',
+        data: {
+            mode: 'Explain Diagnostics',
+            objective: 'Explain these editor diagnostics, group likely root causes, and propose a fix order.',
+            code: JSON.stringify(diagnostics, null, 2),
+            filepath: 'VS Code diagnostics',
+            workspace_path: workspacePath
+        }
+    });
+}
+
+async function runImplementationPlanWorkflow(sidebarProvider, args) {
+    const workspacePath = currentWorkspacePath('');
+    const uris = args.flat().filter(item => item && item.fsPath);
+    const files = uris.length ? uris : (vscode.window.activeTextEditor ? [vscode.window.activeTextEditor.document.uri] : []);
+    if (!files.length) {
+        vscode.window.showWarningMessage('Select files or open an active file before asking for an implementation plan.');
+        return;
+    }
+
+    const chunks = [];
+    for (const uri of files.slice(0, 12)) {
+        try {
+            const stat = await fs.promises.stat(uri.fsPath);
+            if (!stat.isFile() || stat.size > 500000) continue;
+            const content = await fs.promises.readFile(uri.fsPath, 'utf8');
+            chunks.push(`File: ${uri.fsPath}\n\n${content.slice(0, 30000)}`);
+        } catch {
+            // Ignore unreadable selected files.
+        }
+    }
+    if (!chunks.length) {
+        vscode.window.showWarningMessage('No readable selected files found for planning.');
+        return;
+    }
+
+    const objective = await vscode.window.showInputBox({
+        prompt: 'What should Karl plan across the selected files?',
+        placeHolder: 'Describe the implementation goal.'
+    });
+    if (!objective) return;
+
+    await revealKarlPanel(sidebarProvider);
+    sidebarProvider.postMessageToWebview({
+        command: 'start_code_task',
+        data: {
+            mode: 'Implementation Plan',
+            objective,
+            code: chunks.join('\n\n---\n\n'),
+            filepath: `${chunks.length} selected file(s)`,
+            workspace_path: workspacePath
+        }
+    });
+}
+
+async function searchKbFromSelection(sidebarProvider) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showInformationMessage('No active editor found.');
+        return;
+    }
+    const query = editor.document.getText(editor.selection).trim();
+    if (!query) {
+        vscode.window.showWarningMessage('Select text to search in Karl Knowledge Base.');
+        return;
+    }
+    await revealKarlPanel(sidebarProvider);
+    sidebarProvider.postMessageToWebview({
+        command: 'search_kb_text',
+        query
     });
 }
 
@@ -229,6 +383,12 @@ class KarlSidebarProvider {
                 case 'reject_file':
                     this.rejectFile(message.editId);
                     break;
+                case 'preview_all_files':
+                    await this.previewAllFiles();
+                    break;
+                case 'copy_patch_summary':
+                    await this.copyPatchSummary();
+                    break;
                 case 'accept_file':
                     await this.acceptLegacyFile(message.filepath);
                     break;
@@ -254,7 +414,15 @@ class KarlSidebarProvider {
         }
         const editId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const filename = path.basename(filepath);
-        this.pendingEdits.set(editId, { filepath, content, summary, filename });
+        let previous = '';
+        try {
+            previous = fs.existsSync(filepath) ? fs.readFileSync(filepath, 'utf8') : '';
+        } catch {
+            previous = '';
+        }
+        const oldLines = previous ? previous.split(/\r?\n/).length : 0;
+        const newLines = content ? content.split(/\r?\n/).length : 0;
+        this.pendingEdits.set(editId, { filepath, content, summary, filename, oldLines, newLines, status: 'proposed' });
         this.postMessageToWebview({
             command: 'pending_file_edit',
             edit: {
@@ -262,7 +430,11 @@ class KarlSidebarProvider {
                 filepath,
                 filename,
                 summary,
-                bytes: Buffer.byteLength(content, 'utf8')
+                bytes: Buffer.byteLength(content, 'utf8'),
+                oldLines,
+                newLines,
+                lineDelta: newLines - oldLines,
+                status: 'proposed'
             }
         });
     }
@@ -282,6 +454,24 @@ class KarlSidebarProvider {
             vscode.Uri.file(proposedPath),
             `Karl Preview: ${edit.filename}`
         );
+        edit.status = 'previewed';
+        this.postMessageToWebview({ command: 'file_edit_previewed', editId });
+    }
+
+    async previewAllFiles() {
+        for (const editId of this.pendingEdits.keys()) {
+            await this.previewFile(editId);
+        }
+    }
+
+    async copyPatchSummary() {
+        const rows = Array.from(this.pendingEdits.values()).map(edit => {
+            const delta = edit.newLines - edit.oldLines;
+            return `- ${edit.filepath} (${delta >= 0 ? '+' : ''}${delta} lines): ${edit.summary || 'Karl proposed an update.'}`;
+        });
+        const text = rows.length ? rows.join('\n') : 'No pending Karl edits.';
+        await vscode.env.clipboard.writeText(text);
+        vscode.window.showInformationMessage('Karl patch summary copied.');
     }
 
     async applyFile(editId) {
@@ -366,6 +556,7 @@ class KarlSidebarProvider {
 
     getHtmlForWebview(webview, port, autoConnect, workspaceFolder, persisted) {
         const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl.css'));
+        const themesUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'themes.js'));
         const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl.js'));
         const nonce = String(Date.now());
         const config = JSON.stringify({
@@ -413,7 +604,16 @@ class KarlSidebarProvider {
             <button class="tab" data-workspace="lab">Lab</button>
             <button class="tab" data-workspace="models">Models</button>
             <button class="tab" data-workspace="codex">Codex</button>
+            <button class="tab" data-workspace="appearance">Look</button>
         </nav>
+
+        <section id="offlinePanel" class="offline-panel glow-panel">
+            <div class="scanner-line"></div>
+            <div>
+                <div class="eyebrow">Bridge Checklist</div>
+                <p>Start Karl, verify the WebSocket bridge is listening, then connect. The panel will keep trying unless you disconnect manually.</p>
+            </div>
+        </section>
 
         <section class="connection-row glow-panel">
             <label>Bridge Port <input id="bridgePort" type="number" min="1" max="65535" value="${port}"></label>
@@ -471,7 +671,7 @@ class KarlSidebarProvider {
             </section>
 
             <section id="workspace-changes" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Review</div><h2>Pending File Changes</h2></div></div>
+                <div class="section-head"><div><div class="eyebrow">Review</div><h2>Pending File Changes</h2></div><div class="action-row compact-actions"><button id="previewAllBtn">Preview All</button><button id="copySummaryBtn">Copy Summary</button></div></div>
                 <div id="changeQueue" class="queue empty">No pending Karl edits.</div>
             </section>
 
@@ -533,8 +733,20 @@ class KarlSidebarProvider {
                 <div id="codexList" class="source-list"></div>
                 <article id="codexViewer" class="codex-viewer">Select a chapter to read local reference material.</article>
             </section>
+
+            <section id="workspace-appearance" class="workspace">
+                <div class="section-head"><div><div class="eyebrow">Personalize</div><h2>Appearance System</h2></div></div>
+                <label>Theme Preset <select id="themeSelect"></select></label>
+                <div id="themeDescription" class="theme-description"></div>
+                <label>Custom Accent <input id="customAccent" type="color" value="#00c2ff"></label>
+                <label>Layout Mode <select id="layoutSelect"></select></label>
+                <div id="layoutDescription" class="theme-description"></div>
+                <div class="swatch-grid" id="themeSwatches"></div>
+                <button id="resetAppearanceBtn">Reset Appearance</button>
+            </section>
         </main>
     </div>
+    <script nonce="${nonce}" src="${themesUri}"></script>
     <script nonce="${nonce}" src="${jsUri}"></script>
 </body>
 </html>`;

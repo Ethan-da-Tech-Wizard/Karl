@@ -17,6 +17,7 @@ let manualDisconnect = false;
 const $ = (id) => document.getElementById(id);
 
 window.addEventListener('DOMContentLoaded', () => {
+    initializeAppearance();
     hydrate();
     bindEvents();
     appendMessageBubble('assistant', 'Karl bridge ready. Connect to the desktop app to start.');
@@ -32,8 +33,16 @@ window.addEventListener('message', event => {
     } else if (message.command === 'set_kb_path') {
         $('kbPath').value = message.path || '';
         switchWorkspace('kb');
+    } else if (message.command === 'search_kb_text') {
+        $('kbQuery').value = message.query || '';
+        switchWorkspace('kb');
+        searchKb();
+    } else if (message.command === 'open_review_bay') {
+        switchWorkspace('changes');
     } else if (message.command === 'pending_file_edit') {
         addPendingEdit(message.edit);
+    } else if (message.command === 'file_edit_previewed') {
+        markPendingEdit(message.editId, 'previewed');
     } else if (message.command === 'file_edit_applied') {
         removePendingEdit(message.editId, 'Applied');
     } else if (message.command === 'file_edit_rejected') {
@@ -46,6 +55,10 @@ function hydrate() {
     $('workspace').value = persisted.workspace || boot.workspaceFolder || '';
     $('bridgePort').value = persisted.port || boot.port || 8080;
     $('taskMode').value = persisted.taskMode || 'Custom Task';
+    $('themeSelect').value = persisted.theme || 'obsidian-core';
+    $('customAccent').value = persisted.customAccent || themeById($('themeSelect').value).vars['--karl-accent'];
+    $('layoutSelect').value = persisted.layout || 'cockpit';
+    applyAppearance();
     if (persisted.workspaceTab) switchWorkspace(persisted.workspaceTab);
 }
 
@@ -56,7 +69,10 @@ function persist() {
             workspace: $('workspace').value,
             port: Number($('bridgePort').value) || boot.port || 8080,
             taskMode: $('taskMode').value,
-            workspaceTab: document.querySelector('.tab.active')?.dataset.workspace || 'swarm'
+            workspaceTab: document.querySelector('.tab.active')?.dataset.workspace || 'swarm',
+            theme: $('themeSelect').value,
+            customAccent: $('customAccent').value,
+            layout: $('layoutSelect').value
         }
     });
 }
@@ -93,6 +109,17 @@ function bindEvents() {
     $('workspace').addEventListener('change', persist);
     $('bridgePort').addEventListener('change', persist);
     $('taskMode').addEventListener('change', persist);
+    $('previewAllBtn').addEventListener('click', () => vscode.postMessage({ command: 'preview_all_files' }));
+    $('copySummaryBtn').addEventListener('click', () => vscode.postMessage({ command: 'copy_patch_summary' }));
+    $('themeSelect').addEventListener('change', applyAppearance);
+    $('customAccent').addEventListener('input', applyAppearance);
+    $('layoutSelect').addEventListener('change', applyAppearance);
+    $('resetAppearanceBtn').addEventListener('click', () => {
+        $('themeSelect').value = 'obsidian-core';
+        $('customAccent').value = '#00c2ff';
+        $('layoutSelect').value = 'cockpit';
+        applyAppearance();
+    });
 }
 
 function switchWorkspace(wsId) {
@@ -112,6 +139,7 @@ function setConnectionState(state, label) {
     connectionState = state;
     $('statusDot').className = `status-dot ${state}`;
     $('statusText').innerText = label;
+    $('offlinePanel').classList.toggle('active', state !== 'connected' && state !== 'running');
 }
 
 function connect() {
@@ -447,6 +475,15 @@ function addPendingEdit(edit) {
     renderPendingEdits();
 }
 
+function markPendingEdit(editId, status) {
+    const edit = pendingEdits.get(editId);
+    if (edit) {
+        edit.status = status;
+        pendingEdits.set(editId, edit);
+        renderPendingEdits();
+    }
+}
+
 function removePendingEdit(editId, state) {
     pendingEdits.delete(editId);
     renderPendingEdits();
@@ -464,7 +501,7 @@ function renderPendingEdits() {
     queue.innerHTML = Array.from(pendingEdits.values()).map(edit => `
         <div class="change-card">
             <div class="change-title">${escapeHtml(edit.filename || 'unknown')}</div>
-            <div class="change-meta">${escapeHtml(edit.filepath || '')}<br>${Number(edit.bytes || 0)} bytes · ${escapeHtml(edit.summary || 'Proposed Karl edit')}</div>
+            <div class="change-meta">${escapeHtml(edit.filepath || '')}<br>${Number(edit.bytes || 0)} bytes · ${formatLineDelta(edit)} · <span class="state-chip ${escapeHtml(edit.status || 'proposed')}">${escapeHtml(edit.status || 'proposed')}</span><br>${escapeHtml(edit.summary || 'Proposed Karl edit')}</div>
             <div class="change-actions">
                 <button data-preview="${escapeHtml(edit.id)}">Preview</button>
                 <button class="primary" data-apply="${escapeHtml(edit.id)}">Apply</button>
@@ -482,6 +519,11 @@ function renderPendingEdits() {
     queue.querySelectorAll('[data-reject]').forEach(btn => btn.addEventListener('click', () => {
         vscode.postMessage({ command: 'reject_file', editId: btn.dataset.reject });
     }));
+}
+
+function formatLineDelta(edit) {
+    if (!Number.isFinite(edit.lineDelta)) return 'line delta unknown';
+    return `${edit.lineDelta >= 0 ? '+' : ''}${edit.lineDelta} lines`;
 }
 
 function runLab() {
@@ -585,6 +627,39 @@ function loadKbSources() {
         return;
     }
     rpc(50, 'list_kb_sources');
+}
+
+function initializeAppearance() {
+    $('themeSelect').innerHTML = window.KARL_THEMES.map(theme => {
+        return `<option value="${escapeHtml(theme.id)}">${escapeHtml(theme.name)}</option>`;
+    }).join('');
+    $('layoutSelect').innerHTML = window.KARL_LAYOUTS.map(layout => {
+        return `<option value="${escapeHtml(layout.id)}">${escapeHtml(layout.name)}</option>`;
+    }).join('');
+}
+
+function themeById(id) {
+    return window.KARL_THEMES.find(theme => theme.id === id) || window.KARL_THEMES[0];
+}
+
+function layoutById(id) {
+    return window.KARL_LAYOUTS.find(layout => layout.id === id) || window.KARL_LAYOUTS[0];
+}
+
+function applyAppearance() {
+    const theme = themeById($('themeSelect').value);
+    const layout = layoutById($('layoutSelect').value);
+    const customAccent = $('customAccent').value || theme.vars['--karl-accent'];
+    Object.entries(theme.vars).forEach(([key, value]) => document.documentElement.style.setProperty(key, value));
+    document.documentElement.style.setProperty('--karl-accent', customAccent);
+    document.body.dataset.layout = layout.id;
+    $('themeDescription').innerText = theme.description;
+    $('layoutDescription').innerText = layout.description;
+    $('themeSwatches').innerHTML = Object.entries(theme.vars).slice(0, 9).map(([name, value]) => {
+        const color = name === '--karl-accent' ? customAccent : value;
+        return `<div class="swatch"><span style="background:${escapeHtml(color)}"></span><small>${escapeHtml(name.replace('--karl-', ''))}</small></div>`;
+    }).join('');
+    persist();
 }
 
 function renderKbSnapshot(snapshot) {

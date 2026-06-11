@@ -13,12 +13,14 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QLabel, QLineEdit,
     QFrame, QDoubleSpinBox, QSpinBox, QFileDialog,
     QMessageBox, QGroupBox, QScrollArea, QProgressBar,
-    QComboBox, QColorDialog, QCheckBox,
+    QComboBox, QColorDialog, QCheckBox, QSlider,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QColor
 
-from app.ui.themes import MONO
+from app.ui.themes import MONO, THEMES, get_theme_colors, get_theme_stylesheet
+from app.ui.widgets.tracing_panel import TracingPanel
+from app.ui.widgets.symbolic_icon import CheckIcon, CrossIcon
 
 
 def _section(text: str) -> QLabel:
@@ -132,6 +134,7 @@ class DownloadThread(QThread):
 
 class SystemConfigWorkspace(QWidget):
     adapter_changed = pyqtSignal(str)
+    appearance_changed = pyqtSignal()
 
     def __init__(self, state, workbench_ref=None, parent=None):
         super().__init__(parent)
@@ -620,23 +623,12 @@ class SystemConfigWorkspace(QWidget):
     def _on_reduced_motion_changed(self, state):
         is_checked = (state == 2 or state == Qt.CheckState.Checked.value or state == True)
         self.state.reduced_motion = is_checked
-        
-        # Save to theme_config.json
-        config_path = "data/theme_config.json"
-        config = {}
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-            except Exception:
-                pass
-        config["reduced_motion"] = is_checked
-        os.makedirs("data", exist_ok=True)
-        try:
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
-        except Exception as e:
-            print(f"[SystemConfig] Error saving reduced motion: {e}")
+        if hasattr(self, "_reduced_motion_check_app"):
+            self._reduced_motion_check_app.blockSignals(True)
+            self._reduced_motion_check_app.setChecked(is_checked)
+            self._reduced_motion_check_app.blockSignals(False)
+        self._apply_active_theme()
+        self._save_appearance_config_silent()
 
     # ── identity tab ──────────────────────────────────────────────────────────
 
@@ -1006,105 +998,380 @@ class SystemConfigWorkspace(QWidget):
 
     def _build_theme_tab(self) -> QWidget:
         w = QWidget()
-        layout = QVBoxLayout(w)
+        layout = QHBoxLayout(w)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setSpacing(16)
 
-        panel = QWidget()
-        panel.setObjectName("panel")
-        p_layout = QVBoxLayout(panel)
-        p_layout.setContentsMargins(12, 12, 12, 12)
-        p_layout.setSpacing(10)
+        # Left Column: Controls (scrollable in case of small screen)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(12)
 
-        p_layout.addWidget(_section("THEME ENGINE"))
+        ctrl_panel = QWidget()
+        ctrl_panel.setObjectName("panel")
+        ctrl_layout = QVBoxLayout(ctrl_panel)
+        ctrl_layout.setContentsMargins(12, 12, 12, 12)
+        ctrl_layout.setSpacing(10)
+
+        ctrl_layout.addWidget(_section("VISUAL THEME PRESETS"))
 
         # Presets Combobox
         self._theme_preset_combo = QComboBox()
-        from app.ui.themes import THEMES
         for name in THEMES.keys():
             self._theme_preset_combo.addItem(name)
-        
         self._theme_preset_combo.currentTextChanged.connect(self._on_preset_changed)
-        p_layout.addWidget(_row("Preset Palette", self._theme_preset_combo))
+        ctrl_layout.addWidget(_row("Preset Palette", self._theme_preset_combo))
+
+        # Preset Description
+        self._preset_desc_lbl = QLabel("")
+        self._preset_desc_lbl.setObjectName("lbl-muted")
+        self._preset_desc_lbl.setWordWrap(True)
+        self._preset_desc_lbl.setStyleSheet("font-size: 8.5pt; margin-left: 130px; margin-bottom: 6px;")
+        ctrl_layout.addWidget(self._preset_desc_lbl)
+
+        ctrl_layout.addWidget(_hline())
+        ctrl_layout.addWidget(_section("CUSTOM ACCENT OVERRIDE"))
 
         # Custom Accent Picker Row
         self._custom_accent_btn = QPushButton("Pick Custom Accent...")
         self._custom_accent_btn.clicked.connect(self._pick_custom_accent)
         
-        accent_layout = QHBoxLayout()
-        accent_layout.setSpacing(8)
-        accent_layout.addWidget(self._custom_accent_btn)
-        
         self._clear_accent_btn = QPushButton("Reset Accent")
         self._clear_accent_btn.clicked.connect(self._reset_custom_accent)
+        
+        self._accent_color_preview = QLabel()
+        self._accent_color_preview.setFixedSize(24, 24)
+        self._accent_color_preview.setStyleSheet("border: 1px solid #35356E; border-radius: 4px;")
+
+        accent_layout = QHBoxLayout()
+        accent_layout.setSpacing(8)
+        accent_layout.addWidget(self._custom_accent_btn, 1)
         accent_layout.addWidget(self._clear_accent_btn)
+        accent_layout.addWidget(self._accent_color_preview)
         
         accent_widget = QWidget()
         accent_widget_layout = QHBoxLayout(accent_widget)
         accent_widget_layout.setContentsMargins(0, 0, 0, 0)
         accent_widget_layout.addLayout(accent_layout)
-        p_layout.addWidget(_row("Custom Accent", accent_widget))
+        ctrl_layout.addWidget(_row("Custom Accent", accent_widget))
 
-        # Background Tones Combobox
-        self._bg_tone_combo = QComboBox()
-        self._bg_tone_combo.addItems(["Default", "Pitch Black", "Warm Sepia", "Cool Slate"])
-        self._bg_tone_combo.currentTextChanged.connect(self._apply_active_theme)
-        p_layout.addWidget(_row("Background Tone", self._bg_tone_combo))
+        ctrl_layout.addWidget(_hline())
+        ctrl_layout.addWidget(_section("LAYOUT DENSITY PRESETS"))
 
-        # Big Save / Apply Button
-        apply_btn = QPushButton("Save & Apply Theme")
-        apply_btn.setObjectName("btn-primary")
-        apply_btn.clicked.connect(self._apply_active_theme)
-        p_layout.addWidget(apply_btn)
+        # Layout density selector
+        self._layout_preset_combo = QComboBox()
+        self._layout_preset_combo.addItems([
+            "Focused Workbench",
+            "Research Lab",
+            "Training Console",
+            "Evaluation Wall",
+            "Compact Laptop",
+            "Wide Monitor Command",
+            "Minimal Distraction",
+            "Max Introspection",
+            "Knowledge Heavy",
+            "Prompt Engineering Lab"
+        ])
+        self._layout_preset_combo.currentTextChanged.connect(self._on_control_changed)
+        ctrl_layout.addWidget(_row("Layout Density", self._layout_preset_combo))
 
-        layout.addWidget(panel)
-        layout.addStretch()
+        ctrl_layout.addWidget(_hline())
+        ctrl_layout.addWidget(_section("EFFECTS & MOTION SYSTEM"))
+
+        # Glow enabled checkbox
+        self._glow_enabled_check = QCheckBox("Enable Glow Effects")
+        self._glow_enabled_check.stateChanged.connect(self._on_control_changed)
+        ctrl_layout.addWidget(_row("Edge Glow", self._glow_enabled_check))
+
+        # Glow Strength Slider
+        self._glow_strength_slider = QSlider(Qt.Orientation.Horizontal)
+        self._glow_strength_slider.setRange(0, 20)
+        self._glow_strength_slider.setSingleStep(1)
+        self._glow_strength_slider.setPageStep(2)
+        self._glow_strength_slider.setValue(10)
+        self._glow_strength_slider.valueChanged.connect(self._on_control_changed)
         
+        self._glow_strength_val_lbl = QLabel("1.0x")
+        self._glow_strength_val_lbl.setFixedWidth(40)
+        self._glow_strength_val_lbl.setObjectName("lbl-muted")
+        
+        glow_row_widget = QWidget()
+        gr_layout = QHBoxLayout(glow_row_widget)
+        gr_layout.setContentsMargins(0, 0, 0, 0)
+        gr_layout.setSpacing(8)
+        gr_layout.addWidget(self._glow_strength_slider, 1)
+        gr_layout.addWidget(self._glow_strength_val_lbl)
+        ctrl_layout.addWidget(_row("Glow Strength", glow_row_widget))
+
+        # Animation Intensity (Speed) Slider
+        self._animation_intensity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._animation_intensity_slider.setRange(0, 20)
+        self._animation_intensity_slider.setSingleStep(1)
+        self._animation_intensity_slider.setPageStep(2)
+        self._animation_intensity_slider.setValue(10)
+        self._animation_intensity_slider.valueChanged.connect(self._on_control_changed)
+        
+        self._animation_intensity_val_lbl = QLabel("1.0x")
+        self._animation_intensity_val_lbl.setFixedWidth(40)
+        self._animation_intensity_val_lbl.setObjectName("lbl-muted")
+        
+        anim_row_widget = QWidget()
+        ar_layout = QHBoxLayout(anim_row_widget)
+        ar_layout.setContentsMargins(0, 0, 0, 0)
+        ar_layout.setSpacing(8)
+        ar_layout.addWidget(self._animation_intensity_slider, 1)
+        ar_layout.addWidget(self._animation_intensity_val_lbl)
+        ctrl_layout.addWidget(_row("Motion Speed", anim_row_widget))
+
+        # Reduced motion checkbox (Disable active glowing animations)
+        self._reduced_motion_check_app = QCheckBox("Disable active glowing animations (Reduced Motion)")
+        self._reduced_motion_check_app.stateChanged.connect(self._on_control_changed)
+        ctrl_layout.addWidget(_row("Accessibility", self._reduced_motion_check_app))
+
+        # Save & Apply Button
+        apply_btn = QPushButton("Save Appearance Config")
+        apply_btn.setObjectName("btn-primary")
+        apply_btn.clicked.connect(self._save_appearance_config)
+        ctrl_layout.addWidget(apply_btn)
+
+        scroll_layout.addWidget(ctrl_panel)
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, 3)
+
+        # Right Column: Live Preview Card + Swatches
+        preview_col = QWidget()
+        pr_layout = QVBoxLayout(preview_col)
+        pr_layout.setContentsMargins(0, 0, 0, 0)
+        pr_layout.setSpacing(12)
+
+        # Swatches Panel
+        swatches_panel = QWidget()
+        swatches_panel.setObjectName("panel")
+        sp_layout = QVBoxLayout(swatches_panel)
+        sp_layout.setContentsMargins(12, 12, 12, 12)
+        sp_layout.setSpacing(8)
+        sp_layout.addWidget(_section("ACTIVE PALETTE OVERVIEW"))
+        
+        self._swatches_container = QWidget()
+        self._swatches_layout = QHBoxLayout(self._swatches_container)
+        self._swatches_layout.setContentsMargins(0, 4, 0, 4)
+        self._swatches_layout.setSpacing(6)
+        sp_layout.addWidget(self._swatches_container)
+        pr_layout.addWidget(swatches_panel)
+
+        # Live Preview Panel using TracingPanel
+        self._preview_card = TracingPanel(self.state)
+        self._preview_card.set_active(True)
+        self._preview_card.setMinimumHeight(280)
+        
+        card_layout = QVBoxLayout(self._preview_card)
+        card_layout.setContentsMargins(16, 16, 16, 16)
+        card_layout.setSpacing(10)
+        
+        self._add_preview_elements(card_layout)
+        pr_layout.addWidget(self._preview_card, 1)
+
+        layout.addWidget(preview_col, 2)
+
         # Load active configuration if file exists
-        self._load_active_theme_config()
+        self._load_active_appearance_config()
         
         return w
 
-    def _load_active_theme_config(self):
-        config_path = "data/theme_config.json"
-        theme_name = "Karl Obsidian"
+    def _add_preview_elements(self, card_layout: QVBoxLayout):
+        title = QLabel("LIVE PREVIEW")
+        title.setObjectName("section-header")
+        card_layout.addWidget(title)
+        
+        desc = QLabel("Realtime mockup card showing active styles.")
+        desc.setObjectName("lbl-muted")
+        desc.setStyleSheet("font-size: 8pt; margin-bottom: 2px;")
+        card_layout.addWidget(desc)
+        
+        # Primary & Secondary Buttons mockup
+        btn_row = QWidget()
+        br_layout = QHBoxLayout(btn_row)
+        br_layout.setContentsMargins(0, 0, 0, 0)
+        br_layout.setSpacing(8)
+        
+        btn_prim = QPushButton("Primary Button")
+        btn_prim.setObjectName("btn-primary")
+        btn_prim.setFixedHeight(26)
+        btn_prim.setStyleSheet("font-size: 8.5pt; padding: 2px 10px;")
+        
+        btn_sec = QPushButton("Secondary Button")
+        btn_sec.setObjectName("btn-secondary")
+        btn_sec.setFixedHeight(26)
+        btn_sec.setStyleSheet("font-size: 8.5pt; padding: 2px 10px;")
+        
+        br_layout.addWidget(btn_prim)
+        br_layout.addWidget(btn_sec)
+        card_layout.addWidget(btn_row)
+        
+        # Success & Error badges using custom painted icons
+        badge_row = QWidget()
+        bg_layout = QHBoxLayout(badge_row)
+        bg_layout.setContentsMargins(0, 0, 0, 0)
+        bg_layout.setSpacing(16)
+        
+        # Success badge
+        succ_widget = QWidget()
+        sw_layout = QHBoxLayout(succ_widget)
+        sw_layout.setContentsMargins(0, 0, 0, 0)
+        sw_layout.setSpacing(4)
+        self._check_icon_preview = CheckIcon(self.state, color_role="green", size=14)
+        lbl_succ = QLabel("Success Badge")
+        lbl_succ.setStyleSheet("color: #00FFAA; font-size: 8.5pt;")
+        sw_layout.addWidget(self._check_icon_preview)
+        sw_layout.addWidget(lbl_succ)
+        
+        # Error badge
+        err_widget = QWidget()
+        ew_layout = QHBoxLayout(err_widget)
+        ew_layout.setContentsMargins(0, 0, 0, 0)
+        ew_layout.setSpacing(4)
+        self._cross_icon_preview = CrossIcon(self.state, color_role="red", size=14)
+        lbl_err = QLabel("Error Badge")
+        lbl_err.setStyleSheet("color: #FF3366; font-size: 8.5pt;")
+        ew_layout.addWidget(self._cross_icon_preview)
+        ew_layout.addWidget(lbl_err)
+        
+        bg_layout.addWidget(succ_widget)
+        bg_layout.addWidget(err_widget)
+        card_layout.addWidget(badge_row)
+        
+        # Chat bubbles mockup
+        chat_mockup = QWidget()
+        cm_layout = QVBoxLayout(chat_mockup)
+        cm_layout.setContentsMargins(0, 0, 0, 0)
+        cm_layout.setSpacing(6)
+        
+        # User bubble
+        user_bubble = QLabel("How does local introspection work?")
+        user_bubble.setStyleSheet(
+            "background: rgba(31, 31, 61, 0.3); border: 1px solid rgba(53, 53, 110, 0.4); "
+            "border-radius: 4px; padding: 6px; font-size: 8.5pt; color: #F0F5FF;"
+        )
+        cm_layout.addWidget(user_bubble)
+        
+        # Assistant bubble
+        assistant_bubble = QLabel(
+            "Analyzing trace stream...<br/>"
+            "<span style='color: #A0AEC0; font-family: monospace; font-size: 8pt;'>"
+            "&lt;think&gt;<br/>Reasoning tier 1: verifying model budget context... ok.<br/>&lt;/think&gt;</span><br/>"
+            "Introspection processes generation traces in real-time."
+        )
+        assistant_bubble.setTextFormat(Qt.TextFormat.RichText)
+        assistant_bubble.setStyleSheet(
+            "background: rgba(13, 13, 27, 0.5); border: 1px solid rgba(31, 31, 61, 0.5); "
+            "border-radius: 4px; padding: 6px; font-size: 8.5pt;"
+        )
+        cm_layout.addWidget(assistant_bubble)
+        card_layout.addWidget(chat_mockup)
+        
+        card_layout.addStretch()
+
+    def _load_active_appearance_config(self):
+        config_path = "data/ui_config.json"
+        fallback_path = "data/theme_config.json"
+        
+        theme_preset = "Karl Obsidian Core"
         custom_accent = None
-        bg_tone = "Default"
+        layout_preset = "Focused Workbench"
+        reduced_motion = False
+        glow_enabled = True
+        animation_intensity = 1.0
+        glow_strength = 1.0
         
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
-                    theme_name = config.get("theme_name", "Karl Obsidian")
+                    theme_preset = config.get("theme_preset", "Karl Obsidian Core")
                     custom_accent = config.get("custom_accent")
-                    bg_tone = config.get("bg_tone", "Default")
+                    layout_preset = config.get("layout_preset", "Focused Workbench")
+                    reduced_motion = config.get("reduced_motion", False)
+                    glow_enabled = config.get("glow_enabled", True)
+                    animation_intensity = config.get("animation_intensity", 1.0)
+                    glow_strength = config.get("glow_strength", 1.0)
             except Exception:
                 pass
-                
+        elif os.path.exists(fallback_path):
+            try:
+                with open(fallback_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    theme_preset = config.get("theme_name", "Karl Obsidian Core")
+                    if theme_preset == "Karl Obsidian":
+                        theme_preset = "Karl Obsidian Core"
+                    custom_accent = config.get("custom_accent")
+                    reduced_motion = config.get("reduced_motion", False)
+            except Exception:
+                pass
+
         self._theme_preset_combo.blockSignals(True)
-        idx = self._theme_preset_combo.findText(theme_name)
+        idx = self._theme_preset_combo.findText(theme_preset)
         if idx >= 0:
             self._theme_preset_combo.setCurrentIndex(idx)
         self._theme_preset_combo.blockSignals(False)
-        
-        self._bg_tone_combo.blockSignals(True)
-        idx = self._bg_tone_combo.findText(bg_tone)
+
+        self._layout_preset_combo.blockSignals(True)
+        idx = self._layout_preset_combo.findText(layout_preset)
         if idx >= 0:
-            self._bg_tone_combo.setCurrentIndex(idx)
-        self._bg_tone_combo.blockSignals(False)
-        
+            self._layout_preset_combo.setCurrentIndex(idx)
+        self._layout_preset_combo.blockSignals(False)
+
+        self._glow_enabled_check.blockSignals(True)
+        self._glow_enabled_check.setChecked(glow_enabled)
+        self._glow_enabled_check.blockSignals(False)
+
+        self._reduced_motion_check_app.blockSignals(True)
+        self._reduced_motion_check_app.setChecked(reduced_motion)
+        self._reduced_motion_check_app.blockSignals(False)
+
+        self._glow_strength_slider.blockSignals(True)
+        self._glow_strength_slider.setValue(int(glow_strength * 10))
+        self._glow_strength_slider.blockSignals(False)
+        self._glow_strength_val_lbl.setText(f"{glow_strength:.1f}x")
+
+        self._animation_intensity_slider.blockSignals(True)
+        self._animation_intensity_slider.setValue(int(animation_intensity * 10))
+        self._animation_intensity_slider.blockSignals(False)
+        self._animation_intensity_val_lbl.setText(f"{animation_intensity:.1f}x")
+
         self._active_custom_accent = custom_accent
-        if custom_accent:
-            self._custom_accent_btn.setText(f"Accent: {custom_accent}")
+        
+        # Initial updates
+        self._update_accent_button_text()
+        self._on_preset_changed()
+
+    def _update_accent_button_text(self):
+        if self._active_custom_accent:
+            self._custom_accent_btn.setText(f"Accent: {self._active_custom_accent}")
+            self._accent_color_preview.setStyleSheet(
+                f"background-color: {self._active_custom_accent}; border: 1px solid #35356E; border-radius: 4px;"
+            )
         else:
             self._custom_accent_btn.setText("Pick Custom Accent...")
+            colors = get_theme_colors(self.state)
+            accent_default = colors.get("accent", "#00C2FF")
+            self._accent_color_preview.setStyleSheet(
+                f"background-color: {accent_default}; border: 1px solid #35356E; border-radius: 4px;"
+            )
 
     def _on_preset_changed(self):
+        preset_name = self._theme_preset_combo.currentText()
+        preset_data = THEMES.get(preset_name, {})
+        self._preset_desc_lbl.setText(preset_data.get("description", ""))
+        self._update_accent_button_text()
         self._apply_active_theme()
 
     def _pick_custom_accent(self):
         preset_name = self._theme_preset_combo.currentText()
-        from app.ui.themes import THEMES
         default_color = THEMES.get(preset_name, {}).get("accent", "#00C2FF")
         if self._active_custom_accent:
             default_color = self._active_custom_accent
@@ -1112,43 +1379,128 @@ class SystemConfigWorkspace(QWidget):
         color = QColorDialog.getColor(QColor(default_color), self, "Select Custom Accent Color")
         if color.isValid():
             self._active_custom_accent = color.name().upper()
-            self._custom_accent_btn.setText(f"Accent: {self._active_custom_accent}")
+            self._update_accent_button_text()
             self._apply_active_theme()
 
     def _reset_custom_accent(self):
         self._active_custom_accent = None
-        self._custom_accent_btn.setText("Pick Custom Accent...")
+        self._update_accent_button_text()
+        self._apply_active_theme()
+
+    def _on_control_changed(self):
+        # Update sliders numeric indicators
+        gs = self._glow_strength_slider.value() / 10.0
+        ai = self._animation_intensity_slider.value() / 10.0
+        self._glow_strength_val_lbl.setText(f"{gs:.1f}x")
+        self._animation_intensity_val_lbl.setText(f"{ai:.1f}x")
+        
+        # Also sync reduced motion check in defaults tab
+        self._reduced_motion_check.blockSignals(True)
+        self._reduced_motion_check.setChecked(self._reduced_motion_check_app.isChecked())
+        self._reduced_motion_check.blockSignals(False)
+
         self._apply_active_theme()
 
     def _apply_active_theme(self):
-        theme_name = self._theme_preset_combo.currentText()
-        bg_tone = self._bg_tone_combo.currentText()
+        # Read from controls
+        theme_preset = self._theme_preset_combo.currentText()
+        layout_preset = self._layout_preset_combo.currentText()
+        glow_enabled = self._glow_enabled_check.isChecked()
+        reduced_motion = self._reduced_motion_check_app.isChecked()
+        glow_strength = self._glow_strength_slider.value() / 10.0
+        animation_intensity = self._animation_intensity_slider.value() / 10.0
         custom_accent = self._active_custom_accent
-        
-        from app.ui.themes import get_theme_colors, get_theme_stylesheet
-        from PyQt6.QtWidgets import QApplication
-        
-        stylesheet_str = get_theme_stylesheet(theme_name, custom_accent, bg_tone)
-        QApplication.instance().setStyleSheet(stylesheet_str)
-        
-        theme_colors = get_theme_colors(theme_name, custom_accent, bg_tone)
-        
-        self.state.theme_name = theme_name
+
+        # Write to state
+        self.state.theme_preset = theme_preset
+        self.state.layout_preset = layout_preset
+        self.state.glow_enabled = glow_enabled
+        self.state.reduced_motion = reduced_motion
+        self.state.glow_strength = glow_strength
+        self.state.animation_intensity = animation_intensity
         self.state.custom_accent = custom_accent
-        self.state.bg_tone = bg_tone
+
+        # Trigger QApplication stylesheet compilation & reload
+        self.appearance_changed.emit()
+
+        # Update preview card elements
+        self._preview_card.update_style()
+        self._check_icon_preview.update()
+        self._cross_icon_preview.update()
+        self._update_swatches()
+
+    def _update_swatches(self):
+        # Clear existing swatches
+        while self._swatches_layout.count():
+            item = self._swatches_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Generate colors for current state
+        colors = get_theme_colors(self.state)
+        swatch_keys = [
+            ("accent", "ACCENT"),
+            ("accent_dark", "ALT"),
+            ("bg_surface", "SURFACE"),
+            ("bg_deep", "DEEP"),
+            ("text_hi", "TEXT")
+        ]
         
-        if self._workbench:
-            self._workbench._chat_view.set_theme(theme_colors)
+        for key, label in swatch_keys:
+            hex_val = colors.get(key, "#000000")
             
+            swatch_unit = QWidget()
+            su_layout = QVBoxLayout(swatch_unit)
+            su_layout.setContentsMargins(0, 0, 0, 0)
+            su_layout.setSpacing(2)
+            
+            color_box = QLabel()
+            color_box.setFixedSize(36, 24)
+            color_box.setStyleSheet(
+                f"background-color: {hex_val}; border: 1px solid {colors.get('border', '#35356E')}; border-radius: 3px;"
+            )
+            color_box.setToolTip(f"{label}: {hex_val}")
+            
+            lbl_text = QLabel(label)
+            lbl_text.setStyleSheet("font-size: 7.5pt; font-weight: bold; text-align: center;")
+            lbl_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_text.setObjectName("lbl-muted")
+            
+            su_layout.addWidget(color_box, alignment=Qt.AlignmentFlag.AlignCenter)
+            su_layout.addWidget(lbl_text, alignment=Qt.AlignmentFlag.AlignCenter)
+            
+            self._swatches_layout.addWidget(swatch_unit)
+
+    def _save_appearance_config_silent(self):
         config = {
-            "theme_name": theme_name,
-            "custom_accent": custom_accent,
-            "bg_tone": bg_tone,
-            "reduced_motion": getattr(self.state, "reduced_motion", False)
+            "theme_preset": self.state.theme_preset,
+            "custom_accent": self.state.custom_accent,
+            "layout_preset": self.state.layout_preset,
+            "reduced_motion": self.state.reduced_motion,
+            "glow_enabled": self.state.glow_enabled,
+            "animation_intensity": self.state.animation_intensity,
+            "glow_strength": self.state.glow_strength
         }
         os.makedirs("data", exist_ok=True)
         try:
-            with open("data/theme_config.json", "w", encoding="utf-8") as f:
+            with open("data/ui_config.json", "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
-        except Exception as e:
-            print(f"[SystemConfig] Error saving theme config: {e}")
+        except Exception:
+            pass
+
+    def _save_appearance_config(self):
+        self._save_appearance_config_silent()
+        
+        # Delete old config if exists to clean up
+        old_path = "data/theme_config.json"
+        if os.path.exists(old_path):
+            try:
+                os.remove(old_path)
+            except Exception:
+                pass
+                
+        QMessageBox.information(
+            self, "Settings Saved",
+            "Appearance configuration saved successfully to data/ui_config.json."
+        )
+

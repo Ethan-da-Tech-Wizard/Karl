@@ -94,6 +94,7 @@ class MainWindow(QMainWindow):
         self._workbench.adapter_changed.connect(self._on_adapter_changed)
         self._system.adapter_changed.connect(self._status_bar.set_adapter)
         self._system.adapter_changed.connect(self._on_adapter_changed)
+        self._system.appearance_changed.connect(self._load_theme_config)
 
     def _init_model(self):
         from app.engine.model_loader import ModelLoader
@@ -128,36 +129,95 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QApplication
         from app.ui.themes import get_theme_colors, get_theme_stylesheet
         
-        config_path = "data/theme_config.json"
-        theme_name = "Karl Obsidian"
+        config_path = "data/ui_config.json"
+        fallback_path = "data/theme_config.json"
+        
+        theme_preset = "Karl Obsidian Core"
         custom_accent = None
-        bg_tone = "Default"
+        layout_preset = "Focused Workbench"
         reduced_motion = False
+        glow_enabled = True
+        animation_intensity = 1.0
+        glow_strength = 1.0
         
         if os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
-                    theme_name = config.get("theme_name", "Karl Obsidian")
+                    theme_preset = config.get("theme_preset", "Karl Obsidian Core")
                     custom_accent = config.get("custom_accent")
-                    bg_tone = config.get("bg_tone", "Default")
+                    layout_preset = config.get("layout_preset", "Focused Workbench")
+                    reduced_motion = config.get("reduced_motion", False)
+                    glow_enabled = config.get("glow_enabled", True)
+                    animation_intensity = config.get("animation_intensity", 1.0)
+                    glow_strength = config.get("glow_strength", 1.0)
+            except Exception:
+                pass
+        elif os.path.exists(fallback_path):
+            try:
+                with open(fallback_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    theme_preset = config.get("theme_name", "Karl Obsidian Core")
+                    if theme_preset == "Karl Obsidian":
+                        theme_preset = "Karl Obsidian Core"
+                    custom_accent = config.get("custom_accent")
                     reduced_motion = config.get("reduced_motion", False)
             except Exception:
                 pass
                 
-        # Apply stylesheet to application
-        stylesheet_str = get_theme_stylesheet(theme_name, custom_accent, bg_tone)
-        QApplication.instance().setStyleSheet(stylesheet_str)
-        
-        # Save active settings to state
-        self._state.theme_name = theme_name
+        self._state.theme_preset = theme_preset
         self._state.custom_accent = custom_accent
-        self._state.bg_tone = bg_tone
+        self._state.layout_preset = layout_preset
         self._state.reduced_motion = reduced_motion
-        
-        # Apply theme colors to the chat bubbles
-        theme_colors = get_theme_colors(theme_name, custom_accent, bg_tone)
-        self._workbench._chat_view.set_theme(theme_colors)
+        self._state.glow_enabled = glow_enabled
+        self._state.animation_intensity = animation_intensity
+        self._state.glow_strength = glow_strength
+
+        # Apply stylesheet to application
+        stylesheet_str = get_theme_stylesheet(self._state)
+        QApplication.instance().setStyleSheet(stylesheet_str)
+
+        # Apply theme colors to the workbench workspace
+        self._workbench.update_theme()
+
+        # Apply layout preset
+        self.apply_layout_preset(layout_preset)
+
+    def apply_layout_preset(self, preset_name: str):
+        # 1. Sidebar and status bar visibilities
+        if preset_name == "Minimal Distraction":
+            self._sidebar.hide()
+            self._status_bar.hide()
+        else:
+            self._sidebar.show()
+            self._status_bar.show()
+
+        # 2. Dock visibilities and layout options in active workspaces
+        # Workbench Workspace Docks
+        if hasattr(self, "_workbench"):
+            wb = self._workbench
+            if hasattr(wb, "_sessions_dock") and hasattr(wb, "_reasoning_dock"):
+                if preset_name in ("Focused Workbench", "Minimal Distraction"):
+                    wb._sessions_dock.hide()
+                    wb._reasoning_dock.hide()
+                elif preset_name == "Max Introspection":
+                    wb._sessions_dock.hide()
+                    wb._reasoning_dock.show()
+                elif preset_name == "Knowledge Heavy":
+                    wb._sessions_dock.show()
+                    wb._reasoning_dock.hide()
+                else:
+                    # Default/Research Lab/Wide Monitor Command
+                    wb._sessions_dock.show()
+                    wb._reasoning_dock.show()
+
+                # Adjust sizes
+                if preset_name == "Wide Monitor Command":
+                    wb._sessions_dock.setMinimumWidth(320)
+                    wb._reasoning_dock.setMinimumWidth(450)
+                else:
+                    wb._sessions_dock.setMinimumWidth(200)
+                    wb._reasoning_dock.setMinimumWidth(280)
 
     def _init_websocket_server(self):
         from app.engine.websocket_server import WebSocketServerManager

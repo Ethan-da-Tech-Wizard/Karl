@@ -30,7 +30,7 @@ class StatusBar(QWidget):
         self._state_lbl  = _lbl("idle", self)
         self._adapter_lbl = _lbl("", self)
         self._ram_lbl    = _lbl("", self)
-        self._vscode_lbl = _lbl("🔌 VS Code: offline", self)
+        self._vscode_lbl = _lbl("⇄ VS Code: offline", self)
 
         for w in (
             self._model_lbl, _sep(self),
@@ -60,18 +60,18 @@ class StatusBar(QWidget):
             ws_mgr = WebSocketServerManager._instance
             if ws_mgr and ws_mgr.server is not None:
                 if len(ws_mgr.clients) > 0:
-                    self._vscode_lbl.setText("🔌 VS Code: connected")
+                    self._vscode_lbl.setText("⇄ VS Code: connected")
                     self._vscode_lbl.setObjectName("lbl-accent")
                 else:
-                    self._vscode_lbl.setText("🔌 VS Code: listening")
+                    self._vscode_lbl.setText("⇄ VS Code: listening")
                     self._vscode_lbl.setObjectName("lbl-muted")
             else:
-                self._vscode_lbl.setText("🔌 VS Code: offline")
+                self._vscode_lbl.setText("⇄ VS Code: offline")
                 self._vscode_lbl.setObjectName("lbl-muted")
             self._vscode_lbl.style().unpolish(self._vscode_lbl)
             self._vscode_lbl.style().polish(self._vscode_lbl)
         except Exception:
-            self._vscode_lbl.setText("🔌 VS Code: offline")
+            self._vscode_lbl.setText("⇄ VS Code: offline")
 
     def set_model(self, name: str):
         self._model_lbl.setText(f"● {name}")

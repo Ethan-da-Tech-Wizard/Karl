@@ -9,7 +9,7 @@ _ITEMS = [
     ("⬡", "Training",   3),
     ("◎", "Eval",       4),
     ("≡", "System",     5),
-    ("📖", "Codex",      6),
+    ("▤", "Codex",      6),
 ]
 
 

@@ -21,7 +21,14 @@
     "onCommand:karl.reviewActiveFile",
     "onCommand:karl.askWorkspace",
     "onCommand:karl.ingestActiveFile",
-    "onCommand:karl.ingestWorkspaceFolder"
+    "onCommand:karl.ingestWorkspaceFolder",
+    "onCommand:karl.reviewStagedDiff",
+    "onCommand:karl.explainDiagnostics",
+    "onCommand:karl.generateCommitMessage",
+    "onCommand:karl.createImplementationPlan",
+    "onCommand:karl.searchKbSelection",
+    "onCommand:karl.sendCurrentFileToSwarm",
+    "onCommand:karl.openReviewBay"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -62,6 +69,41 @@
         "category": "Karl"
       },
       {
+        "command": "karl.reviewStagedDiff",
+        "title": "Review Staged Git Diff",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.explainDiagnostics",
+        "title": "Explain Current Diagnostics",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.generateCommitMessage",
+        "title": "Generate Commit Message from Staged Diff",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.createImplementationPlan",
+        "title": "Create Implementation Plan from Selected Files",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.searchKbSelection",
+        "title": "Search Knowledge Base from Selection",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.sendCurrentFileToSwarm",
+        "title": "Send Current File to Swarm",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.openReviewBay",
+        "title": "Open Pending Change Review Bay",
+        "category": "Karl"
+      },
+      {
         "command": "karl.openSidebar",
         "title": "Open Karl Panel",
         "category": "Karl"
@@ -88,6 +130,16 @@
           "command": "karl.reviewActiveFile",
           "when": "editorTextFocus",
           "group": "karl@4"
+        },
+        {
+          "command": "karl.searchKbSelection",
+          "when": "editorHasSelection",
+          "group": "karl@5"
+        },
+        {
+          "command": "karl.sendCurrentFileToSwarm",
+          "when": "editorTextFocus",
+          "group": "karl@6"
         }
       ],
       "explorer/context": [
@@ -105,6 +157,21 @@
           "command": "karl.askWorkspace",
           "when": "workspaceFolderCount > 0",
           "group": "karl@3"
+        },
+        {
+          "command": "karl.createImplementationPlan",
+          "when": "resourceScheme == file",
+          "group": "karl@4"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "karl.reviewStagedDiff",
+          "group": "karl@1"
+        },
+        {
+          "command": "karl.generateCommitMessage",
+          "group": "karl@2"
         }
       ]
     },
