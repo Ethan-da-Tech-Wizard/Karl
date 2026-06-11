@@ -8,6 +8,8 @@ Right: chunk inspector + search tester
 from __future__ import annotations
 
 import html
+import os
+
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QLineEdit, QLabel,
@@ -60,8 +62,10 @@ class KnowledgeBaseWorkspace(QWidget):
         self.state = state
         self.setObjectName("workspace-root")
         self._active_threads = set()
+        self._ingest_queue = []
         self._build_ui()
         self._refresh_sources()
+        self._update_encoder_status()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -78,6 +82,25 @@ class KnowledgeBaseWorkspace(QWidget):
         tr.addWidget(lbl)
         tr.addStretch()
         
+        # Lazy model loader indicator
+        self._model_status_lbl = QLabel("Encoder: Not loaded")
+        self._model_status_lbl.setObjectName("lbl-muted")
+        tr.addWidget(self._model_status_lbl)
+        
+        self._preload_btn = QPushButton("Preload")
+        self._preload_btn.setObjectName("btn-ghost")
+        self._preload_btn.setStyleSheet("font-size: 8pt; padding: 2px 6px;")
+        self._preload_btn.clicked.connect(self._preload_encoder)
+        tr.addWidget(self._preload_btn)
+        
+        tr.addWidget(_label("|", "lbl-muted"))
+
+        self._health_lbl = QLabel("Index Health: Healthy")
+        self._health_lbl.setObjectName("lbl-muted")
+        tr.addWidget(self._health_lbl)
+        
+        tr.addWidget(_label("|", "lbl-muted"))
+
         self._stats_lbl = QLabel("0 sources · 0 chunks")
         self._stats_lbl.setObjectName("lbl-muted")
         tr.addWidget(self._stats_lbl)
@@ -88,6 +111,7 @@ class KnowledgeBaseWorkspace(QWidget):
         self._tabs.addTab(self._build_ingest_tab(), "Ingestion Hub")
         self._tabs.addTab(self._build_search_tab(), "Semantic Search")
         root.addWidget(self._tabs, 1)
+
 
     def _build_explorer_tab(self) -> QWidget:
         w = QWidget()
@@ -109,6 +133,18 @@ class KnowledgeBaseWorkspace(QWidget):
         self._source_list.currentTextChanged.connect(self._on_source_selected)
         self._source_list.setToolTip("Select a source document to inspect its ingested chunks")
         ll.addWidget(self._source_list, 1)
+
+        self._remove_btn = QPushButton("remove selected source")
+        self._remove_btn.setObjectName("btn-warning")
+        self._remove_btn.setToolTip("Remove selected source chunks and rebuild search index")
+        self._remove_btn.clicked.connect(self._remove_selected_source)
+        ll.addWidget(self._remove_btn)
+
+        self._rebuild_btn = QPushButton("rebuild index")
+        self._rebuild_btn.setObjectName("btn-ghost")
+        self._rebuild_btn.setToolTip("Re-encode all chunks in the vector database index")
+        self._rebuild_btn.clicked.connect(self._rebuild_index)
+        ll.addWidget(self._rebuild_btn)
 
         clear_btn = QPushButton("clear database")
         clear_btn.setObjectName("btn-danger")
@@ -185,12 +221,22 @@ class KnowledgeBaseWorkspace(QWidget):
         ib_layout.addLayout(chunk_grid)
 
         # Ingest Action button
-        ingest_btn = QPushButton("+ Select and Ingest Document")
+        ingest_btn = QPushButton("+ Select and Ingest Document(s)")
         ingest_btn.setObjectName("btn-primary")
         ingest_btn.setFixedHeight(36)
-        ingest_btn.setToolTip("Browse and choose a file to ingest into the Knowledge Base")
+        ingest_btn.setToolTip("Browse and choose files to ingest into the Knowledge Base")
         ingest_btn.clicked.connect(self._ingest_file)
         ib_layout.addWidget(ingest_btn)
+
+        # Batch Queue List widget
+        ib_layout.addWidget(QLabel("Ingestion Queue:"))
+        self._queue_list = QListWidget()
+        self._queue_list.setStyleSheet(
+            "background-color: #0D0D1B; border: 1px solid #1F1F3D; border-radius: 4px; "
+            "color: #F0F5FF; font-family: 'JetBrains Mono', monospace; font-size: 8.5pt; padding: 4px;"
+        )
+        self._queue_list.setFixedHeight(120)
+        ib_layout.addWidget(self._queue_list)
 
         # Progress bar
         self._progress = QProgressBar()
@@ -259,6 +305,12 @@ class KnowledgeBaseWorkspace(QWidget):
         search_btn.clicked.connect(self._run_search)
         sr.addWidget(search_btn)
 
+        self._send_to_workbench_btn = QPushButton("Send to Workbench")
+        self._send_to_workbench_btn.setObjectName("btn-ghost")
+        self._send_to_workbench_btn.setToolTip("Switch to Workbench workspace and paste this query")
+        self._send_to_workbench_btn.clicked.connect(self._send_query_to_workbench)
+        sr.addWidget(self._send_to_workbench_btn)
+
         layout.addWidget(search_row)
 
         # Search results view
@@ -268,7 +320,38 @@ class KnowledgeBaseWorkspace(QWidget):
 
         return w
 
+
     # ── logic ─────────────────────────────────────────────────────────────────
+
+    def _update_encoder_status(self):
+        loaded = self.state.rag.is_encoder_loaded
+        self._model_status_lbl.setText(f"Encoder: {'Ready' if loaded else 'Lazy-loaded (Not loaded)'}")
+        self._model_status_lbl.setStyleSheet(f"color: {'#00C2FF' if loaded else '#9090A8'}; font-weight: bold;")
+        self._preload_btn.setEnabled(not loaded)
+
+    def _preload_encoder(self):
+        self._model_status_lbl.setText("Encoder: Loading...")
+        self._preload_btn.setEnabled(False)
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        try:
+            self.state.rag.preload_encoder()
+            self._update_encoder_status()
+        except Exception as e:
+            self._model_status_lbl.setText(f"Encoder Error: {e}")
+
+    def _update_health_lbl(self):
+        index_file = self.state.rag.INDEX_FILE
+        meta_file = self.state.rag.META_FILE
+        index_size_kb = 0
+        meta_size_kb = 0
+        if os.path.exists(index_file):
+            index_size_kb = os.path.getsize(index_file) / 1024
+        if os.path.exists(meta_file):
+            meta_size_kb = os.path.getsize(meta_file) / 1024
+        total_chunks = self.state.rag.total_chunks
+        status = "Healthy" if total_chunks > 0 and index_size_kb > 0 else "Empty"
+        self._health_lbl.setText(f"Health: {status} ({index_size_kb:.1f}KB)")
 
     def _refresh_sources(self):
         self._source_list.clear()
@@ -277,6 +360,7 @@ class KnowledgeBaseWorkspace(QWidget):
             self._source_list.addItem(s)
         total = self.state.rag.total_chunks
         self._stats_lbl.setText(f"{len(sources)} sources · {total} chunks")
+        self._update_health_lbl()
 
     def _on_source_selected(self, source: str):
         if not source:
@@ -302,14 +386,47 @@ class KnowledgeBaseWorkspace(QWidget):
         self._source_inspector.setHtml("".join(lines))
 
     def _ingest_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Add File to Knowledge Base", "",
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Add File(s) to Knowledge Base", "",
             "Documents (*.pdf *.docx *.txt *.md *.py *.csv);;All Files (*)"
         )
-        if not path:
+        if not paths:
             return
+            
+        self._ingest_queue = [{"path": p, "status": "Pending", "error": ""} for p in paths]
+        self._update_queue_ui()
+        self._process_next_in_queue()
+
+    def _update_queue_ui(self):
+        self._queue_list.clear()
+        for item in self._ingest_queue:
+            fname = os.path.basename(item["path"])
+            status = item["status"]
+            err = f" - {item['error']}" if item["error"] else ""
+            self._queue_list.addItem(f"[{status}] {fname}{err}")
+
+    def _process_next_in_queue(self):
+        next_item = None
+        for item in self._ingest_queue:
+            if item["status"] == "Pending":
+                next_item = item
+                break
+                
+        if not next_item:
+            self._progress.setVisible(False)
+            self._ingest_status.setText("All files processed.")
+            self._refresh_sources()
+            self._update_encoder_status()
+            return
+            
+        next_item["status"] = "Ingesting"
+        self._update_queue_ui()
+        
+        path = next_item["path"]
+        filename = os.path.basename(path)
+        self._ingest_status.setText(f"Ingesting {filename}...")
         self._progress.setVisible(True)
-        self._ingest_status.setText("ingesting...")
+        
         self._ingest_thread = _IngestThread(
             self.state.rag,
             path,
@@ -321,18 +438,70 @@ class KnowledgeBaseWorkspace(QWidget):
             lambda t=self._ingest_thread: self._active_threads.discard(t)
         )
         self._ingest_thread.finished.connect(self._ingest_thread.deleteLater)
-        self._ingest_thread.done.connect(self._on_ingest_done)
-        self._ingest_thread.error.connect(self._on_ingest_error)
+        
+        def on_done(filename, count):
+            next_item["status"] = "Done"
+            self._update_queue_ui()
+            self._process_next_in_queue()
+            
+        def on_error(msg):
+            next_item["status"] = "Failed"
+            next_item["error"] = msg
+            self._update_queue_ui()
+            self._process_next_in_queue()
+            
+        self._ingest_thread.done.connect(on_done)
+        self._ingest_thread.error.connect(on_error)
         self._ingest_thread.start()
 
-    def _on_ingest_done(self, filename: str, count: int):
-        self._progress.setVisible(False)
-        self._ingest_status.setText(f"added {count} chunks from {filename}")
-        self._refresh_sources()
+    def _remove_selected_source(self):
+        curr_source = self._source_list.currentItem()
+        if not curr_source:
+            QMessageBox.warning(self, "No Selection", "Please select a source to remove.")
+            return
+        source_name = curr_source.text()
+        
+        reply = QMessageBox.question(
+            self, "Remove Source",
+            f"Are you sure you want to remove all chunks for '{source_name}' and rebuild the search index?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.state.rag.remove_source(source_name)
+            self._refresh_sources()
+            self._source_inspector.clear()
+            self._search_results.clear()
 
-    def _on_ingest_error(self, msg: str):
-        self._progress.setVisible(False)
-        self._ingest_status.setText(f"error: {msg}")
+    def _rebuild_index(self):
+        reply = QMessageBox.question(
+            self, "Rebuild Index",
+            "This will re-encode all chunks in metadata. Proceed?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._ingest_status.setText("Rebuilding index...")
+            self._progress.setVisible(True)
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+            try:
+                self.state.rag.rebuild_index()
+                self._refresh_sources()
+                self._ingest_status.setText("Index rebuilt successfully.")
+            except Exception as e:
+                self._ingest_status.setText(f"Rebuild error: {e}")
+            finally:
+                self._progress.setVisible(False)
+
+    def _send_query_to_workbench(self):
+        query = self._search_input.text().strip()
+        if not query:
+            return
+        main_win = self.window()
+        if main_win and hasattr(main_win, "_sidebar") and hasattr(main_win, "_workbench"):
+            main_win._sidebar.select(0)
+            main_win._workbench._input.setPlainText(query)
+            main_win._workbench._input.setFocus()
+
 
     def _run_search(self):
         query = self._search_input.text().strip()

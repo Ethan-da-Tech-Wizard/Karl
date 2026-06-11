@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget,
 )
+from PyQt6.QtGui import QKeySequence, QShortcut
 
 from app.state import AppState
 from app.ui.sidebar import Sidebar
@@ -34,10 +35,60 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._init_model()
 
+        # Keyboard Navigation Shortcuts
+        self._setup_shortcuts()
+
         # Start WebSocket Server to bridge editor/VS Code extensions
         self._init_websocket_server()
 
+    def _setup_shortcuts(self):
+        # Open Command Palette
+        self._palette_shortcut_k = QShortcut(QKeySequence("Ctrl+K"), self)
+        self._palette_shortcut_k.activated.connect(self._open_command_palette)
+        self._palette_shortcut_p = QShortcut(QKeySequence("Ctrl+P"), self)
+        self._palette_shortcut_p.activated.connect(self._open_command_palette)
+        
+        # Workspace switching (Ctrl+1 to Ctrl+7)
+        self._workspace_shortcuts = []
+        for idx in range(7):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{idx+1}"), self)
+            # Use a helper slot to avoid lambda cell capture issues
+            shortcut.activated.connect(self._make_workspace_switcher(idx))
+            self._workspace_shortcuts.append(shortcut)
+            
+        # Focus input
+        self._focus_shortcut = QShortcut(QKeySequence("Ctrl+L"), self)
+        self._focus_shortcut.activated.connect(self._focus_active_input)
+        
+        # New session
+        self._new_session_shortcut = QShortcut(QKeySequence("Ctrl+Shift+N"), self)
+        self._new_session_shortcut.activated.connect(self._workbench._new_session)
+        
+        # Save session snapshot
+        self._save_session_shortcut = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
+        self._save_session_shortcut.activated.connect(self._workbench._save_current_session)
+
+    def _make_workspace_switcher(self, idx):
+        return lambda: self._sidebar.select(idx)
+
+    def _open_command_palette(self):
+        from app.ui.widgets.command_palette import CommandPalette
+        palette = CommandPalette(self, self)
+        palette.exec()
+
+    def _focus_active_input(self):
+        current_widget = self._stack.currentWidget()
+        if not current_widget:
+            return
+        from PyQt6.QtWidgets import QLineEdit, QTextEdit
+        inputs = current_widget.findChildren((QLineEdit, QTextEdit))
+        for inp in inputs:
+            if inp.isVisible() and inp.isEnabled() and not inp.isReadOnly():
+                inp.setFocus()
+                break
+
     # ── build ─────────────────────────────────────────────────────────────────
+
 
     def _build_ui(self):
         # Sidebar + stack row

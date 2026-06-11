@@ -23,8 +23,11 @@
     "onCommand:karl.ingestActiveFile",
     "onCommand:karl.ingestWorkspaceFolder",
     "onCommand:karl.reviewStagedDiff",
+    "onCommand:karl.reviewUnstagedDiff",
     "onCommand:karl.explainDiagnostics",
+    "onCommand:karl.explainCurrentFileDiagnostics",
     "onCommand:karl.generateCommitMessage",
+    "onCommand:karl.branchSummary",
     "onCommand:karl.createImplementationPlan",
     "onCommand:karl.searchKbSelection",
     "onCommand:karl.sendCurrentFileToSwarm",
@@ -74,13 +77,28 @@
         "category": "Karl"
       },
       {
+        "command": "karl.reviewUnstagedDiff",
+        "title": "Review Unstaged Git Diff",
+        "category": "Karl"
+      },
+      {
         "command": "karl.explainDiagnostics",
         "title": "Explain Current Diagnostics",
         "category": "Karl"
       },
       {
+        "command": "karl.explainCurrentFileDiagnostics",
+        "title": "Explain Active File Diagnostics",
+        "category": "Karl"
+      },
+      {
         "command": "karl.generateCommitMessage",
         "title": "Generate Commit Message from Staged Diff",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.branchSummary",
+        "title": "Summarize Current Git Branch",
         "category": "Karl"
       },
       {
@@ -140,6 +158,11 @@
           "command": "karl.sendCurrentFileToSwarm",
           "when": "editorTextFocus",
           "group": "karl@6"
+        },
+        {
+          "command": "karl.explainCurrentFileDiagnostics",
+          "when": "editorTextFocus",
+          "group": "karl@7"
         }
       ],
       "explorer/context": [
@@ -170,8 +193,16 @@
           "group": "karl@1"
         },
         {
-          "command": "karl.generateCommitMessage",
+          "command": "karl.reviewUnstagedDiff",
           "group": "karl@2"
+        },
+        {
+          "command": "karl.generateCommitMessage",
+          "group": "karl@3"
+        },
+        {
+          "command": "karl.branchSummary",
+          "group": "karl@4"
         }
       ]
     },

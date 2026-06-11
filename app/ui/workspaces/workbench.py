@@ -17,12 +17,13 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QTextEdit, QComboBox,
     QLabel, QSizePolicy, QFrame, QCheckBox,
-    QDoubleSpinBox, QSpinBox, QListWidget,
+    QDoubleSpinBox, QSpinBox, QListWidget, QListWidgetItem,
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
-    QTabWidget,
+    QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
+
 
 from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
@@ -309,6 +310,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._connect_shortcuts()
         self._refresh_sessions()
         self._refresh_model_combo()
+        self._update_expert_strip()
+
 
     # ── build ─────────────────────────────────────────────────────────────────
 
@@ -357,12 +360,25 @@ class WorkbenchWorkspace(QMainWindow):
         sl = QVBoxLayout(sessions_tab)
         sl.setContentsMargins(4, 4, 4, 4)
         sl.setSpacing(4)
+        
+        self._session_search = QLineEdit()
+        self._session_search.setPlaceholderText("Search sessions...")
+        self._session_search.setStyleSheet(
+            "background-color: #0D0D1B; border: 1px solid #1F1F3D; border-radius: 4px; "
+            "color: #F0F5FF; font-family: 'JetBrains Mono', monospace; font-size: 8.5pt; padding: 4px;"
+        )
+        self._session_search.textChanged.connect(self._filter_sessions)
+        sl.addWidget(self._session_search)
+
         self._sessions_list = QListWidget()
+        self._sessions_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._sessions_list.customContextMenuRequested.connect(self._show_session_context_menu)
         self._sessions_list.currentItemChanged.connect(self._on_session_clicked)
         sl.addWidget(self._sessions_list, 1)
         tabs.addTab(sessions_tab, "Sessions")
         
         # Tab 2: Branches
+
         branches_tab = QWidget()
         bl = QVBoxLayout(branches_tab)
         bl.setContentsMargins(4, 4, 4, 4)
@@ -404,6 +420,10 @@ class WorkbenchWorkspace(QMainWindow):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        # expert control strip
+        self._expert_strip = self._build_expert_strip()
+        layout.addWidget(self._expert_strip)
 
         # chat display
         self._chat_view = ChatView(w)
@@ -455,6 +475,7 @@ class WorkbenchWorkspace(QMainWindow):
         layout.addWidget(self._params_drawer)
         layout.addWidget(_hline())
 
+
         # input area
         input_container = QWidget()
         input_container.setFixedHeight(120)
@@ -486,11 +507,14 @@ class WorkbenchWorkspace(QMainWindow):
 
         self._rag_check = QCheckBox("RAG")
         self._rag_check.setToolTip("Inject relevant knowledge base context into prompt")
+        self._rag_check.toggled.connect(self._update_expert_strip)
         ctrl_layout.addWidget(self._rag_check)
 
         self._loop_check = QCheckBox("Loop")
         self._loop_check.setToolTip("Run generation in an autonomous iterative agentic loop")
+        self._loop_check.toggled.connect(self._update_expert_strip)
         ctrl_layout.addWidget(self._loop_check)
+
 
         self._params_toggle = IconBtn(GearIcon, self.state, tooltip="Toggle generation parameters")
         self._params_toggle.clicked.connect(self._toggle_params)
@@ -899,7 +923,9 @@ class WorkbenchWorkspace(QMainWindow):
         self._save_current_session()
         self._current_session_file = None
         self.chat_history.clear()
+        self._update_expert_strip()
         self._populate_branches_tree()
+
         self._chat_view.clear_display()
         self._reasoning_view.clear()
         self._last_response = ""
@@ -1050,25 +1076,46 @@ class WorkbenchWorkspace(QMainWindow):
     def _save_current_session(self):
         if not self.chat_history:
             return
+        from app.engine.model_loader import ModelLoader
+        # Calculate message count on the active path
+        msg_count = len(self.chat_history) if not hasattr(self.chat_history, "get_active_path") else len(self.chat_history.get_active_path())
         self._current_session_file = self.state.memory.save_session(
             chat_history=self.chat_history,
             system_prompt=self._system_prompt,
-            filename=self._current_session_file
+            filename=self._current_session_file,
+            last_model=ModelLoader.model_name() if ModelLoader.is_loaded() else "unknown",
+            adapter_name=self.state.adapter_name,
+            message_count=msg_count
         )
         self._refresh_sessions()
+
 
     def _refresh_sessions(self):
         self._sessions_list.blockSignals(True)
         self._sessions_list.clear()
-        sessions = self.state.memory.list_sessions()
-        sessions.sort(reverse=True)
+        sessions = self.state.memory.list_sessions_with_metadata()
         for s in sessions:
-            self._sessions_list.addItem(s)
+            fname = s["filename"]
+            msg_count = s["message_count"]
+            model = s["last_model"]
+            adapter = s["adapter_name"]
+            
+            item = QListWidgetItem(fname)
+            tooltip = f"File: {fname}\nUpdated: {s['updated_time']}\nMessages: {msg_count}\nModel: {model}"
+            if adapter:
+                tooltip += f"\nAdapter: {adapter}"
+            item.setToolTip(tooltip)
+            item.setData(Qt.ItemDataRole.UserRole, s)
+            self._sessions_list.addItem(item)
+            
         if getattr(self, "_current_session_file", None):
             items = self._sessions_list.findItems(self._current_session_file, Qt.MatchFlag.MatchFixedString)
             if items:
                 self._sessions_list.setCurrentItem(items[0])
         self._sessions_list.blockSignals(False)
+        if hasattr(self, "_session_search"):
+            self._filter_sessions(self._session_search.text())
+
 
     def _on_session_clicked(self, current, previous):
         if not current:
@@ -1083,6 +1130,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._current_session_file = filename
         self._system_prompt = sys_prompt
         self.chat_history = history
+        self._update_expert_strip()
+
 
         self._chat_view.clear_display()
         active_path = self.chat_history.get_active_path()
@@ -1151,6 +1200,8 @@ class WorkbenchWorkspace(QMainWindow):
         if not self.chat_history:
             return
         self.chat_history.set_current_node(node_id)
+        self._update_expert_strip()
+
         
         node = self.chat_history.get_node(node_id)
         if node and node.role == "assistant":
@@ -1230,6 +1281,211 @@ class WorkbenchWorkspace(QMainWindow):
             return
         self._branch_from_node(node_id)
 
+    # ── Expert Control Strip ──────────────────────────────────────────────────
+
+    def _build_expert_strip(self) -> QWidget:
+        strip = QFrame()
+        strip.setObjectName("expert-strip")
+        strip.setStyleSheet(
+            "QFrame#expert-strip { background-color: #0D0D1B; border-bottom: 1px solid #1F1F3D; padding: 6px 12px; }"
+            "QLabel { font-family: 'JetBrains Mono', monospace; font-size: 8pt; color: #A0AEC0; }"
+        )
+        layout = QHBoxLayout(strip)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        
+        self._strip_session_lbl = QLabel("Session: None")
+        self._strip_session_lbl.setStyleSheet("color: #00C2FF; font-weight: bold;")
+        layout.addWidget(self._strip_session_lbl)
+        
+        self._strip_sep1 = _label("|", "lbl-muted")
+        layout.addWidget(self._strip_sep1)
+        
+        self._strip_branch_lbl = QLabel("Branch: root")
+        layout.addWidget(self._strip_branch_lbl)
+        
+        self._strip_sep2 = _label("|", "lbl-muted")
+        layout.addWidget(self._strip_sep2)
+        
+        self._strip_model_lbl = QLabel("Model: None")
+        layout.addWidget(self._strip_model_lbl)
+        
+        self._strip_sep3 = _label("|", "lbl-muted")
+        layout.addWidget(self._strip_sep3)
+        
+        self._strip_rag_lbl = QLabel("RAG: OFF")
+        layout.addWidget(self._strip_rag_lbl)
+        
+        self._strip_sep4 = _label("|", "lbl-muted")
+        layout.addWidget(self._strip_sep4)
+        
+        self._strip_loop_lbl = QLabel("Loop: OFF")
+        layout.addWidget(self._strip_loop_lbl)
+        
+        layout.addStretch()
+        
+        # Add a small collapse button
+        self._collapse_strip_btn = QPushButton("▲ collapse")
+        self._collapse_strip_btn.setObjectName("btn-ghost")
+        self._collapse_strip_btn.setFixedWidth(80)
+        self._collapse_strip_btn.setStyleSheet("font-size: 7.5pt; padding: 2px;")
+        self._collapse_strip_btn.clicked.connect(self._toggle_expert_strip)
+        layout.addWidget(self._collapse_strip_btn)
+        
+        return strip
+
+    def _toggle_expert_strip(self):
+        is_collapsed = self._strip_branch_lbl.isHidden()
+        self._strip_branch_lbl.setHidden(not is_collapsed)
+        self._strip_model_lbl.setHidden(not is_collapsed)
+        self._strip_rag_lbl.setHidden(not is_collapsed)
+        self._strip_loop_lbl.setHidden(not is_collapsed)
+        self._strip_sep1.setHidden(not is_collapsed)
+        self._strip_sep2.setHidden(not is_collapsed)
+        self._strip_sep3.setHidden(not is_collapsed)
+        self._strip_sep4.setHidden(not is_collapsed)
+        
+        if not is_collapsed:
+            self._collapse_strip_btn.setText("▼ expand")
+        else:
+            self._collapse_strip_btn.setText("▲ collapse")
+
+    def _update_expert_strip(self):
+        # Session
+        fname = self._current_session_file or "new_session"
+        self._strip_session_lbl.setText(f"Session: {fname}")
+        
+        # Branch
+        curr_branch = "root"
+        if self.chat_history and self.chat_history.current_id:
+            curr_branch = self.chat_history.current_id[:8]
+        self._strip_branch_lbl.setText(f"Branch: {curr_branch}")
+        
+        # Model & Adapter
+        model = self.state.model_name or "None"
+        adapter = self.state.adapter_name
+        model_text = f"Model: {model}"
+        if adapter:
+            model_text += f" ({adapter})"
+        self._strip_model_lbl.setText(model_text)
+        
+        # RAG status
+        rag_on = self._rag_check.isChecked()
+        self._strip_rag_lbl.setText(f"RAG: {'ON' if rag_on else 'OFF'}")
+        self._strip_rag_lbl.setStyleSheet(f"color: {'#00C2FF' if rag_on else '#A0AEC0'};")
+        
+        # Loop status
+        loop_on = self._loop_check.isChecked()
+        self._strip_loop_lbl.setText(f"Loop: {'ON' if loop_on else 'OFF'}")
+        self._strip_loop_lbl.setStyleSheet(f"color: {'#00C2FF' if loop_on else '#A0AEC0'};")
+
+    # ── Sessions Upgrades ─────────────────────────────────────────────────────
+
+    def _filter_sessions(self, text):
+        query = text.strip().lower()
+        for idx in range(self._sessions_list.count()):
+            item = self._sessions_list.item(idx)
+            item.setHidden(query not in item.text().lower())
+
+    def _show_session_context_menu(self, pos):
+        item = self._sessions_list.itemAt(pos)
+        if not item:
+            return
+            
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background-color: #0D0D1B; border: 1px solid #1F1F3D; color: #F0F5FF; font-family: 'JetBrains Mono', monospace; font-size: 9pt; }"
+            "QMenu::item:selected { background-color: #00C2FF; color: #020205; }"
+        )
+        
+        rename_action = menu.addAction("Rename Session")
+        dup_action = menu.addAction("Duplicate Session")
+        del_action = menu.addAction("Delete Session")
+        
+        action = menu.exec(self._sessions_list.mapToGlobal(pos))
+        if not action:
+            return
+            
+        fname = item.text()
+        if action == rename_action:
+            self._rename_session(fname)
+        elif action == dup_action:
+            self._duplicate_session(fname)
+        elif action == del_action:
+            self._delete_session(fname)
+
+    def _rename_session(self, fname):
+        import os
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Session", "Enter new filename (must end in .json):",
+            text=fname
+        )
+        if not ok or not new_name.strip():
+            return
+            
+        if not new_name.endswith(".json"):
+            new_name = new_name.strip() + ".json"
+            
+        old_path = os.path.join(self.state.memory.sessions_dir, fname)
+        new_path = os.path.join(self.state.memory.sessions_dir, new_name)
+        
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Error", "A session with that name already exists.")
+            return
+            
+        try:
+            os.rename(old_path, new_path)
+            if self._current_session_file == fname:
+                self._current_session_file = new_name
+            self._refresh_sessions()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to rename file: {e}")
+
+    def _duplicate_session(self, fname):
+        import os
+        old_path = os.path.join(self.state.memory.sessions_dir, fname)
+        base, ext = os.path.splitext(fname)
+        new_name = f"{base}_copy{ext}"
+        new_path = os.path.join(self.state.memory.sessions_dir, new_name)
+        
+        counter = 1
+        while os.path.exists(new_path):
+            new_name = f"{base}_copy{counter}{ext}"
+            new_path = os.path.join(self.state.memory.sessions_dir, new_name)
+            counter += 1
+            
+        try:
+            import shutil
+            shutil.copy2(old_path, new_path)
+            self._refresh_sessions()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to duplicate file: {e}")
+
+    def _delete_session(self, fname):
+        import os
+        reply = QMessageBox.question(
+            self, "Confirm Delete",
+            f"Are you sure you want to permanently delete session '{fname}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            path = os.path.join(self.state.memory.sessions_dir, fname)
+            try:
+                os.remove(path)
+                if self._current_session_file == fname:
+                    self._current_session_file = None
+                    self.chat_history.clear()
+                    self._populate_branches_tree()
+                    self._chat_view.clear_display()
+                    self._reasoning_view.clear()
+                    self._last_response = ""
+                    self._last_thought = ""
+                    self._is_correcting = False
+                self._refresh_sessions()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to delete file: {e}")
+
     # ── public API for main_window ────────────────────────────────────────────
 
     def set_system_prompt(self, prompt: str):
@@ -1249,3 +1505,4 @@ class WorkbenchWorkspace(QMainWindow):
             self._maxtok_spin.blockSignals(True)
             self._maxtok_spin.setValue(params["max_tokens"])
             self._maxtok_spin.blockSignals(False)
+

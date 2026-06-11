@@ -456,7 +456,14 @@ class TrainingStudioWorkspace(QWidget):
         self._adapter_name_input = QLineEdit()
         self._adapter_name_input.setPlaceholderText("e.g., my_coder_lora")
         self._adapter_name_input.setToolTip("Enter folder name where the compiled model adapter will be saved")
+        self._adapter_name_input.textChanged.connect(self._update_export_path_preview)
         left_layout.addWidget(self._adapter_name_input)
+
+        self._export_path_lbl = QLabel("Export Path: data/adapters/")
+        self._export_path_lbl.setObjectName("lbl-muted")
+        self._export_path_lbl.setStyleSheet("font-size: 8pt; padding-left: 2px;")
+        left_layout.addWidget(self._export_path_lbl)
+
 
         # Train Button
         self._train_btn = QPushButton("▶ begin training")
@@ -787,6 +794,24 @@ class TrainingStudioWorkspace(QWidget):
             self._refresh()
 
     def _export(self, mode: str):
+        # Validation preflight
+        curated_file = "data/training/curated.jsonl"
+        if not os.path.exists(curated_file) or os.path.getsize(curated_file) == 0:
+            QMessageBox.warning(self, "Validation Failed", "The dataset is empty. Curate some examples first.")
+            return
+            
+        try:
+            with open(curated_file, "r") as f:
+                for line_idx, line in enumerate(f):
+                    if not line.strip():
+                        continue
+                    obj = json.loads(line)
+                    if "messages" not in obj and "prompt" not in obj:
+                        raise ValueError(f"Line {line_idx+1}: Missing both 'messages' and 'prompt' keys.")
+        except Exception as e:
+            QMessageBox.critical(self, "Dataset Validation Error", f"curated.jsonl format validation failed:\n{e}")
+            return
+
         path, _ = QFileDialog.getSaveFileName(
             self, "Save export", f"unsloth_{mode}.jsonl", "JSONL (*.jsonl)"
         )
@@ -795,11 +820,16 @@ class TrainingStudioWorkspace(QWidget):
         try:
             if mode == "sft":
                 out_path = self.state.curator.export_unsloth(path)
+                count = sum(1 for line in open(out_path, "r", encoding="utf-8"))
+                self._export_status.setText(f"saved {count} SFT examples: {out_path}")
             else:
                 out_path = self.state.curator.export_dpo(path)
-            self._export_status.setText(f"saved: {out_path}")
+                count = sum(1 for line in open(out_path, "r", encoding="utf-8"))
+                self._export_status.setText(f"saved {count} DPO pairs: {out_path}")
         except Exception as e:
             self._export_status.setText(f"error: {e}")
+
+
 
     def _get_hf_model_path(self) -> tuple[str | None, str]:
         idx = self._base_model_combo.currentIndex()
@@ -905,6 +935,26 @@ class TrainingStudioWorkspace(QWidget):
         adapter_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', adapter_name)
         self._adapter_name_input.setText(adapter_name)
 
+        # Preflight dataset validation
+        curated_file = "data/training/curated.jsonl"
+        if not os.path.exists(curated_file) or os.path.getsize(curated_file) == 0:
+            self._train_log.append("Training failed: Ingestion file is empty.")
+            QMessageBox.warning(self, "Validation Failed", "The dataset is empty. Curate some examples first.")
+            return
+            
+        try:
+            with open(curated_file, "r") as f:
+                for line_idx, line in enumerate(f):
+                    if not line.strip():
+                        continue
+                    obj = json.loads(line)
+                    if "messages" not in obj:
+                        raise ValueError(f"Line {line_idx+1}: Missing required 'messages' key for SFT training.")
+        except Exception as e:
+            self._train_log.append(f"Training failed: Dataset validation failed:\n{e}")
+            QMessageBox.critical(self, "Dataset Validation Error", f"curated.jsonl format validation failed:\n{e}")
+            return
+
         examples = self.state.curator.get_all_examples()
         if len(examples) < 5:
             self._train_log.append(
@@ -912,6 +962,7 @@ class TrainingStudioWorkspace(QWidget):
                 "curate more in the workbench."
             )
             return
+
 
         hf_base_dir, repo_id = self._get_hf_model_path()
         if not hf_base_dir:
@@ -1001,3 +1052,12 @@ class TrainingStudioWorkspace(QWidget):
         self._train_log.append(f"\n[ERROR] Training failed:\n{msg}")
         QMessageBox.critical(self, "Training Error", f"Training encountered an error:\n{msg}")
         self._check_deps()
+
+    def _update_export_path_preview(self, name):
+        name = name.strip()
+        if not name:
+            self._export_path_lbl.setText("Export Path: data/adapters/")
+        else:
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', name)
+            self._export_path_lbl.setText(f"Export Path: data/adapters/{safe_name}/")
+

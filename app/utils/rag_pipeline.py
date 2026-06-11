@@ -37,13 +37,8 @@ class RAGPipeline:
             contextual_headers:  If True, prepend "[Source: file | Chunk N]" to
                                  each retrieved chunk — aids model citation.
         """
-        # Load the embedding model quietly -- suppress "Loading weights" progress
-        # bar and the "BertModel LOAD REPORT" table that sentence-transformers
-        # prints to stdout/stderr on every cold start.
-        import io, contextlib
-        _sink = io.StringIO()
-        with contextlib.redirect_stdout(_sink), contextlib.redirect_stderr(_sink):
-            self.encoder = SentenceTransformer(model_name)
+        self.model_name = model_name
+        self._encoder = None
         self.index_path = index_path
         self.INDEX_FILE = os.path.join(index_path, "index.faiss")
         self.META_FILE  = os.path.join(index_path, "metadata.json")
@@ -51,7 +46,7 @@ class RAGPipeline:
 
         os.makedirs(self.index_path, exist_ok=True)
 
-        self.dimension = self.encoder.get_embedding_dimension()
+        self.dimension = 384
         self.index = faiss.IndexFlatL2(self.dimension)
 
         # Each entry: {"text": str, "source_file": str, "chunk_id": int, "ingested_at": str}
@@ -59,6 +54,23 @@ class RAGPipeline:
 
         # Load persisted index if it exists
         self._load_index()
+
+    @property
+    def encoder(self):
+        if self._encoder is None:
+            import io, contextlib
+            from sentence_transformers import SentenceTransformer
+            _sink = io.StringIO()
+            with contextlib.redirect_stdout(_sink), contextlib.redirect_stderr(_sink):
+                self._encoder = SentenceTransformer(self.model_name)
+        return self._encoder
+
+    @property
+    def is_encoder_loaded(self) -> bool:
+        return self._encoder is not None
+
+    def preload_encoder(self):
+        _ = self.encoder
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -462,3 +474,40 @@ class RAGPipeline:
     @property
     def total_chunks(self) -> int:
         return len(self.documents)
+
+    def remove_source(self, source_name: str):
+        """Remove all chunks belonging to source_name and rebuild the FAISS index."""
+        # 1. Filter out documents matching source_name
+        remaining_docs = [d for d in self.documents if d.get("source_file") != source_name]
+        
+        # 2. Reset the index
+        self.index = faiss.IndexFlatL2(self.dimension)
+        self.documents = []
+        
+        # If there are remaining documents, rebuild the index
+        if remaining_docs:
+            texts = [d["text"] for d in remaining_docs]
+            embeddings = self.encoder.encode(texts)
+            self.index.add(np.array(embeddings).astype("float32"))
+            
+            # Re-index the remaining documents and update their chunk_id
+            for i, doc in enumerate(remaining_docs):
+                doc["chunk_id"] = i
+                self.documents.append(doc)
+                
+        self.save_index()
+        print(f"[RAG] Source '{source_name}' removed. Rebuilt index with {len(self.documents)} remaining chunks.")
+
+    def rebuild_index(self):
+        """Re-encode all chunks currently in metadata and rebuild the FAISS index."""
+        if not self.documents:
+            self.index = faiss.IndexFlatL2(self.dimension)
+            self.save_index()
+            return
+        
+        texts = [d["text"] for d in self.documents]
+        self.index = faiss.IndexFlatL2(self.dimension)
+        embeddings = self.encoder.encode(texts)
+        self.index.add(np.array(embeddings).astype("float32"))
+        self.save_index()
+        print(f"[RAG] Rebuilt index by re-encoding all {len(self.documents)} current chunks.")

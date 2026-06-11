@@ -13,6 +13,14 @@ let kbSelectedSource = '';
 let connectionState = 'offline';
 let pendingEdits = new Map();
 let manualDisconnect = false;
+let persistTimer = null;
+let recentObjectives = [];
+let recentKbQueries = [];
+let taskQueue = [];
+let activeTaskId = '';
+let lastHeartbeatAt = null;
+let lastConnectedAt = null;
+let lastBridgeError = '';
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,6 +28,11 @@ window.addEventListener('DOMContentLoaded', () => {
     initializeAppearance();
     hydrate();
     bindEvents();
+    renderQuickActions();
+    renderRecentObjectives();
+    renderRecentKbQueries();
+    renderTaskQueue();
+    setInterval(() => updateBridgeMeta(), 1000);
     appendMessageBubble('assistant', 'Karl bridge ready. Connect to the desktop app to start.');
     if (boot.autoConnect) connect();
 });
@@ -44,9 +57,11 @@ window.addEventListener('message', event => {
     } else if (message.command === 'file_edit_previewed') {
         markPendingEdit(message.editId, 'previewed');
     } else if (message.command === 'file_edit_applied') {
-        removePendingEdit(message.editId, 'Applied');
+        markPendingEdit(message.editId, message.backupExists ? 'applied' : 'applied');
     } else if (message.command === 'file_edit_rejected') {
         removePendingEdit(message.editId, 'Rejected');
+    } else if (message.command === 'file_edit_rolled_back') {
+        markPendingEdit(message.editId, 'rolled_back');
     }
 });
 
@@ -58,23 +73,30 @@ function hydrate() {
     $('themeSelect').value = persisted.theme || 'obsidian-core';
     $('customAccent').value = persisted.customAccent || themeById($('themeSelect').value).vars['--karl-accent'];
     $('layoutSelect').value = persisted.layout || 'cockpit';
+    recentObjectives = Array.isArray(persisted.recentObjectives) ? persisted.recentObjectives.slice(0, 12) : [];
+    recentKbQueries = Array.isArray(persisted.recentKbQueries) ? persisted.recentKbQueries.slice(0, 12) : [];
     applyAppearance();
     if (persisted.workspaceTab) switchWorkspace(persisted.workspaceTab);
 }
 
 function persist() {
-    vscode.postMessage({
-        command: 'persist_state',
-        state: {
-            workspace: $('workspace').value,
-            port: Number($('bridgePort').value) || boot.port || 8080,
-            taskMode: $('taskMode').value,
-            workspaceTab: document.querySelector('.tab.active')?.dataset.workspace || 'swarm',
-            theme: $('themeSelect').value,
-            customAccent: $('customAccent').value,
-            layout: $('layoutSelect').value
-        }
-    });
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+        vscode.postMessage({
+            command: 'persist_state',
+            state: {
+                workspace: $('workspace').value,
+                port: Number($('bridgePort').value) || boot.port || 8080,
+                taskMode: $('taskMode').value,
+                workspaceTab: document.querySelector('.tab.active')?.dataset.workspace || 'swarm',
+                theme: $('themeSelect').value,
+                customAccent: $('customAccent').value,
+                layout: $('layoutSelect').value,
+                recentObjectives: recentObjectives.slice(0, 12),
+                recentKbQueries: recentKbQueries.slice(0, 12)
+            }
+        });
+    }, 250);
 }
 
 function bindEvents() {
@@ -110,7 +132,18 @@ function bindEvents() {
     $('bridgePort').addEventListener('change', persist);
     $('taskMode').addEventListener('change', persist);
     $('previewAllBtn').addEventListener('click', () => vscode.postMessage({ command: 'preview_all_files' }));
+    $('rejectAllBtn').addEventListener('click', () => vscode.postMessage({ command: 'reject_all_files' }));
     $('copySummaryBtn').addEventListener('click', () => vscode.postMessage({ command: 'copy_patch_summary' }));
+    $('changeFilter').addEventListener('change', renderPendingEdits);
+    $('clearTasksBtn').addEventListener('click', () => {
+        taskQueue = taskQueue.filter(task => task.status === 'running');
+        renderTaskQueue();
+    });
+    $('clearHistoryBtn').addEventListener('click', () => {
+        recentObjectives = [];
+        renderRecentObjectives();
+        persist();
+    });
     $('themeSelect').addEventListener('change', applyAppearance);
     $('customAccent').addEventListener('input', applyAppearance);
     $('layoutSelect').addEventListener('change', applyAppearance);
@@ -140,6 +173,7 @@ function setConnectionState(state, label) {
     $('statusDot').className = `status-dot ${state}`;
     $('statusText').innerText = label;
     $('offlinePanel').classList.toggle('active', state !== 'connected' && state !== 'running');
+    updateBridgeMeta();
 }
 
 function connect() {
@@ -151,6 +185,7 @@ function connect() {
     socket = new WebSocket(`ws://localhost:${port}`);
 
     socket.onopen = () => {
+        lastConnectedAt = new Date();
         setConnectionState('connected', 'Connected');
         log('[Bridge] Connected.');
         if (reconnectTimer) {
@@ -164,6 +199,7 @@ function connect() {
 
     socket.onmessage = event => handleSocketMessage(JSON.parse(event.data));
     socket.onerror = () => {
+        lastBridgeError = 'Connection failed';
         setConnectionState('offline', 'Error');
         vscode.postMessage({ command: 'show_error', text: 'Karl bridge connection failed. Start Karl and verify the WebSocket port.' });
     };
@@ -199,6 +235,7 @@ function disconnect() {
 function handleSocketMessage(data) {
     if (data.error) {
         const message = data.error.message || 'Unknown Karl bridge error.';
+        lastBridgeError = message;
         log(`[Bridge Error] ${message}`);
         vscode.postMessage({ command: 'show_error', text: message });
         if (data.id === 51) {
@@ -236,6 +273,7 @@ function handleSocketMessage(data) {
         if (!params.passed && params.error_trace) log(params.error_trace);
     } else if (method === 'finished_swarm') {
         setConnectionState('connected', 'Connected');
+        finishActiveTask(params.success ? 'completed' : 'failed');
         addTimeline('Finished', params.success ? 'Swarm finished successfully.' : 'Swarm finished with issues.');
         log(`[Swarm] ${params.success ? 'SUCCESS' : 'FAILURE'}: ${params.summary || ''}`);
     } else if (method === 'kb_ingest_progress') {
@@ -267,7 +305,9 @@ function handleRpcResult(id, result) {
         $('labRunBtn').disabled = false;
         log('[Prompt Lab] Diff complete.');
     } else if (id === 30) {
+        lastHeartbeatAt = new Date();
         renderRuntimeStatus(result);
+        updateBridgeMeta(result);
     } else if (id === 31) {
         renderModels(result.models || []);
     } else if (id === 32) {
@@ -317,6 +357,9 @@ function renderRuntimeStatus(status) {
     $('runtimeState').innerText = `${runtime.state || 'idle'} · ${clients} client${clients === 1 ? '' : 's'}`;
     $('runtimeAdapter').innerText = adapter.name || 'none';
     $('runtimeSystem').innerText = `${system.ram_mb ?? '--'} MB · ${model.n_ctx || '--'} ctx`;
+    if (status.bridge && status.bridge.version) {
+        $('bridgeMeta').dataset.version = status.bridge.version;
+    }
 }
 
 function renderRuntimeOffline() {
@@ -337,6 +380,8 @@ function startCodeTask(data) {
         'Code Context:',
         data.code || ''
     ].join('\n');
+    renderContextMeta(data.context_meta);
+    rememberObjective(data.objective || '', data.filepath || '', data.mode || 'Code Task');
     switchWorkspace('swarm');
     connectAndRun();
 }
@@ -385,6 +430,8 @@ function runSwarm() {
         return;
     }
     setConnectionState('running', 'Running');
+    activeTaskId = addTask($('taskMode').value, objective);
+    rememberObjective(objective, workspace, $('taskMode').value);
     $('terminal').innerText = '--- Swarm Logs ---';
     $('timeline').innerHTML = '';
     addTimeline('Launch', $('taskMode').value);
@@ -492,20 +539,25 @@ function removePendingEdit(editId, state) {
 
 function renderPendingEdits() {
     const queue = $('changeQueue');
-    if (!pendingEdits.size) {
+    const filter = $('changeFilter') ? $('changeFilter').value : '';
+    const edits = Array.from(pendingEdits.values()).filter(edit => !filter || edit.status === filter);
+    if (!edits.length) {
         queue.className = 'queue empty';
-        queue.innerText = 'No pending Karl edits.';
+        queue.innerText = pendingEdits.size ? 'No edits match the current filter.' : 'No pending Karl edits.';
         return;
     }
     queue.className = 'queue';
-    queue.innerHTML = Array.from(pendingEdits.values()).map(edit => `
+    queue.innerHTML = edits.map(edit => `
         <div class="change-card">
             <div class="change-title">${escapeHtml(edit.filename || 'unknown')}</div>
-            <div class="change-meta">${escapeHtml(edit.filepath || '')}<br>${Number(edit.bytes || 0)} bytes · ${formatLineDelta(edit)} · <span class="state-chip ${escapeHtml(edit.status || 'proposed')}">${escapeHtml(edit.status || 'proposed')}</span><br>${escapeHtml(edit.summary || 'Proposed Karl edit')}</div>
+            <div class="change-meta">${escapeHtml(edit.filepath || '')}<br>${Number(edit.bytes || 0)} bytes · ${formatLineDelta(edit)} · ${riskLabel(edit)} · <span class="state-chip ${escapeHtml(edit.status || 'proposed')}">${escapeHtml(edit.status || 'proposed')}</span><br>${escapeHtml(edit.summary || 'Proposed Karl edit')}</div>
             <div class="change-actions">
                 <button data-preview="${escapeHtml(edit.id)}">Preview</button>
                 <button class="primary" data-apply="${escapeHtml(edit.id)}">Apply</button>
                 <button class="danger" data-reject="${escapeHtml(edit.id)}">Reject</button>
+                <button data-open="${escapeHtml(edit.id)}">Open</button>
+                <button data-copy-path="${escapeHtml(edit.id)}">Copy Path</button>
+                <button data-rollback="${escapeHtml(edit.id)}">Rollback</button>
             </div>
         </div>
     `).join('');
@@ -519,11 +571,27 @@ function renderPendingEdits() {
     queue.querySelectorAll('[data-reject]').forEach(btn => btn.addEventListener('click', () => {
         vscode.postMessage({ command: 'reject_file', editId: btn.dataset.reject });
     }));
+    queue.querySelectorAll('[data-open]').forEach(btn => btn.addEventListener('click', () => {
+        vscode.postMessage({ command: 'open_file', editId: btn.dataset.open });
+    }));
+    queue.querySelectorAll('[data-copy-path]').forEach(btn => btn.addEventListener('click', () => {
+        vscode.postMessage({ command: 'copy_file_path', editId: btn.dataset.copyPath });
+    }));
+    queue.querySelectorAll('[data-rollback]').forEach(btn => btn.addEventListener('click', () => {
+        vscode.postMessage({ command: 'rollback_applied_file', editId: btn.dataset.rollback });
+    }));
 }
 
 function formatLineDelta(edit) {
     if (!Number.isFinite(edit.lineDelta)) return 'line delta unknown';
     return `${edit.lineDelta >= 0 ? '+' : ''}${edit.lineDelta} lines`;
+}
+
+function riskLabel(edit) {
+    const delta = Math.abs(Number(edit.lineDelta || 0));
+    if (delta > 400 || Number(edit.bytes || 0) > 120000) return '<span class="risk high">high risk</span>';
+    if (delta > 80 || Number(edit.bytes || 0) > 30000) return '<span class="risk medium">medium risk</span>';
+    return '<span class="risk low">low risk</span>';
 }
 
 function runLab() {
@@ -721,12 +789,148 @@ function searchKb() {
         return;
     }
     $('kbResults').innerHTML = '<div class="result-card">Searching index...</div>';
+    rememberKbQuery(query);
     rpc(52, 'search_kb', {
         query,
         top_k: Number($('kbTopK').value) || 5,
         threshold: Number($('kbThreshold').value) || 0,
         source_filter: $('kbSourceFilter').value || null
     });
+}
+
+function renderQuickActions() {
+    const actions = [
+        ['Refactor Selection', 'karl.fixSelection'],
+        ['Explain Selection', 'karl.explainSelection'],
+        ['Review File', 'karl.reviewActiveFile'],
+        ['Review Staged Diff', 'karl.reviewStagedDiff'],
+        ['Review Unstaged Diff', 'karl.reviewUnstagedDiff'],
+        ['Generate Tests', 'karl.generateTests'],
+        ['Explain Diagnostics', 'karl.explainDiagnostics'],
+        ['Commit Message', 'karl.generateCommitMessage'],
+        ['Search KB Selection', 'karl.searchKbSelection'],
+        ['Ingest Active File', 'karl.ingestActiveFile'],
+        ['Review Bay', 'karl.openReviewBay']
+    ];
+    $('quickActions').innerHTML = actions.map(([label, commandId]) => {
+        return `<button class="quick-action" data-command="${escapeHtml(commandId)}">${escapeHtml(label)}</button>`;
+    }).join('');
+    $('quickActions').querySelectorAll('[data-command]').forEach(btn => {
+        btn.addEventListener('click', () => vscode.postMessage({ command: 'run_command', commandId: btn.dataset.command }));
+    });
+}
+
+function rememberObjective(objective, file, mode) {
+    const text = String(objective || '').trim();
+    if (!text) return;
+    recentObjectives = [
+        { objective: text, file: file || '', mode: mode || 'Task', at: new Date().toISOString() },
+        ...recentObjectives.filter(item => item.objective !== text)
+    ].slice(0, 12);
+    renderRecentObjectives();
+    persist();
+}
+
+function renderRecentObjectives() {
+    const panel = $('recentObjectives');
+    if (!recentObjectives.length) {
+        panel.className = 'recent-list empty';
+        panel.innerText = 'No recent objectives yet.';
+        return;
+    }
+    panel.className = 'recent-list';
+    panel.innerHTML = recentObjectives.map((item, index) => `
+        <button class="recent-item" data-recent="${index}">
+            <strong>${escapeHtml(item.mode)}</strong>
+            <span>${escapeHtml(item.objective)}</span>
+        </button>
+    `).join('');
+    panel.querySelectorAll('[data-recent]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const item = recentObjectives[Number(btn.dataset.recent)];
+            $('taskMode').value = item.mode || 'Custom Task';
+            $('objective').value = item.objective || '';
+            if (item.file && item.file.startsWith('/')) $('workspace').value = item.file;
+        });
+    });
+}
+
+function rememberKbQuery(query) {
+    recentKbQueries = [query, ...recentKbQueries.filter(item => item !== query)].slice(0, 12);
+    renderRecentKbQueries();
+    persist();
+}
+
+function renderRecentKbQueries() {
+    const panel = $('recentKbQueries');
+    if (!panel) return;
+    if (!recentKbQueries.length) {
+        panel.className = 'recent-list empty';
+        panel.innerText = 'No recent KB searches yet.';
+        return;
+    }
+    panel.className = 'recent-list';
+    panel.innerHTML = recentKbQueries.slice(0, 6).map((query, index) => `
+        <button class="recent-item" data-kb-query="${index}">
+            <strong>KB Search</strong>
+            <span>${escapeHtml(query)}</span>
+        </button>
+    `).join('');
+    panel.querySelectorAll('[data-kb-query]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            $('kbQuery').value = recentKbQueries[Number(btn.dataset.kbQuery)] || '';
+            searchKb();
+        });
+    });
+}
+
+function addTask(mode, objective) {
+    const id = `task-${Date.now()}`;
+    taskQueue.unshift({ id, mode, objective, status: 'running', at: new Date().toISOString() });
+    renderTaskQueue();
+    return id;
+}
+
+function finishActiveTask(status) {
+    if (!activeTaskId) return;
+    taskQueue = taskQueue.map(task => task.id === activeTaskId ? { ...task, status } : task);
+    activeTaskId = '';
+    renderTaskQueue();
+}
+
+function renderTaskQueue() {
+    const panel = $('taskQueue');
+    if (!taskQueue.length) {
+        panel.className = 'task-queue empty';
+        panel.innerText = 'No Karl tasks queued.';
+        return;
+    }
+    panel.className = 'task-queue';
+    panel.innerHTML = taskQueue.slice(0, 12).map(task => `
+        <div class="task-item ${escapeHtml(task.status)}">
+            <strong>${escapeHtml(task.mode)}</strong>
+            <span>${escapeHtml(task.status)} · ${escapeHtml(task.objective)}</span>
+        </div>
+    `).join('');
+}
+
+function renderContextMeta(meta) {
+    if (!meta) {
+        $('contextMeter').innerText = 'Context package: none queued.';
+        $('contextMeter').className = 'context-meter';
+        return;
+    }
+    $('contextMeter').innerText = `Context package: ${meta.sentChars}/${meta.originalChars} chars sent from ${meta.label}${meta.truncated ? ' · safely truncated' : ''}.`;
+    $('contextMeter').className = `context-meter ${meta.truncated ? 'warn' : 'ok'}`;
+}
+
+function updateBridgeMeta(status) {
+    if (!$('bridgeMeta')) return;
+    const heartbeat = lastHeartbeatAt ? `${Math.max(0, Math.round((Date.now() - lastHeartbeatAt.getTime()) / 1000))}s ago` : 'never';
+    const connected = lastConnectedAt ? lastConnectedAt.toLocaleTimeString() : 'never';
+    const version = (status && status.bridge && status.bridge.version) || $('bridgeMeta').dataset.version || 'unknown';
+    const error = lastBridgeError ? ` · Last error: ${lastBridgeError}` : '';
+    $('bridgeMeta').innerText = `Heartbeat: ${heartbeat} · Last connect: ${connected} · Version: ${version}${error}`;
 }
 
 function renderKbSearch(payload) {

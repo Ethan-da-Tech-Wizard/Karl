@@ -143,6 +143,8 @@ class SystemConfigWorkspace(QWidget):
         self._download_thread = None
         self._active_threads = set()
         self._active_custom_accent = None
+        self._cached_models_list = None
+        self._cached_adapters_list = None
         self._load_registry()
         self.setObjectName("workspace-root")
         self._build_ui()
@@ -159,9 +161,10 @@ class SystemConfigWorkspace(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._scan_models()
-        self._scan_adapters()
+        self._scan_models(force=False)
+        self._scan_adapters(force=False)
         self._refresh_hardware()
+        self._run_model_preflight_checks()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -260,7 +263,18 @@ class SystemConfigWorkspace(QWidget):
         avp_layout.setContentsMargins(12, 12, 12, 12)
         avp_layout.setSpacing(8)
 
-        avp_layout.addWidget(_section("AVAILABLE MODELS"))
+        av_header = QWidget()
+        avh_layout = QHBoxLayout(av_header)
+        avh_layout.setContentsMargins(0, 0, 0, 0)
+        avh_layout.addWidget(_section("AVAILABLE MODELS"))
+        
+        refresh_cache_btn = QPushButton("scan filesystem")
+        refresh_cache_btn.setObjectName("btn-secondary")
+        refresh_cache_btn.setFixedHeight(22)
+        refresh_cache_btn.setStyleSheet("font-size: 8.5pt; padding: 2px 8px;")
+        refresh_cache_btn.clicked.connect(self.refresh_filesystem_cache)
+        avh_layout.addWidget(refresh_cache_btn)
+        avp_layout.addWidget(av_header)
 
         self._model_list = QTextBrowser()
         self._model_list.setFixedHeight(160)
@@ -479,11 +493,11 @@ class SystemConfigWorkspace(QWidget):
             with open("data/active_model.json", "w") as f:
                 json.dump(active, f)
                 
-            self._scan_models()
+            self._scan_models(force=True)
             self._populate_registry()
             
             self._model_path_input.setText(path)
-            self._model_status.setText(f"loaded: {filename}")
+            self._run_model_preflight_checks()
             
             QMessageBox.information(
                 self, "Model Activated",
@@ -580,6 +594,20 @@ class SystemConfigWorkspace(QWidget):
         desc.setWordWrap(True)
         pp_layout.addWidget(desc)
 
+        # Settings Search
+        search_layout = QHBoxLayout()
+        search_layout.setSpacing(8)
+        search_lbl = QLabel("Search Settings:")
+        search_lbl.setObjectName("lbl-muted")
+        search_lbl.setStyleSheet("font-size: 8.5pt;")
+        self._settings_search_input = QLineEdit()
+        self._settings_search_input.setPlaceholderText("type to filter settings...")
+        self._settings_search_input.textChanged.connect(self._on_settings_search_changed)
+        search_layout.addWidget(search_lbl)
+        search_layout.addWidget(self._settings_search_input)
+        pp_layout.addLayout(search_layout)
+        pp_layout.addWidget(_hline())
+
         self._temp_spin = QDoubleSpinBox()
         self._temp_spin.setRange(0.0, 2.0)
         self._temp_spin.setSingleStep(0.05)
@@ -598,17 +626,27 @@ class SystemConfigWorkspace(QWidget):
         self._maxtok_spin.setValue(2048)
         self._maxtok_spin.setFixedWidth(90)
 
-        for label, widget in (
-            ("Temperature", self._temp_spin),
-            ("Top-P",       self._topp_spin),
-            ("Max Tokens",  self._maxtok_spin),
-        ):
-            pp_layout.addWidget(_row(label, widget))
-
         self._reduced_motion_check = QCheckBox("Disable active glowing animations")
         self._reduced_motion_check.setChecked(getattr(self.state, "reduced_motion", False))
         self._reduced_motion_check.stateChanged.connect(self._on_reduced_motion_changed)
-        pp_layout.addWidget(_row("Accessibility", self._reduced_motion_check))
+
+        self._settings_rows = []
+        
+        row1 = _row("Temperature", self._temp_spin)
+        self._settings_rows.append(("Temperature", row1))
+        pp_layout.addWidget(row1)
+
+        row2 = _row("Top-P", self._topp_spin)
+        self._settings_rows.append(("Top-P", row2))
+        pp_layout.addWidget(row2)
+
+        row3 = _row("Max Tokens", self._maxtok_spin)
+        self._settings_rows.append(("Max Tokens", row3))
+        pp_layout.addWidget(row3)
+
+        row4 = _row("Accessibility", self._reduced_motion_check)
+        self._settings_rows.append(("Accessibility", row4))
+        pp_layout.addWidget(row4)
 
         apply_btn = QPushButton("apply defaults")
         apply_btn.setObjectName("btn-primary")
@@ -851,28 +889,46 @@ class SystemConfigWorkspace(QWidget):
             ModelLoader.get_instance(model_path=path)
             name = os.path.basename(path)
             self.state.model_name = name
-            self._model_status.setText(f"loaded: {name}")
-            self._scan_models() # Refresh list to reflect loaded active model
             active = {"filename": name}
             os.makedirs("data", exist_ok=True)
             with open("data/active_model.json", "w") as f:
                 json.dump(active, f)
+            self._scan_models(force=True)
+            self._run_model_preflight_checks()
         except Exception as e:
             self._model_status.setText(f"error: {e}")
 
-    def _scan_models(self):
+    def _scan_models(self, force=False):
         models_dir = "data/models"
-        if not os.path.exists(models_dir):
-            self._model_list.setHtml("<span style='color:#F05050;'>data/models/ not found</span>")
+        if force or self._cached_models_list is None:
+            if not os.path.exists(models_dir):
+                self._cached_models_list = []
+            else:
+                try:
+                    files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
+                    cached = []
+                    for f in sorted(files):
+                        path = os.path.join(models_dir, f)
+                        try:
+                            size_bytes = os.path.getsize(path)
+                            size_gb = size_bytes / (1024 * 1024 * 1024)
+                            size_str = f"{size_gb:.2f} GB"
+                        except Exception:
+                            size_str = "unknown size"
+                        cached.append({"filename": f, "size_str": size_str})
+                    self._cached_models_list = cached
+                except Exception:
+                    self._cached_models_list = []
+
+        if not self._cached_models_list:
+            if not os.path.exists(models_dir):
+                self._model_list.setHtml("<span style='color:#F05050;'>data/models/ not found</span>")
+            else:
+                self._model_list.setHtml("<span style='color:#505068;'>no .gguf models in data/models/</span>")
             return
-        files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
-        if not files:
-            self._model_list.setHtml("<span style='color:#505068;'>no .gguf models in data/models/</span>")
-            return
-        
+
         active_name = self.state.model_name or "none"
         if active_name == "none":
-            # Try to read active model json
             active_path = "data/active_model.json"
             if os.path.exists(active_path):
                 try:
@@ -882,15 +938,9 @@ class SystemConfigWorkspace(QWidget):
                     pass
 
         html_lines = []
-        for f in sorted(files):
-            path = os.path.join(models_dir, f)
-            try:
-                size_bytes = os.path.getsize(path)
-                size_gb = size_bytes / (1024 * 1024 * 1024)
-                size_str = f"{size_gb:.2f} GB"
-            except Exception:
-                size_str = "unknown size"
-                
+        for item in self._cached_models_list:
+            f = item["filename"]
+            size_str = item["size_str"]
             is_active = (f == active_name)
             if is_active:
                 indicator = "<span style='color:#2DD4A0; font-weight:bold;'>[ACTIVE]</span>"
@@ -917,23 +967,27 @@ class SystemConfigWorkspace(QWidget):
                 self._system_edit.toPlainText().strip()
             )
 
-    def _scan_adapters(self):
+    def _scan_adapters(self, force=False):
+        if force or self._cached_adapters_list is None:
+            adapters_dir = "data/adapters"
+            cached = []
+            if os.path.exists(adapters_dir):
+                try:
+                    for d in sorted(os.listdir(adapters_dir)):
+                        d_path = os.path.join(adapters_dir, d)
+                        if os.path.isdir(d_path):
+                            files = os.listdir(d_path)
+                            if any(f.endswith(".gguf") for f in files):
+                                cached.append(d)
+                except Exception as e:
+                    print(f"[SystemConfig] Error scanning adapters: {e}")
+            self._cached_adapters_list = cached
+
         self._adapter_combo.clear()
         self._adapter_combo.addItem("none")
-        
-        adapters_dir = "data/adapters"
-        if os.path.exists(adapters_dir):
-            try:
-                for d in sorted(os.listdir(adapters_dir)):
-                    d_path = os.path.join(adapters_dir, d)
-                    if os.path.isdir(d_path):
-                        # check for gguf file inside
-                        files = os.listdir(d_path)
-                        if any(f.endswith(".gguf") for f in files):
-                            self._adapter_combo.addItem(d)
-            except Exception as e:
-                print(f"[SystemConfig] Error scanning adapters: {e}")
-                
+        for d in self._cached_adapters_list:
+            self._adapter_combo.addItem(d)
+
         # Select active adapter
         active_adapter = self.state.adapter_name or "none"
         index = self._adapter_combo.findText(active_adapter)
@@ -965,14 +1019,159 @@ class SystemConfigWorkspace(QWidget):
             with open(active_path, "w") as f:
                 json.dump(active_data, f)
             
-            status_txt = f"loaded adapter: {adapter_name}" if adapter_name else "adapter disabled"
-            self._model_status.setText(status_txt)
+            self._scan_adapters(force=True)
+            self._run_model_preflight_checks()
+            
             QMessageBox.information(
                 self, "Adapter Loaded",
                 f"Adapter '{adapter_name or 'none'}' has been set as active."
             )
         except Exception as e:
             QMessageBox.critical(self, "Adapter Error", f"Failed to save active adapter: {e}")
+
+    def refresh_filesystem_cache(self):
+        self._scan_models(force=True)
+        self._scan_adapters(force=True)
+        self._populate_registry()
+        self._refresh_hardware()
+        self._run_model_preflight_checks()
+
+    def _on_settings_search_changed(self, text: str):
+        query = text.strip().lower()
+        for label, row_widget in self._settings_rows:
+            if not query or query in label.lower():
+                row_widget.setVisible(True)
+            else:
+                row_widget.setVisible(False)
+
+    def _run_model_preflight_checks(self):
+        from core.hardware_scout import get_hardware_profile
+        active_name = self.state.model_name or "none"
+        if active_name == "none":
+            active_path = "data/active_model.json"
+            if os.path.exists(active_path):
+                try:
+                    with open(active_path, "r") as f:
+                        active_name = json.load(f).get("filename", "none")
+                except Exception:
+                    pass
+
+        if active_name == "none":
+            self._model_status.setText("<div style='color: #888;'>No active model loaded.</div>")
+            self._model_status.setTextFormat(Qt.TextFormat.RichText)
+            return
+
+        report = []
+        warnings = []
+        
+        # 1. File existence & GGUF signature check
+        model_path = os.path.join("data", "models", active_name)
+        if os.path.isabs(active_name):
+            model_path = active_name
+            active_name = os.path.basename(active_name)
+            
+        if not os.path.exists(model_path):
+            warnings.append(f"Model file not found at: {model_path}")
+        else:
+            try:
+                with open(model_path, "rb") as f:
+                    header = f.read(4)
+                    if header != b"GGUF":
+                        warnings.append("Invalid file format: File header does not match GGUF specification.")
+            except Exception as e:
+                warnings.append(f"Could not verify model file header: {e}")
+
+        # 2. RAM requirement preflight check
+        profile = get_hardware_profile()
+        sys_ram = profile.get("ram_gb", 0.0)
+        
+        reg_item = None
+        for item in self._registry:
+            if item.get("filename") == active_name:
+                reg_item = item
+                break
+                
+        if reg_item:
+            min_ram = reg_item.get("min_ram_gb", 0.0)
+            if sys_ram > 0 and sys_ram < min_ram:
+                warnings.append(
+                    f"RAM Limit Warning: Model requires at least {min_ram} GB RAM, but system has only {sys_ram:.1f} GB."
+                )
+        else:
+            if os.path.exists(model_path):
+                try:
+                    size_gb = os.path.getsize(model_path) / (1024**3)
+                    est_ram = size_gb * 1.5
+                    if sys_ram > 0 and sys_ram < est_ram:
+                        warnings.append(
+                            f"RAM Limit Warning: Estimated RAM needed is {est_ram:.1f} GB, but system has only {sys_ram:.1f} GB."
+                        )
+                except Exception:
+                    pass
+
+        # 3. Adapter compatibility warning
+        active_adapter = self.state.adapter_name or "none"
+        if active_adapter == "none":
+            active_path = "data/active_model.json"
+            if os.path.exists(active_path):
+                try:
+                    with open(active_path, "r") as f:
+                        active_adapter = json.load(f).get("adapter", "none")
+                except Exception:
+                    pass
+
+        if active_adapter and active_adapter != "none":
+            model_lower = active_name.lower()
+            adapter_lower = active_adapter.lower()
+            
+            m_arch = None
+            if "qwen" in model_lower:
+                m_arch = "qwen"
+            elif "llama" in model_lower:
+                m_arch = "llama"
+            elif "mistral" in model_lower:
+                m_arch = "mistral"
+                
+            a_arch = None
+            if "qwen" in adapter_lower:
+                a_arch = "qwen"
+            elif "llama" in adapter_lower:
+                a_arch = "llama"
+            elif "mistral" in adapter_lower:
+                a_arch = "mistral"
+
+            if m_arch and a_arch and m_arch != a_arch:
+                warnings.append(
+                    f"Adapter Compatibility Mismatch: Active adapter '{active_adapter}' appears to be for "
+                    f"{a_arch.upper()} architecture, but active base model '{active_name}' is {m_arch.upper()}."
+                )
+            elif active_adapter != "none":
+                report.append(f"Active Adapter: <b>{active_adapter}</b> (loaded)")
+
+        status_color = "#2DD4A0" if not warnings else "#FFD800"
+        status_text = "HEALTHY" if not warnings else "WARNINGS DETECTED"
+        
+        html_report = [
+            f"<div style='margin-top: 10px; padding: 10px; border-radius: 4px; border: 1px solid {status_color}33; background: rgba(30,30,50,0.2);'>",
+            f"<div style='font-weight: bold; color: {status_color}; margin-bottom: 6px;'>MODEL DIAGNOSTIC REPORT: {status_text}</div>",
+            f"<div>Active Model: <b>{active_name}</b></div>"
+        ]
+        
+        if report:
+            for r in report:
+                html_report.append(f"<div>{r}</div>")
+                
+        if warnings:
+            html_report.append("<div style='margin-top: 6px; font-weight: bold; color: #FF3366;'>Warnings:</div>")
+            for w in warnings:
+                html_report.append(f"<div style='color: #FFB0B0; font-size: 8.5pt;'>&bull; {w}</div>")
+        else:
+            html_report.append("<div style='color: #2DD4A0; font-size: 8.5pt;'>&bull; No resource conflicts or GGUF signature warnings. Ready.</div>")
+            
+        html_report.append("</div>")
+        
+        self._model_status.setText("".join(html_report))
+        self._model_status.setTextFormat(Qt.TextFormat.RichText)
 
     def _apply_defaults(self):
         from PyQt6.QtWidgets import QMessageBox

@@ -371,6 +371,33 @@ class EvalSuiteWorkspace(QWidget):
         res_layout.setSpacing(6)
         res_layout.addWidget(_section("RESULTS LIST"))
 
+        # Filter & Export Row
+        filter_row = QWidget()
+        fr_lay = QHBoxLayout(filter_row)
+        fr_lay.setContentsMargins(0, 0, 0, 0)
+        fr_lay.setSpacing(10)
+        
+        self._filter_pass_chk = QCheckBox("Show Passed")
+        self._filter_pass_chk.setChecked(True)
+        self._filter_pass_chk.toggled.connect(self._apply_results_filter)
+        fr_lay.addWidget(self._filter_pass_chk)
+        
+        self._filter_fail_chk = QCheckBox("Show Failed")
+        self._filter_fail_chk.setChecked(True)
+        self._filter_fail_chk.toggled.connect(self._apply_results_filter)
+        fr_lay.addWidget(self._filter_fail_chk)
+        
+        fr_lay.addStretch()
+        
+        self._export_report_btn = QPushButton("Export Report")
+        self._export_report_btn.setObjectName("btn-ghost")
+        self._export_report_btn.setStyleSheet("font-size: 8pt; padding: 2px 6px;")
+        self._export_report_btn.clicked.connect(self._export_eval_report)
+        self._export_report_btn.setEnabled(False)
+        fr_lay.addWidget(self._export_report_btn)
+        
+        res_layout.addWidget(filter_row)
+
         self._results_tree = QTreeWidget()
         self._results_tree.setHeaderLabels(["case", "grader", "pass", "response"])
         self._results_tree.setColumnWidth(0, 220)
@@ -380,6 +407,7 @@ class EvalSuiteWorkspace(QWidget):
         res_layout.addWidget(self._results_tree, 1)
 
         self._right_tabs.addTab(res_tab, "Results List")
+
 
         # Tab 2: Detail Inspector
         detail_tab = QWidget()
@@ -415,6 +443,16 @@ class EvalSuiteWorkspace(QWidget):
                     break
 
     def _run(self):
+        # Preflight check
+        from app.engine.model_loader import ModelLoader
+        if not ModelLoader.is_loaded():
+            QMessageBox.warning(
+                self, "Preflight Failed",
+                "No base model is currently loaded. Please load a model in the System Config tab first."
+            )
+            self._summary_lbl.setText("<span style='color:#F05050;'>Preflight failed: no model loaded</span>")
+            return
+
         path = self._dataset_path.text().strip()
         if not path:
             self._summary_lbl.setText("select a dataset first")
@@ -426,8 +464,14 @@ class EvalSuiteWorkspace(QWidget):
         self._run_btn.setEnabled(False)
         self._progress.setVisible(True)
         self._progress.setRange(0, 0)
+        self._progress.setValue(0)
         self._results_tree.clear()
         self._summary_lbl.setText("running...")
+        self._last_report = None
+        self._export_report_btn.setEnabled(False)
+
+        # Reset ETA variables
+        self._eval_start_time = None
 
         workflow = self._workflow_combo.currentData()
 
@@ -450,12 +494,36 @@ class EvalSuiteWorkspace(QWidget):
         self._thread.start()
 
     def _on_progress(self, current: int, total: int):
+        import time
+        if not getattr(self, "_eval_start_time", None):
+            self._eval_start_time = time.time()
+            
+        elapsed = time.time() - self._eval_start_time
         self._progress.setRange(0, total)
         self._progress.setValue(current)
+        
+        if current > 0:
+            time_per_case = elapsed / current
+            remaining_cases = total - current
+            eta_s = time_per_case * remaining_cases
+            eta_m = int(eta_s // 60)
+            eta_sec = int(eta_s % 60)
+            eta_str = f"{eta_m}m {eta_sec}s" if eta_m > 0 else f"{eta_sec}s"
+            
+            el_m = int(elapsed // 60)
+            el_sec = int(elapsed % 60)
+            el_str = f"{el_m}m {el_sec}s" if el_m > 0 else f"{el_sec}s"
+            
+            self._progress.setFormat(f"%v/%m | Case {current} of {total} | Elapsed: {el_str} | ETA: {eta_str}")
+        else:
+            self._progress.setFormat("%v/%m")
+
 
     def _on_done(self, report):
         self._progress.setVisible(False)
         self._run_btn.setEnabled(True)
+        self._last_report = report
+        self._export_report_btn.setEnabled(True)
 
         total = report.total
         passed = report.passed
@@ -493,6 +561,9 @@ class EvalSuiteWorkspace(QWidget):
             item.setForeground(2, QColor("#2DD4A0") if case_passed else QColor("#F05050"))
             item.setData(0, Qt.ItemDataRole.UserRole, case)
             self._results_tree.addTopLevelItem(item)
+
+        self._apply_results_filter()
+
 
     def _on_error(self, msg: str):
         self._progress.setVisible(False)
@@ -884,3 +955,51 @@ class EvalSuiteWorkspace(QWidget):
         else:
             self._kw_row.setVisible(False)
             self._req_row.setVisible(False)
+
+    def _apply_results_filter(self):
+        show_pass = self._filter_pass_chk.isChecked()
+        show_fail = self._filter_fail_chk.isChecked()
+        for idx in range(self._results_tree.topLevelItemCount()):
+            item = self._results_tree.topLevelItem(idx)
+            is_pass = item.text(2) == "PASS"
+            should_show = (is_pass and show_pass) or (not is_pass and show_fail)
+            item.setHidden(not should_show)
+
+    def _export_eval_report(self):
+        if not getattr(self, "_last_report", None):
+            return
+            
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Eval Report", "eval_report.json", "JSON (*.json)"
+        )
+        if not path:
+            return
+            
+        try:
+            report = self._last_report
+            cases_json = []
+            for case in report.cases:
+                cases_json.append({
+                    "case_id": case.case_id,
+                    "prompt": case.prompt,
+                    "output": case.output,
+                    "grader": case.grader,
+                    "grade": case.grade,
+                    "latency_s": case.latency_s,
+                    "error": case.error
+                })
+            report_dict = {
+                "dataset_path": self._dataset_path.text(),
+                "workflow_name": self._workflow_combo.currentData(),
+                "total": report.total,
+                "passed": report.passed,
+                "failed": report.failed,
+                "pass_rate": report.pass_rate,
+                "cases": cases_json
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(report_dict, f, indent=4, ensure_ascii=False)
+            QMessageBox.information(self, "Export Complete", f"Report saved successfully to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export report: {e}")
+

@@ -4,6 +4,42 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const MAX_CONTEXT_CHARS = 70000;
+const SUMMARY_CONTEXT_CHARS = 18000;
+
+const WORKFLOWS = {
+    refactorSelection: {
+        command: 'karl.fixSelection',
+        mode: 'Refactor Selection',
+        context: 'selection',
+        objective: 'Refactor for clarity, safety, and maintainability.'
+    },
+    explainSelection: {
+        command: 'karl.explainSelection',
+        mode: 'Explain Selection',
+        context: 'selection',
+        objective: 'Explain control flow, risks, and intent.'
+    },
+    generateTests: {
+        command: 'karl.generateTests',
+        mode: 'Generate Tests',
+        context: 'activeFile',
+        objective: 'Generate focused tests for the active file. Preserve existing behavior and name likely test commands.'
+    },
+    reviewActiveFile: {
+        command: 'karl.reviewActiveFile',
+        mode: 'Review Active File',
+        context: 'activeFile',
+        objective: 'Review the active file for bugs, regressions, missing tests, and concrete improvements.'
+    },
+    sendCurrentFileToSwarm: {
+        command: 'karl.sendCurrentFileToSwarm',
+        mode: 'Current File Swarm Task',
+        context: 'activeFile',
+        objective: 'Implement the requested change in this file and verify behavior.'
+    }
+};
+
 function activate(context) {
     const sidebarProvider = new KarlSidebarProvider(context);
     context.subscriptions.push(
@@ -18,19 +54,20 @@ function activate(context) {
         vscode.commands.executeCommand('workbench.view.extension.karl-swarm');
     });
 
-    register('karl.fixSelection', () => runSelectionWorkflow(sidebarProvider, 'Refactor Selection'));
-    register('karl.explainSelection', () => runSelectionWorkflow(sidebarProvider, 'Explain Selection'));
-    register('karl.generateTests', () => runEditorWorkflow(sidebarProvider, 'Generate Tests'));
-    register('karl.reviewActiveFile', () => runEditorWorkflow(sidebarProvider, 'Review Active File'));
+    Object.values(WORKFLOWS).forEach(workflow => {
+        register(workflow.command, () => runWorkflow(sidebarProvider, workflow));
+    });
     register('karl.askWorkspace', () => runWorkspaceWorkflow(sidebarProvider));
     register('karl.ingestActiveFile', (uri) => sendActiveFileToKb(sidebarProvider, uri));
     register('karl.ingestWorkspaceFolder', (uri) => sendWorkspaceFolderToKb(sidebarProvider, uri));
     register('karl.reviewStagedDiff', () => runGitDiffWorkflow(sidebarProvider, 'Review Staged Diff', ['diff', '--staged']));
+    register('karl.reviewUnstagedDiff', () => runGitDiffWorkflow(sidebarProvider, 'Review Unstaged Diff', ['diff']));
     register('karl.generateCommitMessage', () => runGitDiffWorkflow(sidebarProvider, 'Generate Commit Message', ['diff', '--staged']));
+    register('karl.branchSummary', () => runBranchSummaryWorkflow(sidebarProvider));
     register('karl.explainDiagnostics', () => runDiagnosticsWorkflow(sidebarProvider));
+    register('karl.explainCurrentFileDiagnostics', () => runDiagnosticsWorkflow(sidebarProvider, true));
     register('karl.createImplementationPlan', (...args) => runImplementationPlanWorkflow(sidebarProvider, args));
     register('karl.searchKbSelection', () => searchKbFromSelection(sidebarProvider));
-    register('karl.sendCurrentFileToSwarm', () => runEditorWorkflow(sidebarProvider, 'Current File Swarm Task'));
     register('karl.openReviewBay', async () => {
         await revealKarlPanel(sidebarProvider);
         sidebarProvider.postMessageToWebview({ command: 'open_review_bay' });
@@ -49,7 +86,38 @@ function currentWorkspacePath(fallbackFile) {
     return fallbackFile ? path.dirname(fallbackFile) : '';
 }
 
-async function runSelectionWorkflow(sidebarProvider, mode) {
+function packageContext(raw, label) {
+    const text = String(raw || '');
+    const originalChars = text.length;
+    if (originalChars <= MAX_CONTEXT_CHARS) {
+        return {
+            code: text,
+            meta: { label, originalChars, sentChars: originalChars, truncated: false, summaryOnly: false }
+        };
+    }
+    const head = text.slice(0, Math.floor(SUMMARY_CONTEXT_CHARS * 0.65));
+    const tail = text.slice(-Math.floor(SUMMARY_CONTEXT_CHARS * 0.35));
+    const notice = [
+        `[Karl context notice: ${label} was ${originalChars} characters and exceeded the safe extension payload threshold of ${MAX_CONTEXT_CHARS}.`,
+        `The extension sent a bounded head/tail summary of ${head.length + tail.length} characters. Ask for a narrower file, selection, or diff if full precision is needed.]`,
+        ''
+    ].join('\n');
+    return {
+        code: `${notice}${head}\n\n[Karl context notice: middle omitted]\n\n${tail}`,
+        meta: { label, originalChars, sentChars: notice.length + head.length + tail.length, truncated: true, summaryOnly: true }
+    };
+}
+
+async function runWorkflow(sidebarProvider, workflow) {
+    if (workflow.context === 'selection') {
+        return runSelectionWorkflow(sidebarProvider, workflow);
+    }
+    if (workflow.context === 'activeFile') {
+        return runEditorWorkflow(sidebarProvider, workflow);
+    }
+}
+
+async function runSelectionWorkflow(sidebarProvider, workflow) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
         vscode.window.showInformationMessage('No active editor found.');
@@ -65,27 +133,29 @@ async function runSelectionWorkflow(sidebarProvider, mode) {
 
     const filepath = editor.document.uri.fsPath;
     const objective = await vscode.window.showInputBox({
-        prompt: `${mode}: what should Karl do?`,
-        placeHolder: mode === 'Explain Selection'
+        prompt: `${workflow.mode}: what should Karl do?`,
+        placeHolder: workflow.mode === 'Explain Selection'
             ? 'Explain control flow, risks, and intent.'
             : 'Refactor for clarity, safety, and maintainability.'
     });
     if (!objective) return;
 
+    const packaged = packageContext(code, 'selected code');
     await revealKarlPanel(sidebarProvider);
     sidebarProvider.postMessageToWebview({
         command: 'start_code_task',
         data: {
-            mode,
+            mode: workflow.mode,
             objective,
-            code,
+            code: packaged.code,
+            context_meta: packaged.meta,
             filepath,
             workspace_path: currentWorkspacePath(filepath)
         }
     });
 }
 
-async function runEditorWorkflow(sidebarProvider, mode) {
+async function runEditorWorkflow(sidebarProvider, workflow) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
         vscode.window.showInformationMessage('No active editor found.');
@@ -94,26 +164,22 @@ async function runEditorWorkflow(sidebarProvider, mode) {
 
     const filepath = editor.document.uri.fsPath;
     const code = editor.document.getText();
-    let defaultObjective = 'Review the active file for bugs, regressions, missing tests, and concrete improvements.';
-    if (mode === 'Generate Tests') {
-        defaultObjective = 'Generate focused tests for the active file. Preserve existing behavior and name likely test commands.';
-    } else if (mode === 'Current File Swarm Task') {
-        defaultObjective = 'Implement the requested change in this file and verify behavior.';
-    }
 
     const objective = await vscode.window.showInputBox({
-        prompt: `${mode}: adjust the objective if needed.`,
-        value: defaultObjective
+        prompt: `${workflow.mode}: adjust the objective if needed.`,
+        value: workflow.objective
     });
     if (!objective) return;
 
+    const packaged = packageContext(code, filepath);
     await revealKarlPanel(sidebarProvider);
     sidebarProvider.postMessageToWebview({
         command: 'start_code_task',
         data: {
-            mode,
+            mode: workflow.mode,
             objective,
-            code,
+            code: packaged.code,
+            context_meta: packaged.meta,
             filepath,
             workspace_path: currentWorkspacePath(filepath)
         }
@@ -146,53 +212,106 @@ async function runGitDiffWorkflow(sidebarProvider, mode, args) {
         return;
     }
     if (!diff.trim()) {
-        vscode.window.showInformationMessage('No staged git diff found.');
+        vscode.window.showInformationMessage(mode.includes('Staged') ? 'No staged git diff found.' : 'No unstaged git diff found.');
         return;
     }
 
     const objective = mode === 'Generate Commit Message'
         ? 'Generate a concise conventional commit message and a short body from this staged diff.'
+        : mode === 'Review Unstaged Diff'
+            ? 'Review this unstaged diff for bugs, regressions, missing tests, and risky changes.'
         : 'Review this staged diff for bugs, regressions, missing tests, and risky changes.';
 
+    const packaged = packageContext(diff, mode);
     await revealKarlPanel(sidebarProvider);
     sidebarProvider.postMessageToWebview({
         command: 'start_code_task',
         data: {
             mode,
             objective,
-            code: diff,
-            filepath: 'git diff --staged',
+            code: packaged.code,
+            context_meta: packaged.meta,
+            filepath: mode.includes('Unstaged') ? 'git diff' : 'git diff --staged',
             workspace_path: workspacePath
         }
     });
 }
 
-async function runDiagnosticsWorkflow(sidebarProvider) {
+async function runBranchSummaryWorkflow(sidebarProvider) {
     const workspacePath = currentWorkspacePath('');
-    const diagnostics = vscode.languages.getDiagnostics()
-        .flatMap(([uri, items]) => items.map(item => ({
-            file: uri.fsPath,
-            severity: item.severity,
-            message: item.message,
-            source: item.source || '',
-            line: item.range.start.line + 1,
-            character: item.range.start.character + 1
-        })))
-        .slice(0, 80);
+    if (!workspacePath) {
+        vscode.window.showWarningMessage('Open a workspace before using git workflows.');
+        return;
+    }
+    try {
+        const [branch, status, recent] = await Promise.all([
+            execGit(['branch', '--show-current'], workspacePath),
+            execGit(['status', '--short', '--branch'], workspacePath),
+            execGit(['log', '--oneline', '--decorate', '-12'], workspacePath)
+        ]);
+        const code = `Current branch: ${branch.trim() || '(detached)'}\n\nStatus:\n${status}\n\nRecent commits:\n${recent}`;
+        await revealKarlPanel(sidebarProvider);
+        sidebarProvider.postMessageToWebview({
+            command: 'start_code_task',
+            data: {
+                mode: 'Branch Summary',
+                objective: 'Summarize this branch state, likely intent, risks, and next useful actions.',
+                code,
+                context_meta: packageContext(code, 'branch summary').meta,
+                filepath: 'git branch summary',
+                workspace_path: workspacePath
+            }
+        });
+    } catch (err) {
+        vscode.window.showErrorMessage(`Git branch summary failed: ${err.message}`);
+    }
+}
 
-    if (!diagnostics.length) {
-        vscode.window.showInformationMessage('No current diagnostics found.');
+function groupedDiagnostics(currentFileOnly = false) {
+    const activeFile = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.document.uri.fsPath : '';
+    const groups = new Map();
+    const counts = { error: 0, warning: 0, info: 0, hint: 0 };
+    const severityName = ['error', 'warning', 'info', 'hint'];
+    for (const [uri, items] of vscode.languages.getDiagnostics()) {
+        if (currentFileOnly && uri.fsPath !== activeFile) continue;
+        const fileItems = items.slice(0, 25).map(item => {
+            const severity = severityName[item.severity] || 'info';
+            counts[severity] += 1;
+            return {
+                severity,
+                message: item.message,
+                source: item.source || '',
+                line: item.range.start.line + 1,
+                character: item.range.start.character + 1
+            };
+        });
+        if (fileItems.length) groups.set(uri.fsPath, fileItems);
+    }
+    return { counts, files: Object.fromEntries(groups) };
+}
+
+async function runDiagnosticsWorkflow(sidebarProvider, currentFileOnly = false) {
+    const workspacePath = currentWorkspacePath('');
+    const diagnostics = groupedDiagnostics(currentFileOnly);
+
+    if (!Object.keys(diagnostics.files).length) {
+        vscode.window.showInformationMessage(currentFileOnly ? 'No diagnostics found for the active file.' : 'No current diagnostics found.');
         return;
     }
 
+    const label = currentFileOnly ? 'Current File Diagnostics' : 'Workspace Diagnostics';
+    const body = JSON.stringify(diagnostics, null, 2);
+    const packaged = packageContext(body, label);
     await revealKarlPanel(sidebarProvider);
     sidebarProvider.postMessageToWebview({
         command: 'start_code_task',
         data: {
-            mode: 'Explain Diagnostics',
-            objective: 'Explain these editor diagnostics, group likely root causes, and propose a fix order.',
-            code: JSON.stringify(diagnostics, null, 2),
-            filepath: 'VS Code diagnostics',
+            mode: label,
+            objective: 'Explain these editor diagnostics, group likely root causes by file and severity, and propose a fix order.',
+            code: packaged.code,
+            context_meta: packaged.meta,
+            diagnostics_summary: diagnostics.counts,
+            filepath: label,
             workspace_path: workspacePath
         }
     });
@@ -213,7 +332,8 @@ async function runImplementationPlanWorkflow(sidebarProvider, args) {
             const stat = await fs.promises.stat(uri.fsPath);
             if (!stat.isFile() || stat.size > 500000) continue;
             const content = await fs.promises.readFile(uri.fsPath, 'utf8');
-            chunks.push(`File: ${uri.fsPath}\n\n${content.slice(0, 30000)}`);
+            const packaged = packageContext(content, uri.fsPath);
+            chunks.push(`File: ${uri.fsPath}\n\n${packaged.code}`);
         } catch {
             // Ignore unreadable selected files.
         }
@@ -234,9 +354,10 @@ async function runImplementationPlanWorkflow(sidebarProvider, args) {
         command: 'start_code_task',
         data: {
             mode: 'Implementation Plan',
-            objective,
-            code: chunks.join('\n\n---\n\n'),
-            filepath: `${chunks.length} selected file(s)`,
+                objective,
+                code: chunks.join('\n\n---\n\n'),
+                context_meta: packageContext(chunks.join('\n\n---\n\n'), 'selected files').meta,
+                filepath: `${chunks.length} selected file(s)`,
             workspace_path: workspacePath
         }
     });
@@ -362,6 +483,9 @@ class KarlSidebarProvider {
                 case 'show_error':
                     vscode.window.showErrorMessage(message.text);
                     break;
+                case 'run_command':
+                    await vscode.commands.executeCommand(message.commandId);
+                    break;
                 case 'choose_kb_file':
                     await this.chooseKbFile();
                     break;
@@ -382,6 +506,18 @@ class KarlSidebarProvider {
                     break;
                 case 'reject_file':
                     this.rejectFile(message.editId);
+                    break;
+                case 'reject_all_files':
+                    this.rejectAllFiles();
+                    break;
+                case 'open_file':
+                    await this.openFile(message.editId);
+                    break;
+                case 'copy_file_path':
+                    await this.copyFilePath(message.editId);
+                    break;
+                case 'rollback_applied_file':
+                    await this.rollbackAppliedFile(message.editId);
                     break;
                 case 'preview_all_files':
                     await this.previewAllFiles();
@@ -487,8 +623,10 @@ class KarlSidebarProvider {
                 await fs.promises.copyFile(edit.filepath, backupPath);
             }
             await fs.promises.writeFile(edit.filepath, edit.content, 'utf8');
-            this.pendingEdits.delete(editId);
-            this.postMessageToWebview({ command: 'file_edit_applied', editId });
+            edit.status = 'applied';
+            edit.backupPath = backupPath;
+            this.pendingEdits.set(editId, edit);
+            this.postMessageToWebview({ command: 'file_edit_applied', editId, backupExists: fs.existsSync(backupPath) });
             vscode.window.showInformationMessage(`Karl applied changes to ${edit.filename}.`);
             await vscode.window.showTextDocument(vscode.Uri.file(edit.filepath), { preview: false });
         } catch (err) {
@@ -498,11 +636,55 @@ class KarlSidebarProvider {
 
     rejectFile(editId) {
         const edit = this.pendingEdits.get(editId);
+        if (edit && edit.status === 'applied') {
+            vscode.window.showWarningMessage('Applied edits stay in Review Bay until rollback or manual cleanup.');
+            return;
+        }
         this.pendingEdits.delete(editId);
         this.postMessageToWebview({ command: 'file_edit_rejected', editId });
         if (edit) {
             vscode.window.showInformationMessage(`Rejected Karl edit for ${edit.filename}.`);
         }
+    }
+
+    rejectAllFiles() {
+        for (const [editId, edit] of this.pendingEdits.entries()) {
+            if (edit.status !== 'applied') {
+                this.pendingEdits.delete(editId);
+                this.postMessageToWebview({ command: 'file_edit_rejected', editId });
+            }
+        }
+    }
+
+    async openFile(editId) {
+        const edit = this.pendingEdits.get(editId);
+        if (edit && fs.existsSync(edit.filepath)) {
+            await vscode.window.showTextDocument(vscode.Uri.file(edit.filepath), { preview: false });
+        }
+    }
+
+    async copyFilePath(editId) {
+        const edit = this.pendingEdits.get(editId);
+        if (edit) {
+            await vscode.env.clipboard.writeText(edit.filepath);
+            vscode.window.showInformationMessage('Karl file path copied.');
+        }
+    }
+
+    async rollbackAppliedFile(editId) {
+        const edit = this.pendingEdits.get(editId);
+        if (!edit) return;
+        const backupPath = edit.backupPath || edit.filepath + '.original';
+        if (!fs.existsSync(backupPath)) {
+            vscode.window.showWarningMessage('No backup file found to rollback.');
+            return;
+        }
+        await fs.promises.copyFile(backupPath, edit.filepath);
+        await fs.promises.unlink(backupPath);
+        edit.status = 'rolled_back';
+        this.pendingEdits.set(editId, edit);
+        this.postMessageToWebview({ command: 'file_edit_rolled_back', editId });
+        vscode.window.showInformationMessage(`Rolled back ${edit.filename}.`);
     }
 
     async acceptLegacyFile(filepath) {
@@ -612,6 +794,7 @@ class KarlSidebarProvider {
             <div>
                 <div class="eyebrow">Bridge Checklist</div>
                 <p>Start Karl, verify the WebSocket bridge is listening, then connect. The panel will keep trying unless you disconnect manually.</p>
+                <p id="bridgeMeta">Heartbeat: never · Last connect: never · Version: unknown</p>
             </div>
         </section>
 
@@ -640,6 +823,8 @@ class KarlSidebarProvider {
                     <div><div class="eyebrow">Deploy</div><h2>Task Composer</h2></div>
                     <button id="askWorkspaceBtn">Ask Workspace</button>
                 </div>
+                <div class="quick-actions" id="quickActions" aria-label="Karl quick actions"></div>
+                <div class="context-meter" id="contextMeter">Context package: none queued.</div>
                 <label>Workflow
                     <select id="taskMode">
                         <option>Custom Task</option>
@@ -656,6 +841,14 @@ class KarlSidebarProvider {
                     <button id="runBtn" class="primary">Deploy Swarm</button>
                     <button id="stopBtn" class="danger">Stop</button>
                 </div>
+                <div class="queue-panel">
+                    <div class="section-head mini-head"><div><div class="eyebrow">Queue</div><h2>Task Queue</h2></div><button id="clearTasksBtn">Clear Completed</button></div>
+                    <div id="taskQueue" class="task-queue empty">No Karl tasks queued.</div>
+                </div>
+                <div class="queue-panel">
+                    <div class="section-head mini-head"><div><div class="eyebrow">History</div><h2>Recent Objectives</h2></div><button id="clearHistoryBtn">Clear</button></div>
+                    <div id="recentObjectives" class="recent-list empty">No recent objectives yet.</div>
+                </div>
                 <div class="timeline" id="timeline"></div>
                 <pre id="terminal">--- Swarm Logs ---</pre>
             </section>
@@ -671,7 +864,8 @@ class KarlSidebarProvider {
             </section>
 
             <section id="workspace-changes" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Review</div><h2>Pending File Changes</h2></div><div class="action-row compact-actions"><button id="previewAllBtn">Preview All</button><button id="copySummaryBtn">Copy Summary</button></div></div>
+                <div class="section-head"><div><div class="eyebrow">Review</div><h2>Pending File Changes</h2></div><div class="action-row compact-actions"><button id="previewAllBtn">Preview All</button><button id="rejectAllBtn" class="danger">Reject All</button><button id="copySummaryBtn">Copy Summary</button></div></div>
+                <label>Filter <select id="changeFilter"><option value="">All</option><option value="proposed">Proposed</option><option value="previewed">Previewed</option><option value="applied">Applied</option><option value="rolled_back">Rolled Back</option></select></label>
                 <div id="changeQueue" class="queue empty">No pending Karl edits.</div>
             </section>
 
@@ -697,6 +891,7 @@ class KarlSidebarProvider {
                 <button id="kbIngestBtn" class="primary">Ingest Path</button>
                 <label>Source Filter <select id="kbSourceFilter"><option value="">All sources</option></select></label>
                 <label>Retrieval Preview <textarea id="kbQuery" rows="3" placeholder="Search indexed project knowledge..."></textarea></label>
+                <div id="recentKbQueries" class="recent-list empty">No recent KB searches yet.</div>
                 <button id="kbSearchBtn">Search Knowledge Base</button>
                 <div id="kbResults" class="result-list"></div>
             </section>

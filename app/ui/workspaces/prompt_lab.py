@@ -537,11 +537,32 @@ class PromptLabWorkspace(QWidget):
         top_row = QWidget()
         tr_layout = QHBoxLayout(top_row)
         tr_layout.setContentsMargins(0, 0, 0, 0)
+        tr_layout.setSpacing(12)
         title = QLabel("Prompt Lab")
         title.setObjectName("lbl-accent")
         title.setStyleSheet("font-size: 14pt; font-weight: bold; padding-bottom: 4px;")
         tr_layout.addWidget(title)
         tr_layout.addStretch()
+
+        # Clone A to B
+        self._clone_a_to_b_btn = QPushButton("Clone A → B")
+        self._clone_a_to_b_btn.setObjectName("btn-ghost")
+        self._clone_a_to_b_btn.setStyleSheet("font-size: 8pt; padding: 2px 6px;")
+        self._clone_a_to_b_btn.clicked.connect(self._clone_a_to_b)
+        tr_layout.addWidget(self._clone_a_to_b_btn)
+
+        # Clone B to A
+        self._clone_b_to_a_btn = QPushButton("Clone B → A")
+        self._clone_b_to_a_btn.setObjectName("btn-ghost")
+        self._clone_b_to_a_btn.setStyleSheet("font-size: 8pt; padding: 2px 6px;")
+        self._clone_b_to_a_btn.clicked.connect(self._clone_b_to_a)
+        tr_layout.addWidget(self._clone_b_to_a_btn)
+
+        # Lock user prompt
+        self._lock_user_prompt_check = QCheckBox("Lock Sync (A ⟷ B)")
+        self._lock_user_prompt_check.setToolTip("Sync user modifications between Side A and Side B")
+        self._lock_user_prompt_check.toggled.connect(self._on_lock_sync_toggled)
+        tr_layout.addWidget(self._lock_user_prompt_check)
 
         run_both = QPushButton("▶▶ Run Both")
         run_both.setObjectName("btn-primary")
@@ -549,6 +570,7 @@ class PromptLabWorkspace(QWidget):
         run_both.clicked.connect(self._run_both)
         tr_layout.addWidget(run_both)
         right_layout.addWidget(top_row)
+
 
         desc = QLabel(
             "Side-by-side prompt engineering workspace. Compare different prompt templates, "
@@ -660,6 +682,15 @@ class PromptLabWorkspace(QWidget):
         layout.setSpacing(8)
         
         layout.addWidget(_section("PROMPT PAIRS"))
+
+        self._pair_search = QLineEdit()
+        self._pair_search.setPlaceholderText("Search pairs...")
+        self._pair_search.setStyleSheet(
+            "background-color: #0D0D1B; border: 1px solid #1F1F3D; border-radius: 4px; "
+            "color: #F0F5FF; font-family: 'JetBrains Mono', monospace; font-size: 8.5pt; padding: 4px;"
+        )
+        self._pair_search.textChanged.connect(self._filter_pairs)
+        layout.addWidget(self._pair_search)
         
         self._pairs_list = QListWidget()
         self._pairs_list.currentTextChanged.connect(self._on_pair_selected)
@@ -692,6 +723,7 @@ class PromptLabWorkspace(QWidget):
         
         layout.addWidget(save_section)
         return w
+
 
     def _refresh_pairs(self):
         self._pairs_list.clear()
@@ -963,3 +995,65 @@ class PromptLabWorkspace(QWidget):
             self._tok_input.setPlainText(self._output_b)
         else:
             QMessageBox.information(self, "No Output", "Output B is empty. Run prompt B first.")
+
+    # ── Upgraded Prompt Lab Features ──────────────────────────────────────────
+
+    def _filter_pairs(self, text):
+        query = text.strip().lower()
+        for idx in range(self._pairs_list.count()):
+            item = self._pairs_list.item(idx)
+            item.setHidden(query not in item.text().lower())
+
+    def _clone_a_to_b(self):
+        self._col_b.set_system_text(self._col_a.system_text())
+        self._col_b.set_user_text(self._col_a.user_text())
+        self._col_b._rag_check.setChecked(self._col_a._rag_check.isChecked())
+        self._col_b._loop_check.setChecked(self._col_a._loop_check.isChecked())
+        idx = self._col_a._model_combo.currentIndex()
+        self._col_b._model_combo.setCurrentIndex(idx)
+
+    def _clone_b_to_a(self):
+        self._col_a.set_system_text(self._col_b.system_text())
+        self._col_a.set_user_text(self._col_b.user_text())
+        self._col_a._rag_check.setChecked(self._col_b._rag_check.isChecked())
+        self._col_a._loop_check.setChecked(self._col_b._loop_check.isChecked())
+        idx = self._col_b._model_combo.currentIndex()
+        self._col_a._model_combo.setCurrentIndex(idx)
+
+    def _on_lock_sync_toggled(self, checked):
+        if checked:
+            self._col_b.set_user_text(self._col_a.user_text())
+            self._col_b.set_system_text(self._col_a.system_text())
+            self._col_a._user_edit.textChanged.connect(self._sync_user_a_to_b)
+            self._col_b._user_edit.textChanged.connect(self._sync_user_b_to_a)
+            self._col_a._system_edit.textChanged.connect(self._sync_system_a_to_b)
+            self._col_b._system_edit.textChanged.connect(self._sync_system_b_to_a)
+        else:
+            try:
+                self._col_a._user_edit.textChanged.disconnect(self._sync_user_a_to_b)
+                self._col_b._user_edit.textChanged.disconnect(self._sync_user_b_to_a)
+                self._col_a._system_edit.textChanged.disconnect(self._sync_system_a_to_b)
+                self._col_b._system_edit.textChanged.disconnect(self._sync_system_b_to_a)
+            except TypeError:
+                pass
+
+    def _sync_user_a_to_b(self):
+        self._col_b._user_edit.blockSignals(True)
+        self._col_b.set_user_text(self._col_a.user_text())
+        self._col_b._user_edit.blockSignals(False)
+
+    def _sync_user_b_to_a(self):
+        self._col_a._user_edit.blockSignals(True)
+        self._col_a.set_user_text(self._col_b.user_text())
+        self._col_a._user_edit.blockSignals(False)
+
+    def _sync_system_a_to_b(self):
+        self._col_b._system_edit.blockSignals(True)
+        self._col_b.set_system_text(self._col_a.system_text())
+        self._col_b._system_edit.blockSignals(False)
+
+    def _sync_system_b_to_a(self):
+        self._col_a._system_edit.blockSignals(True)
+        self._col_a.set_system_text(self._col_b.system_text())
+        self._col_a._system_edit.blockSignals(False)
+

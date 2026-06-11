@@ -129,5 +129,38 @@ class TestUIImprovements(unittest.TestCase):
             )
             self.assertNotIn("Iteration", "\n".join(msg["content"] for msg in active))
 
+    def test_system_config_features(self):
+        from app.state import AppState
+        from app.ui.workspaces.system_config import SystemConfigWorkspace
+        
+        state = AppState()
+        state.model_name = "deepseek-r1-distill-qwen-1.5b.gguf"
+        state.adapter_name = "llama-adapter"
+        
+        workspace = SystemConfigWorkspace(state)
+        
+        # Test settings search filtering
+        workspace._settings_search_input.setText("temp")
+        row_temp = next(r[1] for r in workspace._settings_rows if r[0] == "Temperature")
+        row_topp = next(r[1] for r in workspace._settings_rows if r[0] == "Top-P")
+        self.assertFalse(row_temp.isHidden())
+        self.assertTrue(row_topp.isHidden())
+        
+        # Clear search and make sure both are visible
+        workspace._settings_search_input.setText("")
+        self.assertFalse(row_temp.isHidden())
+        self.assertFalse(row_topp.isHidden())
+        
+        # Test preflight checks / health check warnings
+        workspace._run_model_preflight_checks()
+        status_text = workspace._model_status.text()
+        self.assertIn("MODEL DIAGNOSTIC REPORT", status_text)
+        self.assertIn("Adapter Compatibility Mismatch", status_text)
+        
+        # Test cache population
+        workspace.refresh_filesystem_cache()
+        self.assertIsNotNone(workspace._cached_models_list)
+        self.assertIsNotNone(workspace._cached_adapters_list)
+
 if __name__ == "__main__":
     unittest.main()

@@ -62,6 +62,9 @@ backup, or **Reject** to discard the pending edit.
 The review bay also supports previewing all pending files, copied patch summaries,
 per-file status chips, byte counts, and line-count deltas.
 
+Recent upgrades add grouped review state, risk labels, reject-all, file opening,
+path copying, and rollback for applied files when a `.original` backup exists.
+
 ## Commands
 
 - `Karl: Open Karl Panel`
@@ -70,7 +73,10 @@ per-file status chips, byte counts, and line-count deltas.
 - `Karl: Generate Tests for Active File`
 - `Karl: Review Active File`
 - `Karl: Review Staged Git Diff`
+- `Karl: Review Unstaged Git Diff`
+- `Karl: Summarize Current Git Branch`
 - `Karl: Explain Current Diagnostics`
+- `Karl: Explain Active File Diagnostics`
 - `Karl: Generate Commit Message from Staged Diff`
 - `Karl: Create Implementation Plan from Selected Files`
 - `Karl: Ask About Workspace`
@@ -79,6 +85,15 @@ per-file status chips, byte counts, and line-count deltas.
 - `Karl: Search Knowledge Base from Selection`
 - `Karl: Send Current File to Swarm`
 - `Karl: Open Pending Change Review Bay`
+
+## Productivity Flow
+
+The Swarm tab includes a Quick Actions launcher, recent objective history,
+context-size warnings, and a lightweight task queue. Large files or diffs are
+packaged with a visible bounded-context notice instead of being sent blindly.
+
+The Knowledge tab keeps recent KB searches for fast reruns. Bridge status now
+shows heartbeat age, last connection time, and bridge version when available.
 
 The extension expects the Karl desktop bridge to be listening on the configured
 `karl.port`, defaulting to `8080`.
