@@ -98,6 +98,106 @@ class WebSocketServerManager:
                 pass
         return {"filename": filename, "adapter": adapter}
 
+    def _read_model_registry(self) -> list[dict]:
+        registry_path = os.path.join("data", "model_registry.json")
+        if not os.path.exists(registry_path):
+            return []
+        try:
+            with open(registry_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def _list_models(self) -> dict:
+        models_dir = os.path.join("data", "models")
+        active = self._active_model_config()
+        registry = self._read_model_registry()
+        registered = {}
+        models = []
+
+        for entry in registry:
+            filename = entry.get("filename")
+            if not filename:
+                continue
+            registered[filename] = True
+            path = os.path.join(models_dir, filename)
+            installed = os.path.exists(path)
+            size_gb = None
+            if installed:
+                try:
+                    size_gb = round(os.path.getsize(path) / (1024 ** 3), 2)
+                except Exception:
+                    pass
+            models.append({
+                "name": entry.get("name", filename),
+                "filename": filename,
+                "tier": entry.get("tier"),
+                "n_ctx": entry.get("n_ctx", 4096),
+                "min_ram_gb": entry.get("min_ram_gb"),
+                "min_vram_gb": entry.get("min_vram_gb"),
+                "min_storage_gb": entry.get("min_storage_gb"),
+                "installed": installed,
+                "active": filename == active["filename"],
+                "size_gb": size_gb,
+                "source": "registry",
+            })
+
+        if os.path.exists(models_dir):
+            try:
+                for filename in sorted(os.listdir(models_dir)):
+                    if not filename.endswith(".gguf") or registered.get(filename):
+                        continue
+                    path = os.path.join(models_dir, filename)
+                    try:
+                        size_gb = round(os.path.getsize(path) / (1024 ** 3), 2)
+                    except Exception:
+                        size_gb = None
+                    models.append({
+                        "name": filename,
+                        "filename": filename,
+                        "tier": None,
+                        "n_ctx": ModelLoader._read_registry_n_ctx(filename),
+                        "min_ram_gb": None,
+                        "min_vram_gb": None,
+                        "min_storage_gb": None,
+                        "installed": True,
+                        "active": filename == active["filename"],
+                        "size_gb": size_gb,
+                        "source": "local",
+                    })
+            except Exception:
+                pass
+
+        return {
+            "active": active,
+            "models": models,
+        }
+
+    def _set_active_model(self, filename: str, adapter: str | None = None) -> dict:
+        safe_filename = os.path.basename(filename or "")
+        if not safe_filename or safe_filename != filename:
+            raise ValueError("Invalid model filename.")
+
+        model_path = os.path.join("data", "models", safe_filename)
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file is not installed: {safe_filename}")
+
+        active = {"filename": safe_filename}
+        if adapter:
+            active["adapter"] = adapter
+
+        os.makedirs("data", exist_ok=True)
+        with open(os.path.join("data", "active_model.json"), "w", encoding="utf-8") as f:
+            json.dump(active, f)
+
+        ModelLoader.reset_instance()
+        return {
+            "active": active,
+            "loaded": False,
+            "message": f"Active model set to {safe_filename}. It will load on the next generation.",
+        }
+
     def _runtime_status(self) -> dict:
         active_model = self._active_model_config()
         loaded = ModelLoader.is_loaded()
@@ -215,6 +315,22 @@ class WebSocketServerManager:
                             "jsonrpc": "2.0",
                             "id": req_id,
                             "result": self._runtime_status()
+                        }))
+
+                    elif method == "list_models":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._list_models()
+                        }))
+
+                    elif method == "set_active_model":
+                        filename = params.get("filename")
+                        adapter = params.get("adapter")
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._set_active_model(filename, adapter)
                         }))
 
                     elif method == "submit_task":

@@ -72,6 +72,60 @@ class TestWebSocketBridge(unittest.TestCase):
         finally:
             loop.close()
 
+    def test_model_registry_rpc(self):
+        active_path = os.path.join("data", "active_model.json")
+        model_dir = os.path.join("data", "models")
+        model_name = "test-websocket-model.gguf"
+        model_path = os.path.join(model_dir, model_name)
+        previous_active = None
+        if os.path.exists(active_path):
+            with open(active_path, "r", encoding="utf-8") as f:
+                previous_active = f.read()
+
+        os.makedirs(model_dir, exist_ok=True)
+        with open(model_path, "wb") as f:
+            f.write(b"test")
+
+        async def run_client():
+            async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 31,
+                    "method": "list_models"
+                }))
+                list_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                self.assertEqual(list_resp.get("id"), 31)
+                filenames = [m["filename"] for m in list_resp["result"]["models"]]
+                self.assertIn(model_name, filenames)
+
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 32,
+                    "method": "set_active_model",
+                    "params": {"filename": model_name}
+                }))
+                set_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                self.assertEqual(set_resp.get("id"), 32)
+                self.assertEqual(set_resp["result"]["active"]["filename"], model_name)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(run_client())
+        finally:
+            loop.close()
+            if previous_active is None:
+                try:
+                    os.remove(active_path)
+                except FileNotFoundError:
+                    pass
+            else:
+                with open(active_path, "w", encoding="utf-8") as f:
+                    f.write(previous_active)
+            try:
+                os.remove(model_path)
+            except FileNotFoundError:
+                pass
+
     @patch("app.engine.model_loader.ModelLoader.get_instance")
     def test_websocket_bridge_flow(self, mock_get_llm):
         # Mock LLM to return simple JSON plan and script contents

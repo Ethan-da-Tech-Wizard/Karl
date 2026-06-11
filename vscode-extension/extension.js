@@ -243,6 +243,39 @@ class KarlSidebarProvider {
             color: #f1cf7b;
         }
 
+        /* Model registry */
+        .model-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .model-card {
+            border: 1px solid var(--vscode-widget-border, #3c3c3c);
+            border-radius: 4px;
+            background: var(--vscode-editor-background, #1e1e1e);
+            padding: 8px;
+        }
+        .model-card.active {
+            border-color: #2DD4A0;
+            background: #102018;
+        }
+        .model-title {
+            color: var(--vscode-foreground, #cccccc);
+            font-size: 10px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .model-meta {
+            color: var(--vscode-descriptionForeground, #989898);
+            font-size: 9px;
+            line-height: 1.4;
+            margin-bottom: 8px;
+        }
+        .model-actions {
+            display: flex;
+            gap: 8px;
+        }
+
         .tab-content {
             display: none;
         }
@@ -568,6 +601,7 @@ class KarlSidebarProvider {
         <select class="workspace-select" id="workspace-select" onchange="switchWorkspace(this.value)">
             <option value="swarm">🐝 Swarm Workspace</option>
             <option value="chat">💬 Chat Workspace</option>
+            <option value="models">🧠 Models</option>
             <option value="lab">🧪 Prompt Lab</option>
             <option value="codex">📚 Codex Library</option>
         </select>
@@ -677,7 +711,19 @@ class KarlSidebarProvider {
         <button id="chatSendBtn" onclick="sendChatMessage()">Send Message</button>
     </div>
 
-    <!-- Workspace 3: Prompt Lab Content -->
+    <!-- Workspace 3: Models Content -->
+    <div class="tab-content" id="contentModels">
+        <div class="actions-row" style="margin-top:0; margin-bottom:10px;">
+            <button onclick="loadModels()">Refresh Models</button>
+        </div>
+        <div class="model-list" id="modelList">
+            <div class="model-card">
+                <div class="model-meta">Connect to Karl to inspect local model tiers.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Workspace 4: Prompt Lab Content -->
     <div class="tab-content" id="contentLab">
         <div class="form-group">
             <label for="labSysA">System Prompt A</label>
@@ -707,7 +753,7 @@ class KarlSidebarProvider {
         </div>
     </div>
 
-    <!-- Workspace 4: Codex Library Content -->
+    <!-- Workspace 5: Codex Library Content -->
     <div class="tab-content" id="contentCodex">
         <div class="form-group">
             <input type="text" id="codexSearch" placeholder="Search references..." oninput="filterCodex()">
@@ -779,6 +825,9 @@ class KarlSidebarProvider {
                 document.getElementById('contentSwarm').classList.add('active');
             } else if (wsId === 'chat') {
                 document.getElementById('contentChat').classList.add('active');
+            } else if (wsId === 'models') {
+                document.getElementById('contentModels').classList.add('active');
+                loadModels();
             } else if (wsId === 'lab') {
                 document.getElementById('contentLab').classList.add('active');
             } else if (wsId === 'codex') {
@@ -846,6 +895,12 @@ class KarlSidebarProvider {
                         log('[PromptLab] Diff rendering completed.');
                     } else if (data.id === 30) { // runtime status
                         renderRuntimeStatus(data.result);
+                    } else if (data.id === 31) { // list models
+                        renderModels(data.result.models || []);
+                    } else if (data.id === 32) { // set active model
+                        log('[Models] ' + data.result.message);
+                        requestRuntimeStatus();
+                        loadModels();
                     } else if (data.id === 20) { // list topics
                         renderCodexTopics(data.result.topics);
                     } else if (data.id === 21) { // get topic content
@@ -1007,6 +1062,71 @@ class KarlSidebarProvider {
             document.getElementById('runtimeAdapter').innerText = 'none';
             document.getElementById('runtimeSystem').innerText = '--';
             document.getElementById('runtimeState').className = 'runtime-value warn';
+        }
+
+        function loadModels() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                document.getElementById('modelList').innerHTML = '<div class="model-card"><div class="model-meta">Karl bridge is offline.</div></div>';
+                return;
+            }
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 31,
+                method: 'list_models'
+            }));
+        }
+
+        function activateModel(filename) {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 32,
+                method: 'set_active_model',
+                params: { filename: filename }
+            }));
+        }
+
+        function renderModels(models) {
+            const container = document.getElementById('modelList');
+            if (!models || models.length === 0) {
+                container.innerHTML = '<div class="model-card"><div class="model-meta">No model registry entries found.</div></div>';
+                return;
+            }
+
+            container.innerHTML = models.map(model => {
+                const title = escapeHtml(model.name || model.filename || 'Unknown model');
+                const filename = escapeHtml(model.filename || '');
+                const tier = model.tier ? 'Tier ' + model.tier + ' · ' : '';
+                const ctx = model.n_ctx ? model.n_ctx + ' ctx · ' : '';
+                const ram = model.min_ram_gb ? model.min_ram_gb + ' GB RAM · ' : '';
+                const size = model.size_gb ? model.size_gb + ' GB · ' : '';
+                const state = model.active ? 'Active' : (model.installed ? 'Installed' : 'Not installed');
+                const cardClass = 'model-card' + (model.active ? ' active' : '');
+                const action = model.active
+                    ? '<button disabled>Active</button>'
+                    : (model.installed
+                        ? '<button data-filename="' + escapeHtml(model.filename || '') + '" onclick="activateModelFromButton(this)">Set Active</button>'
+                        : '<button disabled>Download in Karl</button>');
+
+                return '<div class="' + cardClass + '">' +
+                    '<div class="model-title">' + title + '</div>' +
+                    '<div class="model-meta">' + tier + ctx + ram + size + state + '<br><code>' + filename + '</code></div>' +
+                    '<div class="model-actions">' + action + '</div>' +
+                    '</div>';
+            }).join('');
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#39;');
+        }
+
+        function activateModelFromButton(button) {
+            activateModel(button.dataset.filename);
         }
 
         function connectAndRun() {
