@@ -62,6 +62,39 @@ python main.py
 
 ---
 
+## VS Code & Code OSS Extension (Local Swarm Bridge)
+
+Karl contains an integrated editor extension located under `vscode-extension/` to link your local coding workspace to Karl's multi-agent swarm.
+
+### 1. Compile & Package Extension
+Make sure you have Node.js installed, then compile the extension into a local package:
+```bash
+cd vscode-extension
+npm install
+npx @vscode/vsce package
+```
+This produces `karl-1.0.0.vsix` in the directory.
+
+### 2. Install on VS Code
+Install the package directly into VS Code:
+```bash
+code --install-extension karl-1.0.0.vsix
+```
+
+### 3. Install on Code OSS (Arch Linux)
+To install the package directly into Code OSS on Arch:
+```bash
+code-oss --install-extension karl-1.0.0.vsix
+```
+
+### 4. Publish to Open VSX Registry (for Code OSS Marketplace)
+To publish the extension to the Open VSX registry (open-vsx.org) so it is searchable and downloadable directly inside Code OSS's marketplace:
+```bash
+npx ovsx publish karl-1.0.0.vsix -p <your-open-vsx-access-token>
+```
+
+---
+
 ## Project Structure
 ```
 ├── core/               # THE HACKABLE LAYER — edit these freely
