@@ -73,5 +73,25 @@ class TestUIImprovements(unittest.TestCase):
         self.assertIn("borrowing", rendered_html)
         self.assertIn("ownership", rendered_html)
 
+    def test_workbench_docks(self):
+        from app.state import AppState
+        from app.ui.workspaces.workbench import WorkbenchWorkspace
+        from PyQt6.QtWidgets import QMainWindow, QDockWidget
+
+        state = AppState()
+        workbench = WorkbenchWorkspace(state)
+
+        # Verify it inherits from QMainWindow
+        self.assertTrue(isinstance(workbench, QMainWindow))
+
+        # Verify central widget is set
+        self.assertIsNotNone(workbench.centralWidget())
+
+        # Verify the two docks exist
+        self.assertTrue(hasattr(workbench, "_sessions_dock"))
+        self.assertTrue(hasattr(workbench, "_reasoning_dock"))
+        self.assertTrue(isinstance(workbench._sessions_dock, QDockWidget))
+        self.assertTrue(isinstance(workbench._reasoning_dock, QDockWidget))
+
 if __name__ == "__main__":
     unittest.main()

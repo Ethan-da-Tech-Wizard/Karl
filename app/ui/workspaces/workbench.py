@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QTextEdit, QComboBox,
     QLabel, QSizePolicy, QFrame, QCheckBox,
     QDoubleSpinBox, QSpinBox, QListWidget,
-    QTreeWidget, QTreeWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
@@ -233,7 +233,7 @@ def _escape(text: str) -> str:
 
 # ── workbench workspace ───────────────────────────────────────────────────────
 
-class WorkbenchWorkspace(QWidget):
+class WorkbenchWorkspace(QMainWindow):
     status_changed = pyqtSignal(str, bool)   # (text, active)
     model_changed = pyqtSignal(str)          # (model_name)
     adapter_changed = pyqtSignal(str)        # (adapter_name)
@@ -278,31 +278,39 @@ class WorkbenchWorkspace(QWidget):
     # ── build ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        # Set central widget
+        self._chat_panel = self._build_chat_panel()
+        self.setCentralWidget(self._chat_panel)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.setHandleWidth(1)
-
-        # Pane 0: Sessions panel
+        # Build Sessions Dock
+        self._sessions_dock = QDockWidget("SESSIONS", self)
+        self._sessions_dock.setObjectName("sessions-dock")
+        self._sessions_dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+        self._sessions_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable |
+            QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+            QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
         self._sessions_panel = self._build_sessions_panel()
-        splitter.addWidget(self._sessions_panel)
+        self._sessions_dock.setWidget(self._sessions_panel)
 
-        # Pane 1: Reasoning panel
+        # Build Reasoning Dock
+        self._reasoning_dock = QDockWidget("REASONING", self)
+        self._reasoning_dock.setObjectName("reasoning-dock")
+        self._reasoning_dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+        self._reasoning_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable |
+            QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+            QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
         self._reasoning_panel = self._build_reasoning_panel()
-        splitter.addWidget(self._reasoning_panel)
+        self._reasoning_dock.setWidget(self._reasoning_panel)
 
-        # Pane 2: Chat panel
-        right = self._build_chat_panel()
-        splitter.addWidget(right)
-
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        splitter.setStretchFactor(2, 4)
-        splitter.setSizes([200, 280, 720])
-
-        root.addWidget(splitter)
+        # Dock Nesting and layout initialization
+        self.setDockNestingEnabled(True)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._sessions_dock)
+        self.splitDockWidget(self._sessions_dock, self._reasoning_dock, Qt.Orientation.Horizontal)
+        self.resizeDocks([self._sessions_dock, self._reasoning_dock], [200, 280], Qt.Orientation.Horizontal)
 
     def _build_sessions_panel(self) -> QWidget:
         w = QWidget()
@@ -310,15 +318,6 @@ class WorkbenchWorkspace(QWidget):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-
-        # header
-        hdr = QWidget()
-        hdr.setObjectName("panel-header")
-        hdr_layout = QHBoxLayout(hdr)
-        hdr_layout.setContentsMargins(12, 5, 8, 5)
-        hdr.setFixedHeight(30)
-        hdr_layout.addWidget(_label("SESSIONS", "section-header"))
-        layout.addWidget(hdr)
 
         self._sessions_list = QListWidget()
         self._sessions_list.currentItemChanged.connect(self._on_session_clicked)
@@ -350,26 +349,11 @@ class WorkbenchWorkspace(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # header
-        hdr = QWidget()
-        hdr.setObjectName("panel-header")
-        hdr_layout = QHBoxLayout(hdr)
-        hdr_layout.setContentsMargins(12, 5, 8, 5)
-        hdr.setFixedHeight(30)
-        hdr_layout.addWidget(_label("REASONING", "section-header"))
-        
+        # Place the stats label directly in the layout with padding
         self._reasoning_stats_lbl = QLabel("")
         self._reasoning_stats_lbl.setObjectName("lbl-muted")
-        self._reasoning_stats_lbl.setStyleSheet("margin-left: 8px; font-weight: normal; font-size: 8pt;")
-        hdr_layout.addWidget(self._reasoning_stats_lbl)
-        
-        hdr_layout.addStretch()
-        self._toggle_reason_btn = QPushButton("hide")
-        self._toggle_reason_btn.setObjectName("btn-ghost")
-        self._toggle_reason_btn.setFixedWidth(36)
-        self._toggle_reason_btn.clicked.connect(self._toggle_reasoning)
-        hdr_layout.addWidget(self._toggle_reason_btn)
-        layout.addWidget(hdr)
+        self._reasoning_stats_lbl.setStyleSheet("font-weight: normal; font-size: 8pt; padding: 4px 10px;")
+        layout.addWidget(self._reasoning_stats_lbl)
 
         self._reasoning_view = QTextBrowser()
         self._reasoning_view.setObjectName("reasoning-view")
@@ -485,6 +469,13 @@ class WorkbenchWorkspace(QWidget):
         self._sessions_toggle.setToolTip("Toggle Sessions panel")
         self._sessions_toggle.clicked.connect(self._toggle_sessions)
         ctrl_layout.addWidget(self._sessions_toggle)
+
+        self._reasoning_toggle = QPushButton("🧠")
+        self._reasoning_toggle.setObjectName("btn-ghost")
+        self._reasoning_toggle.setFixedWidth(28)
+        self._reasoning_toggle.setToolTip("Toggle Reasoning panel")
+        self._reasoning_toggle.clicked.connect(self._toggle_reasoning)
+        ctrl_layout.addWidget(self._reasoning_toggle)
 
         ctrl_layout.addStretch()
 
@@ -720,13 +711,12 @@ class WorkbenchWorkspace(QWidget):
                 self._thread.request_stop()
 
     def _toggle_reasoning(self):
-        visible = self._reasoning_panel.isVisible()
-        self._reasoning_panel.setVisible(not visible)
-        self._toggle_reason_btn.setText("show" if visible else "hide")
+        visible = self._reasoning_dock.isVisible()
+        self._reasoning_dock.setVisible(not visible)
 
     def _toggle_sessions(self):
-        visible = self._sessions_panel.isVisible()
-        self._sessions_panel.setVisible(not visible)
+        visible = self._sessions_dock.isVisible()
+        self._sessions_dock.setVisible(not visible)
 
     def _toggle_params(self):
         visible = not self._params_drawer.isVisible()

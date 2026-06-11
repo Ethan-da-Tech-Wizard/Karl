@@ -1108,6 +1108,45 @@ QGroupBox::title {{
     background: {bg_base};
 }}
 
+/* ── Docks & Splitters ────────────────────────────────────── */
+QDockWidget {{
+    background: {bg_surface};
+    border: 1px solid {border};
+    border-radius: 4px;
+}}
+
+QDockWidget::title {{
+    background: {bg_raised};
+    border-bottom: 1px solid {border};
+    padding: 6px 12px;
+    color: {text_hi};
+    font-size: 8pt;
+    font-weight: bold;
+    letter-spacing: 2px;
+    text-align: left;
+}}
+
+QDockWidget::close-button, QDockWidget::float-button {{
+    border: none;
+    background: transparent;
+    padding: 2px;
+    border-radius: 3px;
+}}
+
+QDockWidget::close-button:hover, QDockWidget::float-button:hover {{
+    background: {border};
+}}
+
+QMainWindow::separator {{
+    background: {border};
+    width: 2px;
+    height: 2px;
+}}
+
+QMainWindow::separator:hover {{
+    background: {accent};
+}}
+
 /* ── ToolTip ──────────────────────────────────────────────── */
 QToolTip {{
     background: {bg_raised};
