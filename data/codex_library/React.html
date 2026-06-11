@@ -1,0 +1,64 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>⚛ React Architecture & Reconciliation Manual</h2>
+        <p style='color:#9090A8; line-height:1.4;'>React organizes interfaces declarative. This manual details rendering phases, fiber reconciling updates, hook dependencies, and server-side components.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. React Fiber Reconciliation & Double Buffering</h3>
+        <p style='color:#9090A8; line-height:1.4;'>React computes mutations on a secondary fiber tree (workInProgress) before writing them to the active layout tree on screen. This prevents intermediate rendering glitches.</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Render Phase:</b> Asynchronous calculation building workInProgress fiber nodes. Can be paused, discarded, or restarted by scheduler.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Commit Phase:</b> Synchronous operations writing changes directly to the browser DOM. Runs side-effects once layout is updated.</li>
+        </ul>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Advanced Hooks API Reference</h3>
+        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
+          <tr style='border-bottom:1px solid #252535;'>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Hook</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Mechanism & Target Scopes</th>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useRef(val)</td>
+            <td style='padding:4px;'>Allocates a persistent mutable object container. Mutating `.current` does not trigger re-renders. Binds DOM nodes directly.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useMemo(()=>v, deps)</td>
+            <td style='padding:4px;'>Caches complex data operations. Bypasses execution across renders until dependencies change.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useCallback(fn, deps)</td>
+            <td style='padding:4px;'>Memoizes raw function references to prevent child components from re-evaluating properties.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useTransition()</td>
+            <td style='padding:4px;'>Marks state transitions as non-blocking. Allows UI to remain interactive during heavy rendering.</td>
+          </tr>
+        </table>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Performance Tuning: Virtualization & Custom Hooks</h3>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+import { useState, useEffect, useRef } from 'react';
+
+// Custom Hook tracking layout intersections
+export function useElementInView(options) {
+    const containerRef = useRef(null);
+    const [isVisible, setIsVisible] = useState(false);
+
+    useEffect(() => {
+        const observer = new IntersectionObserver(([entry]) => {
+            setIsVisible(entry.isIntersecting);
+        }, options);
+        
+        if (containerRef.current) {
+            observer.observe(containerRef.current);
+        }
+        
+        return () => {
+            if (containerRef.current) {
+                observer.unobserve(containerRef.current);
+            }
+        };
+    }, [options]);
+
+    return [containerRef, isVisible];
+}
+        </pre>
+    

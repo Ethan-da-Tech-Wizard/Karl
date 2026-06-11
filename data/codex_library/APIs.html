@@ -1,0 +1,32 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>🌐 REST, GraphQL & gRPC API Blueprints</h2>
+        <p style='color:#9090A8; line-height:1.4;'>API structures broker distributed communication. This guide compares endpoints designs, protocol transports, and security handshakes.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Protocols Comparison</h3>
+        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
+          <tr style='border-bottom:1px solid #252535;'>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Architecture</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Transport Protocol</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Payload Types</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Details</th>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>REST</td>
+            <td style='padding:4px;'>HTTP/1.1 or HTTP/2</td>
+            <td style='padding:4px;'>JSON, XML</td>
+            <td style='padding:4px;'>Resource-oriented. Relies on HTTP verbs (GET, POST, PUT, DELETE).</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>GraphQL</td>
+            <td style='padding:4px;'>HTTP/1.1 or HTTP/2</td>
+            <td style='padding:4px;'>JSON</td>
+            <td style='padding:4px;'>Single-endpoint queries. Allows clients to define returned schemas.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>gRPC</td>
+            <td style='padding:4px;'>HTTP/2 exclusively</td>
+            <td style='padding:4px;'>Protocol Buffers (Binary)</td>
+            <td style='padding:4px;'>Highly optimized. Supports bi-directional streaming and binary serialization.</td>
+          </tr>
+        </table>
+    

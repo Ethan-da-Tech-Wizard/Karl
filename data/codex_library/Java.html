@@ -1,0 +1,26 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>☕ Java JVM & Collections Reference</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Java coordinates execution via the JVM. This manual defines JVM layout segments, garbage collection designs, and stream optimizations.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. JVM Memory Allocation Architecture</h3>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Heap Memory:</b> Shared zone housing objects. Subdivided into Young Generation (Eden, Survivor spaces) and Old Generation (Tenured space).</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>JVM Stack:</b> Private thread memory storing stack frames, local variables, and primitive call references.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Metaspace:</b> Native off-heap memory storing class definitions and metadata structures.</li>
+        </ul>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Streams Pipeline Processing</h3>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+import java.util.List;
+import java.util.stream.Collectors;
+
+public class StreamProcessor {
+    public List<String> getActiveUsers(List<User> users) {
+        return users.parallelStream() // Runs on ForkJoinPool concurrently
+            .filter(User::isActive)
+            .map(User::getUsername)
+            .collect(Collectors.toList()); // Terminal evaluation
+    }
+}
+        </pre>
+    

@@ -1,0 +1,39 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>☸ Kubernetes Orchestration Reference</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Kubernetes coordinates containers at scale. This reference outlines resource maps, service topologies, and diagnostic commands.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Service Topologies & Networks</h3>
+        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
+          <tr style='border-bottom:1px solid #252535;'>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Service Type</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Mapping Strategy & Scope</th>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>ClusterIP</td>
+            <td style='padding:4px;'>Exposes the Service on a cluster-internal IP. Default option. Only accessible inside cluster scopes.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>NodePort</td>
+            <td style='padding:4px;'>Exposes the Service on each Node's IP at a static port (30000-32767).</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>LoadBalancer</td>
+            <td style='padding:4px;'>Exposes the Service externally using a cloud provider's load balancer.</td>
+          </tr>
+        </table>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Diagnostics Commands Cheatsheet</h3>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+# View container resource limits utilization
+kubectl top pods -n production
+
+# Inspect events trace of crashing pods
+kubectl describe pod/app-pod-name -n production
+
+# Forward traffic to local port for manual database checking
+kubectl port-forward svc/database-service 5432:5432
+
+# Stream logs of multiple containers matching selector label
+kubectl logs -f -l app=payment-processor --all-containers -n production
+        </pre>
+    

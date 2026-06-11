@@ -1,0 +1,57 @@
+{
+  "name": "karl-swe-agent",
+  "displayName": "Karl SWE Agent",
+  "description": "Local Multi-Agent Software Engineering swarm for VS Code, powered by Karl.",
+  "version": "1.0.0",
+  "publisher": "ethan",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Programming Languages"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "karl.fixSelection",
+        "title": "Ask Karl to Refactor Selection",
+        "category": "Karl Swarm"
+      },
+      {
+        "command": "karl.openSidebar",
+        "title": "Open Karl Swarm Panel",
+        "category": "Karl Swarm"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "karl.fixSelection",
+          "when": "editorHasSelection",
+          "group": "karl@1"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "karl-swarm",
+          "title": "Karl Swarm",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "karl-swarm": [
+        {
+          "type": "webview",
+          "id": "karl.sidebarView",
+          "title": "Karl Agent Swarm"
+        }
+      ]
+    }
+  }
+}

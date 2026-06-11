@@ -46,28 +46,6 @@ def _label(text: str, obj: str = "") -> QLabel:
 
 # ── chat display ─────────────────────────────────────────────────────────────
 
-_USER_TPL = (
-    '<div style="margin:10px 0 4px 60px; text-align:right;">'
-    '<div style="color:#505068;font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">'
-    'YOU &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:#00C2FF;text-decoration:none;">branch</a></div>'
-    '<div style="background:#1C1C2A;border:1px solid #383850;border-radius:4px;'
-    'padding:10px 14px;color:#E4E4F0;font-size:10pt;'
-    'white-space:pre-wrap;display:inline-block;text-align:left;">{text}</div>'
-    '</div>'
-)
-
-_KARL_HDR = (
-    '<div style="margin:10px 60px 0 0;">'
-    '<div style="color:#505068;font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">'
-    'KARL &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:#00C2FF;text-decoration:none;">branch</a></div>'
-    '<div style="background:#14141F;border:1px solid #252535;border-radius:4px;'
-    'padding:10px 14px;color:#E4E4F0;font-size:10pt;'
-    'white-space:pre-wrap;min-height:1em;">'
-)
-
-_KARL_FOOT = '</div></div>'
-
-
 class ChatView(QTextBrowser):
     """Scrollable conversation display with streaming support."""
 
@@ -79,6 +57,21 @@ class ChatView(QTextBrowser):
         self._streaming_buf = ""
         self._streaming = False
         self._streaming_node_id = ""
+        # Default fallback theme colors
+        self.theme_colors = {
+            "text_lo": "#505068",
+            "accent": "#00C2FF",
+            "bg_raised": "#1C1C2A",
+            "border_hi": "#383850",
+            "text_hi": "#E4E4F0",
+            "bg_surface": "#14141F",
+            "border": "#252535",
+            "yellow": "#F0B030",
+        }
+
+    def set_theme(self, theme_colors: dict):
+        self.theme_colors = theme_colors
+        self._render_all()
 
     # public API ──────────────────────────────────────────────────────────────
 
@@ -87,15 +80,46 @@ class ChatView(QTextBrowser):
         self._messages.append(("user", text, node_id))
         self._render_all()
 
+    def _get_karl_hdr(self, node_id: str) -> str:
+        text_lo = self.theme_colors.get("text_lo", "#505068")
+        accent = self.theme_colors.get("accent", "#00C2FF")
+        bg_surface = self.theme_colors.get("bg_surface", "#14141F")
+        border = self.theme_colors.get("border", "#252535")
+        text_hi = self.theme_colors.get("text_hi", "#E4E4F0")
+        return (
+            f'<div style="margin:10px 60px 0 0;">'
+            f'<div style="color:{text_lo};font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">'
+            f'KARL &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:{accent};text-decoration:none;">branch</a></div>'
+            f'<div style="background:{bg_surface};border:1px solid {border};border-radius:4px;'
+            f'padding:10px 14px;color:{text_hi};font-size:10pt;'
+            f'white-space:pre-wrap;min-height:1em;">'
+        )
+
+    def _get_user_html(self, text: str, node_id: str) -> str:
+        text_lo = self.theme_colors.get("text_lo", "#505068")
+        accent = self.theme_colors.get("accent", "#00C2FF")
+        bg_raised = self.theme_colors.get("bg_raised", "#1C1C2A")
+        border_hi = self.theme_colors.get("border_hi", "#383850")
+        text_hi = self.theme_colors.get("text_hi", "#E4E4F0")
+        safe_text = _escape(text)
+        return (
+            f'<div style="margin:10px 0 4px 60px; text-align:right;">'
+            f'<div style="color:{text_lo};font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">'
+            f'YOU &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:{accent};text-decoration:none;">branch</a></div>'
+            f'<div style="background:{bg_raised};border:1px solid {border_hi};border-radius:4px;'
+            f'padding:10px 14px;color:{text_hi};font-size:10pt;'
+            f'white-space:pre-wrap;display:inline-block;text-align:left;">{safe_text}</div>'
+            f'</div>'
+        )
+
     def begin_stream(self, node_id: str = ""):
         self._streaming = True
         self._streaming_buf = ""
         self._streaming_node_id = node_id
-        # Append the karl header block then let tokens stream in
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.setTextCursor(cursor)
-        self.insertHtml(_KARL_HDR.format(node_id=node_id))
+        self.insertHtml(self._get_karl_hdr(node_id))
 
     def append_token(self, token: str):
         if not self._streaming:
@@ -114,13 +138,11 @@ class ChatView(QTextBrowser):
         self._messages.append(("assistant", self._streaming_buf, final_node_id))
         self._streaming_buf = ""
         self._streaming = False
-        # Close the HTML block we opened in begin_stream
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.insertHtml(_KARL_FOOT)
+        self.insertHtml('</div></div>')
         self.setTextCursor(cursor)
         self.ensureCursorVisible()
-        # Cleanly re-render with the final node ID and links
         self._render_all()
 
     def clear_display(self):
@@ -134,12 +156,12 @@ class ChatView(QTextBrowser):
             self._messages[-1] = ("assistant", text, self._messages[-1][2])
             self._render_all()
 
-
     def append_system_note(self, text: str):
         self._finalize_stream()
         safe = _escape(text)
+        text_lo = self.theme_colors.get("text_lo", "#505068")
         html = (
-            f'<div style="margin:6px 0;color:#505068;font-size:8pt;'
+            f'<div style="margin:6px 0;color:{text_lo};font-size:8pt;'
             f'text-align:center;">{safe}</div>'
         )
         cursor = self.textCursor()
@@ -151,18 +173,24 @@ class ChatView(QTextBrowser):
         self._finalize_stream()
         if not results:
             return
+        bg_raised = self.theme_colors.get("bg_raised", "#1C1C2A")
+        border_hi = self.theme_colors.get("border_hi", "#383850")
+        accent = self.theme_colors.get("accent", "#00C2FF")
+        text_hi = self.theme_colors.get("text_hi", "#E4E4F0")
+        yellow = self.theme_colors.get("yellow", "#F0B030")
+        
         lines = []
         lines.append(
-            '<div style="margin:8px 60px 8px 10px; padding:10px 12px; '
-            'background:#1C1C2A; border:1px solid #383850; border-radius:4px; '
-            'font-family: \'JetBrains Mono\', monospace; font-size:8.5pt;">'
+            f'<div style="margin:8px 60px 8px 10px; padding:10px 12px; '
+            f'background:{bg_raised}; border:1px solid {border_hi}; border-radius:4px; '
+            f'font-family: \'JetBrains Mono\', monospace; font-size:8.5pt;">'
         )
-        lines.append('<div style="color:#00C2FF; font-weight:bold; margin-bottom:6px;">🔍 Injected RAG Context:</div>')
+        lines.append(f'<div style="color:{accent}; font-weight:bold; margin-bottom:6px;">🔍 Injected RAG Context:</div>')
         for r in results:
             lines.append(
-                f'<div style="color:#E4E4F0; margin-bottom:4px;">'
+                f'<div style="color:{text_hi}; margin-bottom:4px;">'
                 f'• <b>{_escape(r["source_file"])}</b> (Chunk {r["chunk_id"]}, distance: '
-                f'<span style="color:#F0B030;">{r["distance"]:.4f}</span>)'
+                f'<span style="color:{yellow};">{r["distance"]:.4f}</span>)'
                 f'</div>'
             )
         lines.append('</div>')
@@ -181,11 +209,10 @@ class ChatView(QTextBrowser):
     def _render_all(self):
         parts = []
         for role, text, node_id in self._messages:
-            safe = _escape(text)
             if role == "user":
-                parts.append(_USER_TPL.format(text=safe, node_id=node_id))
+                parts.append(self._get_user_html(text, node_id))
             else:
-                parts.append(_KARL_HDR.format(node_id=node_id) + safe + _KARL_FOOT)
+                parts.append(self._get_karl_hdr(node_id) + _escape(text) + '</div></div>')
         self.setHtml(
             '<html><body style="background:transparent;margin:8px;">'
             + "".join(parts)
@@ -236,6 +263,13 @@ class WorkbenchWorkspace(QWidget):
         self._is_correcting = False
 
         self._build_ui()
+        
+        # Initialize dynamic chat bubble colors from theme config
+        theme_name = getattr(self.state, "theme_name", "Karl Obsidian")
+        custom_accent = getattr(self.state, "custom_accent", None)
+        from app.ui.themes import get_theme_colors
+        self._chat_view.set_theme(get_theme_colors(theme_name, custom_accent))
+
         self._connect_shortcuts()
         self._refresh_sessions()
         self._refresh_model_combo()
@@ -443,6 +477,13 @@ class WorkbenchWorkspace(QWidget):
         self._params_toggle.setToolTip("Toggle generation parameters")
         self._params_toggle.clicked.connect(self._toggle_params)
         ctrl_layout.addWidget(self._params_toggle)
+
+        self._sessions_toggle = QPushButton("☰")
+        self._sessions_toggle.setObjectName("btn-ghost")
+        self._sessions_toggle.setFixedWidth(28)
+        self._sessions_toggle.setToolTip("Toggle Sessions panel")
+        self._sessions_toggle.clicked.connect(self._toggle_sessions)
+        ctrl_layout.addWidget(self._sessions_toggle)
 
         ctrl_layout.addStretch()
 
@@ -672,9 +713,13 @@ class WorkbenchWorkspace(QWidget):
                 self._thread.request_stop()
 
     def _toggle_reasoning(self):
-        visible = self._reasoning_view.isVisible()
-        self._reasoning_view.setVisible(not visible)
+        visible = self._reasoning_panel.isVisible()
+        self._reasoning_panel.setVisible(not visible)
         self._toggle_reason_btn.setText("show" if visible else "hide")
+
+    def _toggle_sessions(self):
+        visible = self._sessions_panel.isVisible()
+        self._sessions_panel.setVisible(not visible)
 
     def _toggle_params(self):
         visible = not self._params_drawer.isVisible()

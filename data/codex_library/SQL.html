@@ -1,0 +1,84 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>🖧 SQL Optimization & Engine Internals</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Relational databases isolate queries. This reference sheet details query pipeline execution orders, window function frames, execution plans, and transaction concurrency models.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Logical Query Processing Order</h3>
+        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
+          <tr style='border-bottom:1px solid #252535;'>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Step</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Clause</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Engine Action</th>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; color:#2DD4A0;'>1</td>
+            <td style='padding:4px; font-family:monospace;'>FROM / JOIN</td>
+            <td style='padding:4px;'>Identifies source datasets and computes virtual cartesian products.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; color:#2DD4A0;'>2</td>
+            <td style='padding:4px; font-family:monospace;'>WHERE</td>
+            <td style='padding:4px;'>Filters records based on column expressions (cannot access SELECT aliases).</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; color:#2DD4A0;'>3</td>
+            <td style='padding:4px; font-family:monospace;'>GROUP BY</td>
+            <td style='padding:4px;'>Buckets matched data rows into group keys.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; color:#2DD4A0;'>4</td>
+            <td style='padding:4px; font-family:monospace;'>HAVING</td>
+            <td style='padding:4px;'>Applies filtering logic to grouped aggregate properties.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; color:#2DD4A0;'>5</td>
+            <td style='padding:4px; font-family:monospace;'>SELECT / WINDOW</td>
+            <td style='padding:4px;'>Projects columns, computes window calculations, and evaluates expressions.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; color:#2DD4A0;'>6</td>
+            <td style='padding:4px; font-family:monospace;'>DISTINCT</td>
+            <td style='padding:4px;'>Filters out duplicates.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; color:#2DD4A0;'>7</td>
+            <td style='padding:4px; font-family:monospace;'>ORDER BY</td>
+            <td style='padding:4px;'>Sorts results using key arrays (has access to projected column aliases).</td>
+          </tr>
+        </table>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Window Functions & Framing Boundaries</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Window clauses compute parameters across segments without collapsing records. Specifying frames optimizes processing limits.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+SELECT txn_id, user_id, amount,
+       -- Cumulative sum limited to previous 3 transactions plus current row
+       SUM(amount) OVER (
+           PARTITION BY user_id 
+           ORDER BY txn_date 
+           ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+       ) as moving_sum,
+       -- Compare value against user's prior record
+       LAG(amount, 1) OVER (PARTITION BY user_id ORDER BY txn_date) as prev_amount
+FROM transactions;
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Recursive Common Table Expressions (CTEs)</h3>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+WITH RECURSIVE org_hierarchy AS (
+    -- Anchor Member
+    SELECT emp_id, manager_id, name, 1 as depth
+    FROM employees WHERE manager_id IS NULL
+    UNION ALL
+    -- Recursive Member
+    SELECT e.emp_id, e.manager_id, e.name, oh.depth + 1
+    FROM employees e
+    JOIN org_hierarchy oh ON e.manager_id = oh.emp_id
+)
+SELECT * FROM org_hierarchy ORDER BY depth;
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Indexes & Concurrency Isolation Levels</h3>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Index Scan vs Seek:</b> Index Seek traverses B-tree leaves to extract key rows directly. Index Scan evaluates entire indices sequentially, running if tables lack targeted indexes.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>ACID & MVCC:</b> Multi-Version Concurrency Control handles parallel reads/writes without table-wide locks. Read transactions access snapshots while write updates write new node variants.</li>
+        </ul>
+    

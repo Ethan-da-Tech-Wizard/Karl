@@ -1,0 +1,71 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>🦀 Rust Systems & Memory Management Manual</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Rust delivers performance guarantees alongside memory safety. This guide specifies borrowing semantics, trait dispatch models, concurrency containers, and raw unsafe operations.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Ownership, Lifetimes & Drop Checker</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Rust enforces safety at compile-time. Values are owned exclusively by single scopes. References are bounded by explicit lifetimes (<code>'a</code>) to prevent dangling references.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+// Structure capturing references must specify lifetime mappings
+struct Segment<'a> {
+    buffer: &'a [u8],
+}
+
+// Function returning longest slice enforces matching inputs and output lifetimes
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() > y.len() { x } else { y }
+}
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Static vs Dynamic Dispatch</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Traits represent abstract structures. Compilers dispatch them statically using monomorphization, or dynamically using virtual lookup tables (vtables).</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+trait Executor {
+    fn run(&self);
+}
+
+// Static Dispatch (Generates separate functions at compile-time, zero runtime overhead)
+fn process_static<E: Executor>(exec: E) {
+    exec.run();
+}
+
+// Dynamic Dispatch (Single function using runtime vtable pointers)
+fn process_dynamic(exec: &dyn Executor) {
+    exec.run();
+}
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Concurrency Safety: Send, Sync & Smart Containers</h3>
+        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
+          <tr style='border-bottom:1px solid #252535;'>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Smart Pointer</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Strategy, Thread-Safety & Interior Mutability</th>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Box&lt;T&gt;</td>
+            <td style='padding:4px;'>Standard heap allocation. Exclusive ownership. Implements <code>Send</code> if T is <code>Send</code>.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Rc&lt;T&gt; / RefCell&lt;T&gt;</td>
+            <td style='padding:4px;'>Single-threaded reference counting. RefCell enforces write borrowing checks at runtime. Not thread-safe (lacks <code>Send</code> and <code>Sync</code>).</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Arc&lt;T&gt; / Mutex&lt;T&gt;</td>
+            <td style='padding:4px;'>Atomic Reference Counter. Mutex wraps objects, locking write threads concurrently. Safe to share across threads.</td>
+          </tr>
+        </table>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Unsafe Rust & FFI</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Unsafe blocks allow dereferencing raw pointers, calling foreign external C functions, and mutating static variables.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+fn unsafe_swap(a: &mut i32, b: &mut i32) {
+    let raw_a = a as *mut i32;
+    let raw_b = b as *mut i32;
+    unsafe {
+        // Direct memory dereference bypasses borrow checker
+        let temp = std::ptr::read(raw_a);
+        std::ptr::write(raw_a, std::ptr::read(raw_b));
+        std::ptr::write(raw_b, temp);
+    }
+}
+        </pre>
+    

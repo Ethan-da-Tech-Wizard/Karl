@@ -1,0 +1,32 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>🎨 CSS Layouts & Rendering Engine Mechanics</h2>
+        <p style='color:#9090A8; line-height:1.4;'>CSS defines DOM layout rendering properties. This reference sheet details flexbox boundaries, grid structures, animation performance, and custom properties.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Flexbox Alignment & Grid Blueprints</h3>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+/* Flexbox Blueprint: centers elements inside row */
+.align-center {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* Grid Layout: auto-adjusting column widths based on min/max margins */
+.grid-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+}
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Composite Layer Animations & GPU Acceleration</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Layout modifications (e.g. `width`, `top`, `margin`) trigger browser redraw cycles. Utilize compositing properties to optimize GPU layers.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+/* Bypasses layout reflow cycles */
+.fade-slide-box {
+    will-change: transform, opacity;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+    transform: translate3d(0, 0, 0); /* Forces GPU composition */
+}
+        </pre>
+    

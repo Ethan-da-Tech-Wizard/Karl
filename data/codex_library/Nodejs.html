@@ -1,0 +1,49 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>⬢ Node.js Engine & Concurrency Manual</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Node.js integrates Google's V8 engine with libuv to support high-throughput, non-blocking asynchronous runtimes. This guide details event loop phases, backpressure management, and multi-threaded isolation.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Libuv Event Loop & Microtasks</h3>
+        <p style='color:#9090A8; line-height:1.4;'>The event loop processes non-blocking I/O across six key phases. Microtasks (like <code>process.nextTick()</code> and <code>Promise</code> callbacks) execute completely after the active phase finishes, before yielding to the next phase.</p>
+        <ol style='color:#9090A8; line-height:1.3;'>
+          <li><b>Timers:</b> Executes callbacks scheduled by <code>setTimeout()</code> and <code>setInterval()</code>.</li>
+          <li><b>Pending Callbacks:</b> Processes deferred socket and resource handler operations.</li>
+          <li><b>Idle, Prepare:</b> Used internally for system tasks.</li>
+          <li><b>Poll:</b> Blocks to retrieve new I/O events, executing connection callbacks.</li>
+          <li><b>Check:</b> Executes callbacks scheduled by <code>setImmediate()</code>.</li>
+          <li><b>Close Callbacks:</b> Processes socket/file close operations (e.g., <code>socket.on('close')</code>).</li>
+        </ol>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Streams Pipeline & Backpressure</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Streams process data iteratively to prevent memory leaks. Backpressure pauses source reading operations if internal write queues fill up.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+const { pipeline, Transform } = require('stream');
+const fs = require('fs');
+
+// Custom encryption/processing stream
+const encryptTransformer = new Transform({
+    transform(chunk, encoding, callback) {
+        for (let i = 0; i < chunk.length; i++) {
+            chunk[i] ^= 0x5A; // Simple XOR operation
+        }
+        callback(null, chunk);
+    }
+});
+
+// pipeline handles backpressure and automatically closes streams on error
+pipeline(
+    fs.createReadStream('source.zip'),
+    encryptTransformer,
+    fs.createWriteStream('encrypted.zip'),
+    (err) => {
+        if (err) console.error('Processing failed:', err);
+        else print('Stream processed successfully');
+    }
+);
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Thread Isolation vs Clustering</h3>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Cluster Module:</b> Spawns child processes using <code>child_process.fork()</code>. All child processes share port allocations, using round-robin routing handles to balance load.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Worker Threads:</b> Spawns separate threads sharing memory zones via <code>SharedArrayBuffer</code>. Ideal for intensive computing within single process scopes.</li>
+        </ul>
+    

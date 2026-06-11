@@ -1,3 +1,5 @@
+import tests.qt_test_helper  # noqa: F401
+
 import os
 import sys
 import time

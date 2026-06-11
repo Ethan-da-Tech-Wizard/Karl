@@ -13,9 +13,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QLabel, QLineEdit,
     QFrame, QDoubleSpinBox, QSpinBox, QFileDialog,
     QMessageBox, QGroupBox, QScrollArea, QProgressBar,
-    QComboBox,
+    QComboBox, QColorDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor
 
 from app.ui.themes import MONO
 
@@ -138,6 +139,7 @@ class SystemConfigWorkspace(QWidget):
         self._workbench = workbench_ref
         self._download_thread = None
         self._active_threads = set()
+        self._active_custom_accent = None
         self._load_registry()
         self.setObjectName("workspace-root")
         self._build_ui()
@@ -176,6 +178,7 @@ class SystemConfigWorkspace(QWidget):
         tabs.addTab(self._build_registry_tab(), "Registry")
         tabs.addTab(self._build_params_tab(), "Defaults")
         tabs.addTab(self._build_identity_tab(), "Identity")
+        tabs.addTab(self._build_theme_tab(), "Theme")
         tabs.addTab(self._build_hardware_tab(), "Hardware")
         root.addWidget(tabs, 1)
 
@@ -897,3 +900,153 @@ class SystemConfigWorkspace(QWidget):
                 f"• Top-P: {top_p}\n"
                 f"• Max Tokens: {max_tokens}"
             )
+
+    # ── theme tab ─────────────────────────────────────────────────────────────
+
+    def _build_theme_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        panel = QWidget()
+        panel.setObjectName("panel")
+        p_layout = QVBoxLayout(panel)
+        p_layout.setContentsMargins(12, 12, 12, 12)
+        p_layout.setSpacing(10)
+
+        p_layout.addWidget(_section("THEME ENGINE"))
+
+        # Presets Combobox
+        self._theme_preset_combo = QComboBox()
+        from app.ui.themes import THEMES
+        for name in THEMES.keys():
+            self._theme_preset_combo.addItem(name)
+        
+        self._theme_preset_combo.currentTextChanged.connect(self._on_preset_changed)
+        p_layout.addWidget(_row("Preset Palette", self._theme_preset_combo))
+
+        # Custom Accent Picker Row
+        self._custom_accent_btn = QPushButton("Pick Custom Accent...")
+        self._custom_accent_btn.clicked.connect(self._pick_custom_accent)
+        
+        accent_layout = QHBoxLayout()
+        accent_layout.setSpacing(8)
+        accent_layout.addWidget(self._custom_accent_btn)
+        
+        self._clear_accent_btn = QPushButton("Reset Accent")
+        self._clear_accent_btn.clicked.connect(self._reset_custom_accent)
+        accent_layout.addWidget(self._clear_accent_btn)
+        
+        accent_widget = QWidget()
+        accent_widget_layout = QHBoxLayout(accent_widget)
+        accent_widget_layout.setContentsMargins(0, 0, 0, 0)
+        accent_widget_layout.addLayout(accent_layout)
+        p_layout.addWidget(_row("Custom Accent", accent_widget))
+
+        # Background Tones Combobox
+        self._bg_tone_combo = QComboBox()
+        self._bg_tone_combo.addItems(["Default", "Pitch Black", "Warm Sepia", "Cool Slate"])
+        self._bg_tone_combo.currentTextChanged.connect(self._apply_active_theme)
+        p_layout.addWidget(_row("Background Tone", self._bg_tone_combo))
+
+        # Big Save / Apply Button
+        apply_btn = QPushButton("Save & Apply Theme")
+        apply_btn.setObjectName("btn-primary")
+        apply_btn.clicked.connect(self._apply_active_theme)
+        p_layout.addWidget(apply_btn)
+
+        layout.addWidget(panel)
+        layout.addStretch()
+        
+        # Load active configuration if file exists
+        self._load_active_theme_config()
+        
+        return w
+
+    def _load_active_theme_config(self):
+        config_path = "data/theme_config.json"
+        theme_name = "Karl Obsidian"
+        custom_accent = None
+        bg_tone = "Default"
+        
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    theme_name = config.get("theme_name", "Karl Obsidian")
+                    custom_accent = config.get("custom_accent")
+                    bg_tone = config.get("bg_tone", "Default")
+            except Exception:
+                pass
+                
+        self._theme_preset_combo.blockSignals(True)
+        idx = self._theme_preset_combo.findText(theme_name)
+        if idx >= 0:
+            self._theme_preset_combo.setCurrentIndex(idx)
+        self._theme_preset_combo.blockSignals(False)
+        
+        self._bg_tone_combo.blockSignals(True)
+        idx = self._bg_tone_combo.findText(bg_tone)
+        if idx >= 0:
+            self._bg_tone_combo.setCurrentIndex(idx)
+        self._bg_tone_combo.blockSignals(False)
+        
+        self._active_custom_accent = custom_accent
+        if custom_accent:
+            self._custom_accent_btn.setText(f"Accent: {custom_accent}")
+        else:
+            self._custom_accent_btn.setText("Pick Custom Accent...")
+
+    def _on_preset_changed(self):
+        self._apply_active_theme()
+
+    def _pick_custom_accent(self):
+        preset_name = self._theme_preset_combo.currentText()
+        from app.ui.themes import THEMES
+        default_color = THEMES.get(preset_name, {}).get("accent", "#00C2FF")
+        if self._active_custom_accent:
+            default_color = self._active_custom_accent
+            
+        color = QColorDialog.getColor(QColor(default_color), self, "Select Custom Accent Color")
+        if color.isValid():
+            self._active_custom_accent = color.name().upper()
+            self._custom_accent_btn.setText(f"Accent: {self._active_custom_accent}")
+            self._apply_active_theme()
+
+    def _reset_custom_accent(self):
+        self._active_custom_accent = None
+        self._custom_accent_btn.setText("Pick Custom Accent...")
+        self._apply_active_theme()
+
+    def _apply_active_theme(self):
+        theme_name = self._theme_preset_combo.currentText()
+        bg_tone = self._bg_tone_combo.currentText()
+        custom_accent = self._active_custom_accent
+        
+        from app.ui.themes import get_theme_colors, get_theme_stylesheet
+        from PyQt6.QtWidgets import QApplication
+        
+        stylesheet_str = get_theme_stylesheet(theme_name, custom_accent, bg_tone)
+        QApplication.instance().setStyleSheet(stylesheet_str)
+        
+        theme_colors = get_theme_colors(theme_name, custom_accent, bg_tone)
+        
+        self.state.theme_name = theme_name
+        self.state.custom_accent = custom_accent
+        self.state.bg_tone = bg_tone
+        
+        if self._workbench:
+            self._workbench._chat_view.set_theme(theme_colors)
+            
+        config = {
+            "theme_name": theme_name,
+            "custom_accent": custom_accent,
+            "bg_tone": bg_tone
+        }
+        os.makedirs("data", exist_ok=True)
+        try:
+            with open("data/theme_config.json", "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            print(f"[SystemConfig] Error saving theme config: {e}")

@@ -1,0 +1,34 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>⚡ FastAPI Core Framework Reference</h2>
+        <p style='color:#9090A8; line-height:1.4;'>FastAPI leverages Python type hints to enforce data validations (via Pydantic) and auto-generates OpenAPI definitions. This guide details dependency injections, database lifecycles, and scaling rules.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Dependency Injection & Yield Lifecycles</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Dependencies resolve hierarchically. Using yield allows wrapping operations with teardown procedures (e.g. database sessions cleanup).</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+from fastapi import FastAPI, Depends
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+
+engine = create_async_engine("postgresql+asyncpg://user:pass@host/db")
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+app = FastAPI()
+
+# Yield dependency handles database session cleanup
+async def get_db_session():
+    async with AsyncSessionLocal() as session:
+        yield session  # Yields control to target route
+        # Session automatically commits/closes when route finishes
+        
+@app.get("/records")
+async def get_records(db: AsyncSession = Depends(get_db_session)):
+    # process records query
+    return {"status": "ok"}
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Thread Pool Scaling: Async vs Sync routes</h3>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>async def routes:</b> Execute directly on the ASGI event loop. Routes must not run blocking CPU calculations or synchronous I/O.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>def (sync) routes:</b> Offloaded to an external thread pool by the framework. Bypasses blocking issues on the main loop.</li>
+        </ul>
+    

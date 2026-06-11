@@ -1,0 +1,27 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>⌨ TypeScript Advanced Typing Reference</h2>
+        <p style='color:#9090A8; line-height:1.4;'>TypeScript adds static typing checks to JavaScript. This manual covers advanced mapped types, utility types, and generic parameters.</p>
+        
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Advanced Mapped & Utility Types</h3>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+interface UserProfile {
+    id: string;
+    email: string;
+    token: string;
+}
+
+// Omit utility excludes keys from structural models
+type PublicProfile = Omit<UserProfile, 'token'>;
+
+// Partial utility marks all attributes optional
+type UpdatedProfile = Partial<UserProfile>;
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Conditional & Infer Types</h3>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+// Extracts the inner type from Promisified types
+type UnpackPromise<T> = T extends Promise<infer U> ? U : T;
+
+type ResolvedVal = UnpackPromise<Promise<string>>; // Resolves to: string
+        </pre>
+    

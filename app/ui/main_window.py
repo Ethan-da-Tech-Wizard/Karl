@@ -30,6 +30,7 @@ class MainWindow(QMainWindow):
 
         self._state = AppState()
         self._build_ui()
+        self._load_theme_config()
         self._connect_signals()
         self._init_model()
 
@@ -117,6 +118,40 @@ class MainWindow(QMainWindow):
 
     def _on_adapter_changed(self, name: str):
         self._state.adapter_name = name if name else None
+
+    def _load_theme_config(self):
+        import json
+        import os
+        from PyQt6.QtWidgets import QApplication
+        from app.ui.themes import get_theme_colors, get_theme_stylesheet
+        
+        config_path = "data/theme_config.json"
+        theme_name = "Karl Obsidian"
+        custom_accent = None
+        bg_tone = "Default"
+        
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    theme_name = config.get("theme_name", "Karl Obsidian")
+                    custom_accent = config.get("custom_accent")
+                    bg_tone = config.get("bg_tone", "Default")
+            except Exception:
+                pass
+                
+        # Apply stylesheet to application
+        stylesheet_str = get_theme_stylesheet(theme_name, custom_accent, bg_tone)
+        QApplication.instance().setStyleSheet(stylesheet_str)
+        
+        # Save active settings to state
+        self._state.theme_name = theme_name
+        self._state.custom_accent = custom_accent
+        self._state.bg_tone = bg_tone
+        
+        # Apply theme colors to the chat bubbles
+        theme_colors = get_theme_colors(theme_name, custom_accent, bg_tone)
+        self._workbench._chat_view.set_theme(theme_colors)
 
     def closeEvent(self, event):
         self._workbench.on_close()
