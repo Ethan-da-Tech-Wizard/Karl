@@ -33,13 +33,23 @@ class SwarmOrchestratorThread(QThread):
     test_result = pyqtSignal(bool, str)           # passed, error_traceback
     finished_swarm = pyqtSignal(bool, str)        # success, final_summary
 
-    def __init__(self, workspace_path: str, objective: str, test_command: str):
+    def __init__(self, workspace_path: str, objective: str, test_command: str, hyperparams: dict = None):
         super().__init__()
         self.state = SwarmSessionState(workspace_path, objective, test_command)
         self.architect = ArchitectAgent()
         self.coder = CoderAgent()
         self.tester = TesterAgent(workspace_path)
         self._stop_requested = False
+
+        if hyperparams:
+            temp = hyperparams.get("temperature")
+            max_tok = hyperparams.get("max_tokens")
+            if temp is not None:
+                self.architect.temperature = temp
+                self.coder.temperature = temp
+            if max_tok is not None:
+                self.architect.max_tokens = max_tok
+                self.coder.max_tokens = max_tok
 
     def request_stop(self):
         self._stop_requested = True

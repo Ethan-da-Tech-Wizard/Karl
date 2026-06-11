@@ -5,6 +5,7 @@ Hosts a local WebSocket server to bridge communication between Karl's Multi-Agen
 and editor extensions (such as VS Code/Code OSS).
 """
 
+import os
 import json
 import asyncio
 import threading
@@ -12,6 +13,11 @@ import websockets
 from typing import Set, Optional, Any
 from PyQt6.QtCore import Qt
 from app.engine.swarm_orchestrator import SwarmOrchestratorThread
+from app.engine.llm_thread import LLMThread
+from app.engine.agentic_thread import AgenticThread
+from app.utils.rag_pipeline import RAGPipeline
+from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
+from app.ui.workspaces.prompt_lab import generate_char_diff_html
 
 
 class WebSocketServerManager:
@@ -36,12 +42,46 @@ class WebSocketServerManager:
     def __init__(self, port: int = 8080):
         self.port = port
         self.clients: Set[Any] = set()
+        self.client_histories = {}
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.loop_thread: Optional[threading.Thread] = None
         self.orchestrator: Optional[SwarmOrchestratorThread] = None
+        self.chat_thread = None
+        self.rag = RAGPipeline()
+        self._seed_codex()
         self.server = None
         self.started_event = threading.Event()
         self._start_loop_thread()
+
+    def _seed_codex(self):
+        library_dir = "data/codex_library"
+        os.makedirs(library_dir, exist_ok=True)
+        version_filepath = os.path.join(library_dir, ".version")
+        current_version = "5.0"
+
+        needs_upgrade = True
+        if os.path.exists(version_filepath):
+            try:
+                with open(version_filepath, "r", encoding="utf-8") as vf:
+                    if vf.read().strip() == current_version:
+                        needs_upgrade = False
+            except Exception:
+                pass
+
+        if needs_upgrade or not [f for f in os.listdir(library_dir) if f.endswith((".html", ".md"))]:
+            for topic, content in DEFAULT_LIBRARY.items():
+                safe_name = "".join(c for c in topic if c.isalnum() or c in (" ", "_", "-")).strip()
+                filepath = os.path.join(library_dir, f"{safe_name}.html")
+                try:
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(content)
+                except Exception:
+                    pass
+            try:
+                with open(version_filepath, "w", encoding="utf-8") as vf:
+                    vf.write(current_version)
+            except Exception:
+                pass
 
     def _start_loop_thread(self):
         """Starts a background daemon thread running an asyncio event loop."""
@@ -72,6 +112,12 @@ class WebSocketServerManager:
                 self.orchestrator.request_stop()
                 self.orchestrator.wait()
 
+            # Stop chat thread if running
+            if self.chat_thread and self.chat_thread.isRunning():
+                if hasattr(self.chat_thread, "request_stop"):
+                    self.chat_thread.request_stop()
+                self.chat_thread.wait()
+
             # Stop websockets server
             future = asyncio.run_coroutine_threadsafe(self._stop_server(), self.loop)
             try:
@@ -93,6 +139,7 @@ class WebSocketServerManager:
 
     async def _handler(self, websocket, path=None):
         self.clients.add(websocket)
+        self.client_histories[websocket] = []
         print(f"[WebSocket] Client connected: {websocket.remote_address}")
         try:
             async for message in websocket:
@@ -129,10 +176,12 @@ class WebSocketServerManager:
                             self.orchestrator.wait()
 
                         # Start orchestrator QThread
+                        hyperparams = params.get("hyperparams", {})
                         self.orchestrator = SwarmOrchestratorThread(
                             workspace_path=workspace_path,
                             objective=objective,
-                            test_command=test_command
+                            test_command=test_command,
+                            hyperparams=hyperparams
                         )
 
                         # Bind PyQt signals with DirectConnection to bypass thread event loop queues
@@ -170,9 +219,174 @@ class WebSocketServerManager:
                             "result": {"status": "started"}
                         }))
 
+                    elif method == "submit_chat":
+                        message = params.get("message")
+                        workspace_path = params.get("workspace_path")
+                        hyperparams = params.get("hyperparams", {})
+
+                        if not message:
+                            await websocket.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": "Invalid params: message is required."
+                                }
+                            }))
+                            continue
+
+                        # Stop orchestrator if running
+                        if self.orchestrator and self.orchestrator.isRunning():
+                            self.orchestrator.request_stop()
+                            self.orchestrator.wait()
+
+                        # Stop chat thread if running
+                        if self.chat_thread and self.chat_thread.isRunning():
+                            if hasattr(self.chat_thread, "request_stop"):
+                                self.chat_thread.request_stop()
+                            self.chat_thread.wait()
+
+                        # Get client history
+                        history = self.client_histories.setdefault(websocket, [])
+                        history.append({"role": "user", "content": message})
+
+                        # Retrieve RAG chunks if enabled
+                        retrieved_chunks = []
+                        if hyperparams.get("rag_enabled", True):
+                            try:
+                                self.rag._load_index()
+                                retrieved_chunks = self.rag.retrieve(query=message, top_k=3)
+                            except Exception as re:
+                                print(f"[WebSocket] RAG retrieval error: {re}")
+
+                        system_prompt = hyperparams.get("system_prompt")
+                        if not system_prompt:
+                            system_prompt = (
+                                "You are Karl, a precise and thoughtful AI assistant. "
+                                "Always respond in English. "
+                                "Analyze and break down problems step-by-step. "
+                                "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
+                                "Double-check your derivations and arithmetic before writing the final answer."
+                            )
+
+                        agentic = hyperparams.get("agentic_loop_enabled", False)
+                        if agentic:
+                            self.chat_thread = AgenticThread(
+                                system_prompt=system_prompt,
+                                initial_history=history,
+                                hyperparams=hyperparams,
+                                retrieved_chunks=retrieved_chunks
+                            )
+                        else:
+                            self.chat_thread = LLMThread(
+                                system_prompt=system_prompt,
+                                chat_history=history,
+                                hyperparams=hyperparams,
+                                retrieved_chunks=retrieved_chunks
+                            )
+
+                        # Wire signals to broadcast methods (DirectConnection)
+                        self.chat_thread.new_thought_token.connect(
+                            lambda token: self._send_notification("chat_thought_token", {"token": token}),
+                            Qt.ConnectionType.DirectConnection
+                        )
+                        self.chat_thread.new_chat_token.connect(
+                            lambda token: self._send_notification("chat_response_token", {"token": token}),
+                            Qt.ConnectionType.DirectConnection
+                        )
+
+                        def make_on_finished(ws, hist, is_agentic):
+                            def on_finished(*args):
+                                response_text = ""
+                                if not is_agentic and len(args) >= 2:
+                                    response_text = args[1]
+                                elif is_agentic and self.chat_thread:
+                                    th = getattr(self.chat_thread, "chat_history", [])
+                                    if th and th[-1].get("role") == "assistant":
+                                        response_text = th[-1].get("content", "")
+
+                                if response_text:
+                                    hist.append({"role": "assistant", "content": response_text})
+
+                                self._send_notification("chat_finished", {})
+                            return on_finished
+
+                        if agentic:
+                            self.chat_thread.loop_finished.connect(
+                                make_on_finished(websocket, history, True),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                        else:
+                            self.chat_thread.generation_finished.connect(
+                                make_on_finished(websocket, history, False),
+                                Qt.ConnectionType.DirectConnection
+                            )
+
+                        self.chat_thread.error_occurred.connect(
+                            lambda err: self._send_notification("status_update", {"message": f"[Error] {err}"}),
+                            Qt.ConnectionType.DirectConnection
+                        )
+
+                        self.chat_thread.start()
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {"status": "started"}
+                        }))
+
+                    elif method == "list_codex_topics":
+                        library_dir = "data/codex_library"
+                        topics = []
+                        if os.path.exists(library_dir):
+                            topics = [os.path.splitext(f)[0] for f in sorted(os.listdir(library_dir)) if f.endswith((".html", ".md"))]
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {"topics": topics}
+                        }))
+
+                    elif method == "get_codex_content":
+                        topic = params.get("topic", "")
+                        content = ""
+                        if topic:
+                            library_dir = "data/codex_library"
+                            safe_name = "".join(c for c in topic if c.isalnum() or c in (" ", "_", "-")).strip()
+                            filepath = os.path.join(library_dir, f"{safe_name}.html")
+                            if os.path.exists(filepath):
+                                try:
+                                    with open(filepath, "r", encoding="utf-8") as f:
+                                        content = f.read()
+                                except Exception as e:
+                                    content = f"Error reading topic content: {e}"
+                            else:
+                                content = f"Guide not found for: {topic}"
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {"content": content}
+                        }))
+
+                    elif method == "compute_diff":
+                        text_a = params.get("text_a", "")
+                        text_b = params.get("text_b", "")
+                        diff_html = generate_char_diff_html(text_a, text_b)
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {"diff_html": diff_html}
+                        }))
+
                     elif method == "stop_task":
                         if self.orchestrator and self.orchestrator.isRunning():
                             self.orchestrator.request_stop()
+                            await websocket.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "result": {"status": "stopping"}
+                            }))
+                        elif self.chat_thread and self.chat_thread.isRunning():
+                            if hasattr(self.chat_thread, "request_stop"):
+                                self.chat_thread.request_stop()
                             await websocket.send(json.dumps({
                                 "jsonrpc": "2.0",
                                 "id": req_id,
@@ -210,6 +424,7 @@ class WebSocketServerManager:
             pass
         finally:
             self.clients.discard(websocket)
+            self.client_histories.pop(websocket, None)
             print(f"[WebSocket] Client disconnected: {websocket.remote_address}")
 
     def _send_notification(self, method: str, params: dict):
