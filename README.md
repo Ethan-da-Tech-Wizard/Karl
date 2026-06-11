@@ -83,25 +83,25 @@ cd vscode-extension
 npm install
 npx @vscode/vsce package
 ```
-This produces `karl-1.1.0.vsix` in the directory.
+This produces `karl-1.2.0.vsix` in the directory.
 
 ### 2. Install on VS Code
 Install the package directly into VS Code:
 ```bash
-code --install-extension karl-1.1.0.vsix
+code --install-extension karl-1.2.0.vsix
 ```
 
 ### 3. Install on Code OSS (Arch Linux)
 To install the package directly into Code OSS on Arch:
 ```bash
-code-oss --install-extension karl-1.1.0.vsix
+code-oss --install-extension karl-1.2.0.vsix
 ```
 
 ### 4. Publish to Open VSX Registry (for Code OSS Marketplace)
 To publish the extension under your own verified namespace on Open VSX (open-vsx.org):
 ```bash
 npx ovsx create-namespace your-github-username -p <your-open-vsx-access-token>
-npx ovsx publish karl-1.1.0.vsix -p <your-open-vsx-access-token>
+npx ovsx publish karl-1.2.0.vsix -p <your-open-vsx-access-token>
 ```
 
 ---

@@ -203,6 +203,46 @@ class KarlSidebarProvider {
             border-color: var(--vscode-focusBorder, #007fd4);
         }
 
+        /* Runtime status panel */
+        .runtime-panel {
+            background: var(--vscode-editor-background, #1e1e1e);
+            border: 1px solid var(--vscode-widget-border, #3c3c3c);
+            border-radius: 4px;
+            padding: 8px;
+            margin-bottom: 12px;
+        }
+        .runtime-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .runtime-cell {
+            min-width: 0;
+        }
+        .runtime-label {
+            display: block;
+            color: var(--vscode-descriptionForeground, #989898);
+            font-size: 8px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            margin-bottom: 2px;
+        }
+        .runtime-value {
+            display: block;
+            color: var(--vscode-foreground, #cccccc);
+            font-size: 10px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .runtime-value.good {
+            color: #7bf19f;
+        }
+        .runtime-value.warn {
+            color: #f1cf7b;
+        }
+
         .tab-content {
             display: none;
         }
@@ -533,6 +573,28 @@ class KarlSidebarProvider {
         </select>
     </div>
 
+    <!-- Runtime Status -->
+    <div class="runtime-panel">
+        <div class="runtime-grid">
+            <div class="runtime-cell">
+                <span class="runtime-label">Model</span>
+                <span class="runtime-value" id="runtimeModel">unknown</span>
+            </div>
+            <div class="runtime-cell">
+                <span class="runtime-label">State</span>
+                <span class="runtime-value" id="runtimeState">offline</span>
+            </div>
+            <div class="runtime-cell">
+                <span class="runtime-label">Adapter</span>
+                <span class="runtime-value" id="runtimeAdapter">none</span>
+            </div>
+            <div class="runtime-cell">
+                <span class="runtime-label">RAM / Context</span>
+                <span class="runtime-value" id="runtimeSystem">--</span>
+            </div>
+        </div>
+    </div>
+
     <!-- Parameter Config Drawer Trigger -->
     <div class="drawer-trigger" onclick="toggleSettingsDrawer()">
         <span>⚙ Settings Overrides</span>
@@ -677,6 +739,7 @@ class KarlSidebarProvider {
         let reconnectTimer = null;
         let activeEditPath = '';
         let chatFinished = true;
+        let runtimeStatusTimer = null;
 
         // Prompt Lab tracking variables
         let labOutputA = '';
@@ -758,6 +821,10 @@ class KarlSidebarProvider {
                     clearInterval(reconnectTimer);
                     reconnectTimer = null;
                 }
+                requestRuntimeStatus();
+                if (!runtimeStatusTimer) {
+                    runtimeStatusTimer = setInterval(requestRuntimeStatus, 4000);
+                }
 
                 // If Codex list is empty and currently in codex tab, load topics
                 if (document.getElementById('workspace-select').value === 'codex') {
@@ -777,6 +844,8 @@ class KarlSidebarProvider {
                         labRunning = false;
                         document.getElementById('labRunBtn').disabled = false;
                         log('[PromptLab] Diff rendering completed.');
+                    } else if (data.id === 30) { // runtime status
+                        renderRuntimeStatus(data.result);
                     } else if (data.id === 20) { // list topics
                         renderCodexTopics(data.result.topics);
                     } else if (data.id === 21) { // get topic content
@@ -881,11 +950,63 @@ class KarlSidebarProvider {
 
             socket.onclose = () => {
                 setStatus('status-disconnected', 'Offline');
+                renderRuntimeOffline();
+                if (runtimeStatusTimer) {
+                    clearInterval(runtimeStatusTimer);
+                    runtimeStatusTimer = null;
+                }
                 if (!reconnectTimer && autoConnect) {
                     log('[WebSocket] Connection lost. Retrying in 5 seconds...');
                     reconnectTimer = setInterval(connect, 5000);
                 }
             };
+        }
+
+        function requestRuntimeStatus() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 30,
+                method: 'get_runtime_status'
+            }));
+        }
+
+        function renderRuntimeStatus(status) {
+            const model = status.model || {};
+            const adapter = status.adapter || {};
+            const runtime = status.runtime || {};
+            const system = status.system || {};
+            const bridge = status.bridge || {};
+
+            const modelText = (model.name || 'none') + (model.loaded ? ' loaded' : ' ready');
+            const adapterText = adapter.name || 'none';
+            const stateText = runtime.state || 'idle';
+            const clients = Number.isInteger(bridge.clients) ? bridge.clients : 0;
+            const ramText = system.ram_mb === null || system.ram_mb === undefined ? '-- MB' : system.ram_mb + ' MB';
+            const ctxText = model.n_ctx ? model.n_ctx + ' ctx' : '-- ctx';
+
+            const modelEl = document.getElementById('runtimeModel');
+            const stateEl = document.getElementById('runtimeState');
+            const adapterEl = document.getElementById('runtimeAdapter');
+            const systemEl = document.getElementById('runtimeSystem');
+
+            modelEl.innerText = modelText;
+            stateEl.innerText = stateText + ' · ' + clients + ' client' + (clients === 1 ? '' : 's');
+            adapterEl.innerText = adapterText;
+            systemEl.innerText = ramText + ' · ' + ctxText;
+
+            stateEl.className = 'runtime-value ' + (stateText === 'running' ? 'warn' : 'good');
+            modelEl.className = 'runtime-value ' + (model.loaded ? 'good' : '');
+            adapterEl.className = 'runtime-value ' + (adapter.name ? 'good' : '');
+            systemEl.className = 'runtime-value';
+        }
+
+        function renderRuntimeOffline() {
+            document.getElementById('runtimeModel').innerText = 'unknown';
+            document.getElementById('runtimeState').innerText = 'offline';
+            document.getElementById('runtimeAdapter').innerText = 'none';
+            document.getElementById('runtimeSystem').innerText = '--';
+            document.getElementById('runtimeState').className = 'runtime-value warn';
         }
 
         function connectAndRun() {

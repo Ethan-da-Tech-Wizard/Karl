@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt
 from app.engine.swarm_orchestrator import SwarmOrchestratorThread
 from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
+from app.engine.model_loader import ModelLoader
 from app.utils.rag_pipeline import RAGPipeline
 from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
 from app.ui.workspaces.prompt_lab import generate_char_diff_html
@@ -82,6 +83,61 @@ class WebSocketServerManager:
                     vf.write(current_version)
             except Exception:
                 pass
+
+    def _active_model_config(self) -> dict:
+        filename = "deepseek-r1-1.5b.gguf"
+        adapter = None
+        active_path = os.path.join("data", "active_model.json")
+        if os.path.exists(active_path):
+            try:
+                with open(active_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                filename = data.get("filename") or data.get("model") or filename
+                adapter = data.get("adapter")
+            except Exception:
+                pass
+        return {"filename": filename, "adapter": adapter}
+
+    def _runtime_status(self) -> dict:
+        active_model = self._active_model_config()
+        loaded = ModelLoader.is_loaded()
+        model_name = ModelLoader.model_name() if loaded else active_model["filename"]
+        adapter = getattr(ModelLoader, "_active_adapter", None) if loaded else active_model["adapter"]
+        n_ctx = ModelLoader.n_ctx() if loaded else ModelLoader._read_registry_n_ctx(model_name)
+        swarm_active = bool(self.orchestrator and self.orchestrator.isRunning())
+        chat_active = bool(self.chat_thread and self.chat_thread.isRunning())
+
+        ram_mb = None
+        try:
+            import psutil
+            ram_mb = round(psutil.Process(os.getpid()).memory_info().rss / 1_048_576, 1)
+        except Exception:
+            pass
+
+        return {
+            "bridge": {
+                "port": self.port,
+                "clients": len(self.clients),
+                "listening": self.server is not None,
+            },
+            "runtime": {
+                "state": "running" if (swarm_active or chat_active) else "idle",
+                "swarm_active": swarm_active,
+                "chat_active": chat_active,
+            },
+            "model": {
+                "name": model_name,
+                "loaded": loaded,
+                "n_ctx": n_ctx,
+            },
+            "adapter": {
+                "name": adapter,
+                "loaded": bool(adapter),
+            },
+            "system": {
+                "ram_mb": ram_mb,
+            },
+        }
 
     def _start_loop_thread(self):
         """Starts a background daemon thread running an asyncio event loop."""
@@ -154,7 +210,14 @@ class WebSocketServerManager:
                 req_id = data.get("id")
 
                 try:
-                    if method == "submit_task":
+                    if method == "get_runtime_status":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._runtime_status()
+                        }))
+
+                    elif method == "submit_task":
                         objective = params.get("objective")
                         workspace_path = params.get("workspace_path")
                         test_command = params.get("test_command", "python run_tests.py")

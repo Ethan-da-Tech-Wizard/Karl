@@ -46,6 +46,7 @@ The bridge methods currently handled by `app/engine/websocket_server.py` are:
 
 | Method | Purpose |
 |--------|---------|
+| `get_runtime_status` | Return active model, adapter, context, RAM, bridge clients, and running state. |
 | `submit_task` | Start the multi-agent coding swarm against a workspace path. |
 | `submit_chat` | Start a single chat generation or agentic loop generation. |
 | `stop_task` | Stop the active swarm or chat thread. |
@@ -82,13 +83,13 @@ Package and install the extension:
 cd ~/karl/vscode-extension
 npm install
 npx @vscode/vsce package
-code --install-extension karl-1.1.0.vsix
+code --install-extension karl-1.2.0.vsix
 ```
 
 For Code OSS on Arch:
 
 ```bash
-code-oss --install-extension karl-1.1.0.vsix
+code-oss --install-extension karl-1.2.0.vsix
 ```
 
 Open the Karl Activity Bar panel. The extension connects to
@@ -183,7 +184,6 @@ Recommended next bridge methods:
 
 | Method | Result |
 |--------|--------|
-| `get_runtime_status` | Active model, adapter, RAM, loaded state, generation state. |
 | `list_models` | Installed GGUF files plus registry metadata. |
 | `set_active_model` | Writes `data/active_model.json`, resets `ModelLoader`. |
 | `download_model` | Streams model download progress from Karl. |

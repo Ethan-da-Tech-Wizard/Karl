@@ -405,6 +405,7 @@ Current JSON-RPC methods:
 
 | Method | Engine path | Purpose |
 |--------|-------------|---------|
+| `get_runtime_status` | `WebSocketServerManager._runtime_status()` | Return active model, adapter, context, RAM, bridge clients, and running state. |
 | `submit_task` | `SwarmOrchestratorThread` | Run the local Architect/Coder/Tester swarm against a workspace path. |
 | `submit_chat` | `LLMThread` or `AgenticThread` | Stream local chat or agentic-loop output to the editor. |
 | `stop_task` | active QThread | Stop the running swarm/chat task. |

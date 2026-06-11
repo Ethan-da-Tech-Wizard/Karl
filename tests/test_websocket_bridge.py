@@ -44,6 +44,34 @@ class TestWebSocketBridge(unittest.TestCase):
         # Clean shutdown and reset the singleton
         WebSocketServerManager.reset_instance()
 
+    def test_runtime_status_rpc(self):
+        async def run_client():
+            async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": 30,
+                    "method": "get_runtime_status"
+                }
+                await ws.send(json.dumps(payload))
+
+                raw_resp = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                resp = json.loads(raw_resp)
+
+                self.assertEqual(resp.get("id"), 30)
+                self.assertIn("result", resp)
+                result = resp["result"]
+                self.assertEqual(result["bridge"]["port"], self.port)
+                self.assertEqual(result["runtime"]["state"], "idle")
+                self.assertIn("model", result)
+                self.assertIn("adapter", result)
+                self.assertIn("system", result)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(run_client())
+        finally:
+            loop.close()
+
     @patch("app.engine.model_loader.ModelLoader.get_instance")
     def test_websocket_bridge_flow(self, mock_get_llm):
         # Mock LLM to return simple JSON plan and script contents

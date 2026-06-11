@@ -408,7 +408,7 @@ Priority order:
 
 | Priority | Capability | Practical target |
 |----------|------------|------------------|
-| 1 | Runtime status | Extension shows active model, adapter, RAM/VRAM, bridge state, generation state. |
+| 1 | Runtime status | ✅ Extension shows active model, adapter, RAM, bridge state, and generation state. |
 | 2 | Model registry | Extension can list installed GGUF files, show registry tiers, and set active model. |
 | 3 | Prompt Lab parity | Extension can save/load prompt pairs and run A/B comparisons with diff output. |
 | 4 | Knowledge Base parity | Extension can ingest selected files/folders and test retrieval with top-k/threshold controls. |
