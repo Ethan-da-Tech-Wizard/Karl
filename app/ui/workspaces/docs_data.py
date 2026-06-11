@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Default reference guides for Karl's Codex workspace.
-All guides are structured HTML fragments loaded dynamically.
+Exhaustive reference guides for Karl's Codex workspace.
+Provides complete, self-contained documentation of grammar, compilers, runtime loops,
+APIs, and optimization tactics for offline code generation.
 """
 
 DEFAULT_LIBRARY = {
@@ -95,387 +96,380 @@ DEFAULT_LIBRARY = {
     """,
     "Python": """
         <h2 style='color:#00C2FF; margin-top:0;'>🐍 Python Exhaustive Reference Guide</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Python is a highly dynamic, multi-paradigm interpreted language. This manual delivers a low-level and high-level structural reference on the CPython runtime, scopes, descriptors, metaprogramming, and concurrent event loops.</p>
+        <p style='color:#9090A8; line-height:1.4;'>Python is an interpreted, multi-paradigm language. This manual defines namespaces resolution, descriptors protocol, asyncio executors, and CPython runtime internals.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Scopes, Decorators & Closures</h3>
-        <p style='color:#9090A8; line-height:1.4;'>CPython resolves variables using the <b>LEGB</b> scoping rule (Local, Enclosing, Global, Built-in). Closures bind lexical scopes to nested scopes even when calling outside enclosing environments.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Scope Resolution (LEGB) & Closure Compilation</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Variables resolve via Local, Enclosing, Global, and Built-in boundaries. Nested scopes capture enclosing states in cells, creating closures.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 import functools
 
-def register_call(limit=100):
+def limit_concurrency(max_active=5):
     def decorator(func):
-        calls = 0  # Enclosed scope variable
+        active_count = 0  # Enclosed scope variable stored in __closure__ cell
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            nonlocal calls  # Modifies variable in enclosing scope
-            calls += 1
-            if calls > limit:
-                raise RuntimeError(f"{func.__name__} limit exceeded")
-            return func(*args, **kwargs)
+            nonlocal active_count  # Points to cell reference, bypassing new local binding
+            if active_count >= max_active:
+                raise RuntimeError("Rate limit hit")
+            active_count += 1
+            try:
+                return func(*args, **kwargs)
+            finally:
+                active_count -= 1
         return wrapper
     return decorator
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Metaprogramming & Descriptors</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Metaclasses customize class instantiation lifecycle. Descriptors customize attribute access by implementing the descriptor protocol.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Metaprogramming, Custom Descriptors & Slots</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Descriptors intercept property reads/writes. Metaclasses manipulate the <code>__new__</code> creation process of class types. <code>__slots__</code> suppresses the instance <code>__dict__</code> to save RAM.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-# Descriptor Protocol for type validation
-class NonNegative:
+# Descriptor Protocol validation
+class TypedField:
+    def __init__(self, expected_type):
+        self.expected_type = expected_type
     def __set_name__(self, owner, name):
-        self.name = name
+        self.private_name = f"_{name}"
     def __get__(self, instance, owner):
         if instance is None: return self
-        return instance.__dict__.get(self.name, 0)
+        return getattr(instance, self.private_name, None)
     def __set__(self, instance, value):
-        if value < 0:
-            raise ValueError(f"{self.name} cannot be negative")
-        instance.__dict__[self.name] = value
+        if not isinstance(value, self.expected_type):
+            raise TypeError(f"Expected {self.expected_type}")
+        setattr(instance, self.private_name, value)
 
-# Metaclass enforcing class-wide slot allocations
-class StrictMeta(type):
+# Metaclass enforcing Slots allocation
+class SlotEnforcer(type):
     def __new__(cls, name, bases, attrs):
         if "__slots__" not in attrs:
-            # Enforce slots to optimize memory and disable dynamic __dict__
-            attrs["__slots__"] = tuple(k for k in attrs.keys() if not k.startswith("__"))
+            # Generate immutable slots from current annotations
+            attrs["__slots__"] = tuple(attrs.get("__annotations__", {}).keys())
         return super().__new__(cls, name, bases, attrs)
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Asyncio, Event Loops & Cooperative Tasks</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Asyncio implements single-threaded cooperative multitasking. Cooperative yields are triggered explicitly using `await` on awaitables.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Asyncio, Event Loops & TaskGroups</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Asyncio cooperative multitasking executes coroutines on an event loop. <code>TaskGroup</code> (Python 3.11+) ensures tasks are completed or cancelled atomically.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 import asyncio
 
-async def worker(queue: asyncio.Queue, id: int):
-    while True:
-        task_id = await queue.get()
-        try:
-            print(f"Worker {id} processing {task_id}")
-            await asyncio.sleep(0.1)  # Cooperative yield
-        finally:
-            queue.task_done()
+async def fetch_endpoint(id: int, sem: asyncio.Semaphore) -> dict:
+    async with sem:
+        await asyncio.sleep(0.05)  # Cooperative yield
+        return {"id": id, "data": "payload"}
 
-async def main():
-    queue = asyncio.Queue()
-    for item in range(20):
-        await queue.put(item)
-    
-    # TaskGroups ensure clean exception propagation
+async def run_pipeline():
+    sem = asyncio.Semaphore(3)  # Max 3 concurrent operations
     async with asyncio.TaskGroup() as tg:
-        workers = [tg.create_task(worker(queue, i)) for i in range(3)]
-        await queue.join()
-        for w in workers:
-            w.cancel()
+        # Spawns tasks concurrently; any exception triggers automatic cancel of peers
+        tasks = [tg.create_task(fetch_endpoint(i, sem)) for i in range(10)]
+    results = [t.result() for t in tasks]
+    print(results)
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. CPython Memory Management & GIL</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. CPython Memory Layout & GIL Mechanics</h3>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Mechanism</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Operation Strategy & Impact</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Topic</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Internal Mechanics</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Optimizations & APIs</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Reference Counting</td>
-            <td style='padding:4px;'>Every PyObject tracks active references. Reaches zero yields instant memory deallocation.</td>
+            <td style='padding:4px;'>Increments on assignments, decrements on delete. Zero value triggers immediate garbage collection.</td>
+            <td style='padding:4px;'>Fast lookup. Bypasses stop-the-world phases. API: <code>sys.getrefcount(obj)</code>.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Cyclic Garbage Collector</td>
-            <td style='padding:4px;'>Generational GC (Gen 0/1/2) scanning container objects to break reference cycles using heuristics.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Generational GC</td>
+            <td style='padding:4px;'>Generations 0, 1, and 2. GC tracks container types. Breaks cyclic dependencies by verifying reference decreases.</td>
+            <td style='padding:4px;'>Configured via <code>gc.set_threshold()</code>. Can be disabled dynamically during batch processes.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Global Interpreter Lock (GIL)</td>
-            <td style='padding:4px;'>Protects internal state from race conditions. Threads yield control periodically, bypassing multi-core compute.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Global Interpreter Lock</td>
+            <td style='padding:4px;'>CPython uses a mutex to prevent threads from concurrently accessing memory structures. Limit to single-core.</td>
+            <td style='padding:4px;'>Bypass using <code>multiprocessing</code>, or write C/Rust extensions releasing the lock.</td>
           </tr>
         </table>
     """,
     "C++": """
-        <h2 style='color:#00C2FF; margin-top:0;'>⚙ C++ Comprehensive Reference Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>C++ delivers systems-level hardware control combined with zero-overhead abstractions. This manual explores structure padding, lifetime rules, compile-time metaprogramming, and smart pointer layouts.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>⚙ C++ Exhaustive Reference Manual</h2>
+        <p style='color:#9090A8; line-height:1.4;'>C++ provides systems-level primitives alongside zero-overhead abstractions. This document covers alignment, value categories, smart pointer layout blocks, template constraints, and concurrent memory models.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Struct Padding, Cache Lines & Alignment</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Compilers insert alignment padding to match byte-boundaries of targeted CPU architectures. Misaligned fields penalize read/write memory transactions.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Memory Alignment, Packing & Struct Padding</h3>
+        <p style='color:#9090A8; line-height:1.4;'>CPUs access memory in aligned words (e.g. 4 or 8 bytes). Struct members must align to sizes, triggering compiler padding if misordered.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-// Padding Optimization: Order members largest to smallest
-struct Optimized {
-    double c;  // 8 bytes
-    int b;     // 4 bytes
-    char a;    // 1 byte
-    char pad[3]; // 3 bytes alignment padding automatically generated
-}; // sizeof(Optimized) == 16 bytes
+// Padding triggers: char (1 byte) followed by double (8 bytes) -> 7 bytes padding
+struct BadPadding {
+    char a;      // 1 byte + 7 bytes padding
+    double b;    // 8 bytes
+    int c;       // 4 bytes + 4 bytes padding
+}; // sizeof == 24 bytes
 
-// Align to CPU cache lines (typically 64 bytes) to prevent false sharing
-struct alignas(64) ThreadData {
-    int value;
-    char pad[60]; // Isolates cache line
-};
+// Optimized ordering (largest to smallest)
+struct GoodPadding {
+    double b;    // 8 bytes
+    int c;       // 4 bytes
+    char a;      // 1 byte + 3 bytes padding
+}; // sizeof == 16 bytes
+
+#pragma pack(push, 1) // Disables padding completely (useful for networking structs)
+struct PackedStruct {
+    char a;
+    double b;
+}; // sizeof == 9 bytes
+#pragma pack(pop)
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Lvalues, Rvalues & Move Semantics</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Move semantics transfer ownership of heap-allocated buffers instead of deep-copying them, using rvalue references.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Lvalues, Rvalues & Value Categories</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Move semantics transfer heap resource allocations instead of copying them. Universal references (<code>T&&</code>) use reference collapsing to preserve value types.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 #include <utility>
 
+// std::forward preserves lvalue/rvalue category (Perfect Forwarding)
+template <typename T>
+void factory(T&& arg) {
+    process(std::forward<T>(arg));
+}
+
+// Move Constructor
 class Buffer {
     size_t size;
-    int* data;
+    int* ptr;
 public:
-    Buffer(size_t s) : size(s), data(new int[s]) {}
-    ~Buffer() { delete[] data; }
-    
-    // Move Constructor (transfer ownership, nullify source pointer)
-    Buffer(Buffer&& other) noexcept : size(other.size), data(other.data) {
+    Buffer(Buffer&& other) noexcept : size(other.size), ptr(other.ptr) {
         other.size = 0;
-        other.data = nullptr;
+        other.ptr = nullptr; // Clear source to prevent double-free
     }
-    
-    // Move Assignment operator
-    Buffer& operator=(Buffer&& other) noexcept {
-        if (this != &other) {
-            delete[] data;
-            size = other.size;
-            data = other.data;
-            other.size = 0;
-            other.data = nullptr;
-        }
-        return *this;
-    }
-    
-    // Disable copies to enforce exclusive ownership (RAII)
-    Buffer(const Buffer&) = delete;
-    Buffer& operator=(const Buffer&) = delete;
 };
         </pre>
 
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Templates, SFINAE & C++20 Concepts</h3>
-        <p style='color:#9090A8; line-height:1.4;'>SFINAE filters compiler function overloads. C++20 Concepts constraint templated parameters directly, providing cleaner compile-time errors.</p>
+        <p style='color:#9090A8; line-height:1.4;'>Compile-time checking. SFINAE filters function candidates. C++20 Concepts constraint parameters directly.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 #include <concepts>
-#include <type_traits>
+#include <iostream>
 
-// C++20 Concept
+// Define template concept
 template <typename T>
-concept Printable = requires(T t) {
-    { std::cout << t } -> std::same_as<std::ostream&>;
-};
+concept Numeric = std::integral<T> || std::floating_point<T>;
 
-template <Printable T>
-void print_element(T value) {
-    std::cout << value << std::endl;
+template <Numeric T>
+T multiply(T a, T b) {
+    return a * b;
 }
 
-// SFINAE approach (pre-C++20)
-template <typename T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
-void process_number(T num) {
-    // only active for integral types
+// SFINAE style (pre-C++20)
+template <typename T>
+typename std::enable_if<std::is_integral<T>::value, T>::type
+add(T a, T b) {
+    return a + b;
 }
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Smart Pointers Control Block Internals</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Memory Models, Barriers & Concurrency</h3>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Class</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Heap Allocations & Details</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Memory Order</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Behavior & CPU Pipeline Details</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Use Cases</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>std::unique_ptr&lt;T&gt;</td>
-            <td style='padding:4px;'>Zero runtime overhead. Contains a raw pointer and optionally a custom deleter structure. No control block allocation.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>std::memory_order_relaxed</td>
+            <td style='padding:4px;'>Guarantees atomic operation; does not impose any execution ordering constraints on surrounding memory read/writes.</td>
+            <td style='padding:4px;'>Counters, statistics, thread identifiers.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>std::shared_ptr&lt;T&gt;</td>
-            <td style='padding:4px;'>Allocates a control block housing strong and weak reference counts, plus custom allocator/deleter. Double pointer layout.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>std::memory_order_acquire / release</td>
+            <td style='padding:4px;'>Acquire: prevents subsequent reads/writes from migrating before lock. Release: prevents preceding writes from migrating after unlock.</td>
+            <td style='padding:4px;'>Mutex locks, spinlocks, message queues.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>std::weak_ptr&lt;T&gt;</td>
-            <td style='padding:4px;'>Tracks reference without incrementing the strong pointer limit. Uses `weak.lock()` to obtain a temporary shared_ptr.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>std::memory_order_seq_cst</td>
+            <td style='padding:4px;'>Sequential Consistency. Default option. Enforces total global order across all execution threads. Inserts hardware memory fence.</td>
+            <td style='padding:4px;'>Multi-threaded state flags, strict memory operations.</td>
           </tr>
         </table>
     """,
     "SQL": """
-        <h2 style='color:#00C2FF; margin-top:0;'>🖧 SQL Optimization & Engine Internals</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Relational databases isolate queries. This reference sheet details query pipeline execution orders, window function frames, execution plans, and transaction concurrency models.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>🖧 SQL Engine & Indexing Reference Manual</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Relational database engines parse, rewrite, plan, and execute SQL statements. This guide explains parser pipelines, window frames, join algorithms, indexing, and transactions isolation.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Logical Query Processing Order</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. SQL Query Parser Execution Steps</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Syntactic order differs from logical processing order. Select aliases are invalid in WHERE or JOIN constraints since calculations run in subsequent phases:</p>
+        <ol style='color:#9090A8; line-height:1.3;'>
+          <li><b>FROM / JOIN:</b> Resolves datasets and compiles product tables.</li>
+          <li><b>WHERE:</b> Filters records before groupings.</li>
+          <li><b>GROUP BY:</b> Collapses matched rows into distinct grouping keys.</li>
+          <li><b>HAVING:</b> Filters records based on aggregate fields.</li>
+          <li><b>SELECT / WINDOW:</b> Projects columns and evaluates window metrics.</li>
+          <li><b>DISTINCT:</b> Eliminates redundant duplicates.</li>
+          <li><b>ORDER BY:</b> Sorts records based on defined fields.</li>
+          <li><b>OFFSET / LIMIT:</b> Limits output rows.</li>
+        </ol>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Window Framing & Partition Blocks</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Window clauses compute parameters across segments. Specifying boundaries prevents parsing the entire dataset partitions on each row iteration.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+SELECT employee_id, dept_id, salary,
+       -- Cumulative running sum limited to the current partition
+       SUM(salary) OVER (
+           PARTITION BY dept_id 
+           ORDER BY salary DESC
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+       ) as running_sum,
+       -- Moving average over 5 records
+       AVG(salary) OVER (
+           PARTITION BY dept_id
+           ORDER BY salary DESC
+           ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING
+       ) as moving_avg
+FROM employees;
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Recursive CTE Hierarchies</h3>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+WITH RECURSIVE assembly_tree AS (
+    -- Anchor Member (Root part item)
+    SELECT part_id, parent_id, name, 1 as level
+    FROM parts WHERE parent_id IS NULL
+    UNION ALL
+    -- Recursive Member (Join next level child components)
+    SELECT p.part_id, p.parent_id, p.name, at.level + 1
+    FROM parts p
+    JOIN assembly_tree at ON p.parent_id = at.part_id
+)
+SELECT * FROM assembly_tree ORDER BY level;
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Index Scans, Joins & ACID Isolation Levels</h3>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Step</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Clause</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Engine Action</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Concept</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Mechanism & Behavior</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Tuning Strategy</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; color:#2DD4A0;'>1</td>
-            <td style='padding:4px; font-family:monospace;'>FROM / JOIN</td>
-            <td style='padding:4px;'>Identifies source datasets and computes virtual cartesian products.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Index Seek vs Scan</td>
+            <td style='padding:4px;'>Seek: traverses B-tree nodes straight to leaf keys. Scan: traverses the entire index list sequentially.</td>
+            <td style='padding:4px;'>Index seeking requires specific predicates. Covered indexes prevent table read steps.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; color:#2DD4A0;'>2</td>
-            <td style='padding:4px; font-family:monospace;'>WHERE</td>
-            <td style='padding:4px;'>Filters records based on column expressions (cannot access SELECT aliases).</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Join Algorithms</td>
+            <td style='padding:4px;'>Hash Join: builds hash maps on smaller inputs. Merge Join: merges pre-sorted keys. Nested Loop: evaluates inputs row-by-row.</td>
+            <td style='padding:4px;'>Enable index sorting to force Merge joins over heavy nested loops.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; color:#2DD4A0;'>3</td>
-            <td style='padding:4px; font-family:monospace;'>GROUP BY</td>
-            <td style='padding:4px;'>Buckets matched data rows into group keys.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; color:#2DD4A0;'>4</td>
-            <td style='padding:4px; font-family:monospace;'>HAVING</td>
-            <td style='padding:4px;'>Applies filtering logic to grouped aggregate properties.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; color:#2DD4A0;'>5</td>
-            <td style='padding:4px; font-family:monospace;'>SELECT / WINDOW</td>
-            <td style='padding:4px;'>Projects columns, computes window calculations, and evaluates expressions.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; color:#2DD4A0;'>6</td>
-            <td style='padding:4px; font-family:monospace;'>DISTINCT</td>
-            <td style='padding:4px;'>Filters out duplicates.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; color:#2DD4A0;'>7</td>
-            <td style='padding:4px; font-family:monospace;'>ORDER BY</td>
-            <td style='padding:4px;'>Sorts results using key arrays (has access to projected column aliases).</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Serializable MVCC</td>
+            <td style='padding:4px;'>Highest isolation tier. Implements range locks and snapshot serialization to prevent write-skew anomalies.</td>
+            <td style='padding:4px;'>Postgres/MySQL use Multi-Version Concurrency control; read transactions do not block write locks.</td>
           </tr>
         </table>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Window Functions & Framing Boundaries</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Window clauses compute parameters across segments without collapsing records. Specifying frames optimizes processing limits.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-SELECT txn_id, user_id, amount,
-       -- Cumulative sum limited to previous 3 transactions plus current row
-       SUM(amount) OVER (
-           PARTITION BY user_id 
-           ORDER BY txn_date 
-           ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-       ) as moving_sum,
-       -- Compare value against user's prior record
-       LAG(amount, 1) OVER (PARTITION BY user_id ORDER BY txn_date) as prev_amount
-FROM transactions;
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Recursive Common Table Expressions (CTEs)</h3>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-WITH RECURSIVE org_hierarchy AS (
-    -- Anchor Member
-    SELECT emp_id, manager_id, name, 1 as depth
-    FROM employees WHERE manager_id IS NULL
-    UNION ALL
-    -- Recursive Member
-    SELECT e.emp_id, e.manager_id, e.name, oh.depth + 1
-    FROM employees e
-    JOIN org_hierarchy oh ON e.manager_id = oh.emp_id
-)
-SELECT * FROM org_hierarchy ORDER BY depth;
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Indexes & Concurrency Isolation Levels</h3>
-        <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Index Scan vs Seek:</b> Index Seek traverses B-tree leaves to extract key rows directly. Index Scan evaluates entire indices sequentially, running if tables lack targeted indexes.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>ACID & MVCC:</b> Multi-Version Concurrency Control handles parallel reads/writes without table-wide locks. Read transactions access snapshots while write updates write new node variants.</li>
-        </ul>
     """,
     "Rust": """
-        <h2 style='color:#00C2FF; margin-top:0;'>🦀 Rust Systems & Memory Management Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Rust delivers performance guarantees alongside memory safety. This guide specifies borrowing semantics, trait dispatch models, concurrency containers, and raw unsafe operations.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>🦀 Rust Memory, Lifetimes & Systems Programming Manual</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Rust ensures memory safety at compile-time without garbage collectors by implementing strict borrowing and ownership rules, lifetime tracking, and algebraic type models.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Ownership, Lifetimes & Drop Checker</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Rust enforces safety at compile-time. Values are owned exclusively by single scopes. References are bounded by explicit lifetimes (<code>'a</code>) to prevent dangling references.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Ownership, Borrow Checker & Lifetimes</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Variables own heap assets exclusively. You can lease resources using immutable references (<code>&T</code>) or a single mutable reference (<code>&mut T</code>). Lifetimes enforce compile-time bounds constraints.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-// Structure capturing references must specify lifetime mappings
+// Segment captures a slice, referencing array memory
 struct Segment<'a> {
-    buffer: &'a [u8],
+    buffer: &'a [u8], // Reference must not outlive the array lifetime 'a
 }
 
-// Function returning longest slice enforces matching inputs and output lifetimes
-fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
-    if x.len() > y.len() { x } else { y }
+// Lifetime Elision: Compiler maps input lifetimes to output references
+fn parse_header<'a>(data: &'a [u8]) -> Result<Segment<'a>, &'static str> {
+    if data.len() < 4 { return Err("Too short"); }
+    Ok(Segment { buffer: &data[..4] })
 }
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Static vs Dynamic Dispatch</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Traits represent abstract structures. Compilers dispatch them statically using monomorphization, or dynamically using virtual lookup tables (vtables).</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Trait Dispatch: Static vs Dynamic</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Polymorphism resolves using static templates generation (monomorphization) or dynamic virtual table pointer redirects.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-trait Executor {
-    fn run(&self);
+trait Target {
+    fn execute(&self);
 }
 
-// Static Dispatch (Generates separate functions at compile-time, zero runtime overhead)
-fn process_static<E: Executor>(exec: E) {
-    exec.run();
+// Static Dispatch (Generates a copy of function for each type. Zero runtime overhead)
+fn run_static(item: impl Target) {
+    item.execute();
 }
 
-// Dynamic Dispatch (Single function using runtime vtable pointers)
-fn process_dynamic(exec: &dyn Executor) {
-    exec.run();
+// Dynamic Dispatch (Requires a vtable pointer lookup. Bypasses code expansion)
+fn run_dynamic(item: &dyn Target) {
+    item.execute(); // Traverses vtable pointer at runtime
 }
         </pre>
 
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Concurrency Safety: Send, Sync & Smart Containers</h3>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Smart Pointer</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Strategy, Thread-Safety & Interior Mutability</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Container</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Target Allocation & Thread-Safety Behavior</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Box&lt;T&gt;</td>
-            <td style='padding:4px;'>Standard heap allocation. Exclusive ownership. Implements <code>Send</code> if T is <code>Send</code>.</td>
+            <td style='padding:4px;'>Smart pointer for heap allocation. Exclusive ownership. Implements <code>Send</code> if T is <code>Send</code>.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Rc&lt;T&gt; / RefCell&lt;T&gt;</td>
-            <td style='padding:4px;'>Single-threaded reference counting. RefCell enforces write borrowing checks at runtime. Not thread-safe (lacks <code>Send</code> and <code>Sync</code>).</td>
+            <td style='padding:4px;'>Single-threaded reference counting. RefCell allows mutating contents through immutable shells (interior mutability). Not thread-safe.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Arc&lt;T&gt; / Mutex&lt;T&gt;</td>
-            <td style='padding:4px;'>Atomic Reference Counter. Mutex wraps objects, locking write threads concurrently. Safe to share across threads.</td>
+            <td style='padding:4px;'>Atomic Reference Counter. Mutex guarantees exclusive write locks. Safe to share across execution threads.</td>
           </tr>
         </table>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Unsafe Rust & FFI</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Unsafe blocks allow dereferencing raw pointers, calling foreign external C functions, and mutating static variables.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Unsafe & FFI boundaries</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Unsafe blocks enable raw memory dereferencing, mutating static fields, and calling foreign C bindings.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-fn unsafe_swap(a: &mut i32, b: &mut i32) {
-    let raw_a = a as *mut i32;
-    let raw_b = b as *mut i32;
+// Interacting with external C headers
+extern "C" {
+    fn abs(input: i32) -> i32;
+}
+
+fn raw_math() {
+    let mut num = 42;
+    let raw_ptr = &mut num as *mut i32;
     unsafe {
-        // Direct memory dereference bypasses borrow checker
-        let temp = std::ptr::read(raw_a);
-        std::ptr::write(raw_a, std::ptr::read(raw_b));
-        std::ptr::write(raw_b, temp);
+        // Dereference raw pointer directly, bypassing borrow rules
+        *raw_ptr = abs(-100);
     }
 }
         </pre>
     """,
     "React": """
-        <h2 style='color:#00C2FF; margin-top:0;'>⚛ React Architecture & Reconciliation Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>React organizes interfaces declarative. This manual details rendering phases, fiber reconciling updates, hook dependencies, and server-side components.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>⚛ React Architecture & Lifecycle Guide</h2>
+        <p style='color:#9090A8; line-height:1.4;'>React organizes interfaces using a declarative, component-based paradigm. This manual covers rendering lifecycles, hooks optimization, and React Server Components.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. React Fiber Reconciliation & Double Buffering</h3>
-        <p style='color:#9090A8; line-height:1.4;'>React computes mutations on a secondary fiber tree (workInProgress) before writing them to the active layout tree on screen. This prevents intermediate rendering glitches.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Fiber Reconciler & Concurrent Execution</h3>
+        <p style='color:#9090A8; line-height:1.4;'>React leverages Fiber nodes (virtual DOM) to pause and prioritize rendering workloads. In concurrent mode, updates execute on parallel threads without locking main threads.</p>
         <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Render Phase:</b> Asynchronous calculation building workInProgress fiber nodes. Can be paused, discarded, or restarted by scheduler.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Commit Phase:</b> Synchronous operations writing changes directly to the browser DOM. Runs side-effects once layout is updated.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Render Phase:</b> Asynchronous traversal compiling the virtual tree. Can be interrupted by user inputs.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Commit Phase:</b> Synchronous operations writing mutations directly to DOM. Runs side-effects once complete.</li>
         </ul>
 
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Advanced Hooks API Reference</h3>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
             <th style='text-align:left; color:#E4E4F0; padding:4px;'>Hook</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Mechanism & Target Scopes</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Lifecycle Mechanism & Targets</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useRef(val)</td>
-            <td style='padding:4px;'>Allocates a persistent mutable object container. Mutating `.current` does not trigger re-renders. Binds DOM nodes directly.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useRef(init)</td>
+            <td style='padding:4px;'>Allocates mutable objects persisting across renders. Does not trigger redraws on change. Holds DOM nodes.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useMemo(()=>v, deps)</td>
-            <td style='padding:4px;'>Caches complex data operations. Bypasses execution across renders until dependencies change.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useReducer(reducer, state)</td>
+            <td style='padding:4px;'>State engine variant. Decouples state mutations into action dispatch blocks.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useMemo(()=>val, deps)</td>
+            <td style='padding:4px;'>Caches complex data operations. Bypasses execution until dependencies mutate.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useCallback(fn, deps)</td>
-            <td style='padding:4px;'>Memoizes raw function references to prevent child components from re-evaluating properties.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useTransition()</td>
-            <td style='padding:4px;'>Marks state transitions as non-blocking. Allows UI to remain interactive during heavy rendering.</td>
+            <td style='padding:4px;'>Caches function instances to prevent children from re-rendering due to changing property references.</td>
           </tr>
         </table>
 
@@ -483,83 +477,74 @@ fn unsafe_swap(a: &mut i32, b: &mut i32) {
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 import { useState, useEffect, useRef } from 'react';
 
-// Custom Hook tracking layout intersections
-export function useElementInView(options) {
-    const containerRef = useRef(null);
-    const [isVisible, setIsVisible] = useState(false);
+// Custom Hook tracking window intersections
+export function useLazyLoad(options) {
+    const targetRef = useRef(null);
+    const [isIntersecting, setIsIntersecting] = useState(false);
 
     useEffect(() => {
         const observer = new IntersectionObserver(([entry]) => {
-            setIsVisible(entry.isIntersecting);
-        }, options);
-        
-        if (containerRef.current) {
-            observer.observe(containerRef.current);
-        }
-        
-        return () => {
-            if (containerRef.current) {
-                observer.unobserve(containerRef.current);
+            if (entry.isIntersecting) {
+                setIsIntersecting(true);
+                observer.unobserve(entry.target); // Unsubscribe once visible
             }
-        };
+        }, options);
+
+        if (targetRef.current) observer.observe(targetRef.current);
+        return () => observer.disconnect();
     }, [options]);
 
-    return [containerRef, isVisible];
+    return [targetRef, isIntersecting];
 }
         </pre>
     """,
     "Node.js": """
-        <h2 style='color:#00C2FF; margin-top:0;'>⬢ Node.js Engine & Concurrency Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Node.js integrates Google's V8 engine with libuv to support high-throughput, non-blocking asynchronous runtimes. This guide details event loop phases, backpressure management, and multi-threaded isolation.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>⬢ Node.js Architecture & Engine Manual</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Node.js integrates Google V8 execution with libuv. This manual explains event loops, custom streams, backpressure boundaries, and clustering configurations.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Libuv Event Loop & Microtasks</h3>
-        <p style='color:#9090A8; line-height:1.4;'>The event loop processes non-blocking I/O across six key phases. Microtasks (like <code>process.nextTick()</code> and <code>Promise</code> callbacks) execute completely after the active phase finishes, before yielding to the next phase.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Libuv Event Loop & Microtask Priority</h3>
+        <p style='color:#9090A8; line-height:1.4;'>The event loop executes asynchronous callbacks across six key phases. Microtasks (Promise resolutions and process.nextTick) execute completely before yielding to the next phase.</p>
         <ol style='color:#9090A8; line-height:1.3;'>
-          <li><b>Timers:</b> Executes callbacks scheduled by <code>setTimeout()</code> and <code>setInterval()</code>.</li>
-          <li><b>Pending Callbacks:</b> Processes deferred socket and resource handler operations.</li>
-          <li><b>Idle, Prepare:</b> Used internally for system tasks.</li>
+          <li><b>Timers:</b> Processes scheduled <code>setTimeout</code> and <code>setInterval</code> loops.</li>
+          <li><b>Pending:</b> Executes deferred connection callbacks.</li>
+          <li><b>Idle, Prepare:</b> System indicators.</li>
           <li><b>Poll:</b> Blocks to retrieve new I/O events, executing connection callbacks.</li>
-          <li><b>Check:</b> Executes callbacks scheduled by <code>setImmediate()</code>.</li>
-          <li><b>Close Callbacks:</b> Processes socket/file close operations (e.g., <code>socket.on('close')</code>).</li>
+          <li><b>Check:</b> Executes <code>setImmediate</code> hooks.</li>
+          <li><b>Close:</b> Processes socket/file close callbacks.</li>
         </ol>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Streams Pipeline & Backpressure</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Streams process data iteratively to prevent memory leaks. Backpressure pauses source reading operations if internal write queues fill up.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Streams backpressure & Pipelines</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Streams minimize memory allocations by processing data in chunks. Backpressure pauses source reading operations if write queues fill up.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 const { pipeline, Transform } = require('stream');
 const fs = require('fs');
 
-// Custom encryption/processing stream
-const encryptTransformer = new Transform({
+const uppercaseTransformer = new Transform({
     transform(chunk, encoding, callback) {
-        for (let i = 0; i < chunk.length; i++) {
-            chunk[i] ^= 0x5A; // Simple XOR operation
-        }
-        callback(null, chunk);
+        callback(null, chunk.toString().toUpperCase());
     }
 });
 
-// pipeline handles backpressure and automatically closes streams on error
+// pipeline coordinates backpressure and handles error cleanups
 pipeline(
-    fs.createReadStream('source.zip'),
-    encryptTransformer,
-    fs.createWriteStream('encrypted.zip'),
+    fs.createReadStream('input.txt'),
+    uppercaseTransformer,
+    fs.createWriteStream('output.txt'),
     (err) => {
-        if (err) console.error('Processing failed:', err);
-        else print('Stream processed successfully');
+        if (err) console.error('Stream failed:', err);
     }
 );
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Thread Isolation vs Clustering</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Threading vs Cluster Process Scaling</h3>
         <ul>
           <li style='color:#9090A8; margin-bottom:4px;'><b>Cluster Module:</b> Spawns child processes using <code>child_process.fork()</code>. All child processes share port allocations, using round-robin routing handles to balance load.</li>
           <li style='color:#9090A8; margin-bottom:4px;'><b>Worker Threads:</b> Spawns separate threads sharing memory zones via <code>SharedArrayBuffer</code>. Ideal for intensive computing within single process scopes.</li>
         </ul>
     """,
     "Go": """
-        <h2 style='color:#00C2FF; margin-top:0;'>🐹 Go Concurrency & Runtime Internals</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Go is a statically typed language compiling into structured binary targets. This manual covers goroutine scheduling, channel semantics, maps allocation, and recovery blocks.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>🐹 Go Runtime & Concurrency Guide</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Go runs on a runtime compiler that targets native hardware. This document details scheduling loops, channels CSP model, array/slice bounds, and panic recovery.</p>
         
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. The GMP Scheduler</h3>
         <p style='color:#9090A8; line-height:1.4;'>The Go runtime handles concurrent execution multiplexing three structures:</p>
@@ -569,7 +554,8 @@ pipeline(
           <li style='color:#9090A8; margin-bottom:4px;'><b>P (Processor):</b> Represents logical context resource limits. Handles queues of runnable goroutines, stealing workloads from other processors if queues empty out.</li>
         </ul>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Channels, CSP & State Semantics</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Channels CSP State Lookup Matrix</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Channels coordinate Goroutine data sharing. Select blocks multiplex execution across active channel operations.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 package main
 
@@ -619,38 +605,42 @@ func worker(ctx context.Context, jobs <-chan int, results chan<- int) {
         </table>
     """,
     "Agile": """
-        <h2 style='color:#00C2FF; margin-top:0;'>🗲 Agile Scrum & Kanban Delivery Frameworks</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Agile focuses on incremental delivery of product features. This guide covers role parameters, metrics estimation, and flow diagrams.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>🗲 Agile Agile & Scrum Frameworks</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Agile processes organize software pipelines incrementally. This reference details Scrum roles, planning poker rules, and team flow metrics.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Scrum Team Roles & Responsibilities</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Scrum Team Roles</h3>
         <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Product Owner:</b> Owns value optimization, backlog priorities, and product vision management.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Scrum Master:</b> Protects team processes, resolves blockages, and facilitates meetings.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Developers:</b> Own sprint estimates, planning, and task delivery to match target definitions of done.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Product Owner:</b> Owns value optimizations, user story specs, and roadmap priorities.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Scrum Master:</b> Eliminates pipeline roadblocks, coaches developers, and facilitates meetings.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Developers:</b> Own sprint task estimation, implementation plans, and quality outputs.</li>
         </ul>
 
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Agile Metrics Reference</h3>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
             <th style='text-align:left; color:#E4E4F0; padding:4px;'>Metric</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Calculation Strategy & Goal</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Internal Mechanics</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Sprint Impact</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Velocity</td>
-            <td style='padding:4px;'>Story points delivered per sprint. Forecasts future capacity limits.</td>
+            <td style='padding:4px;'>Story points delivered per sprint.</td>
+            <td style='padding:4px;'>Forecasts future capacity limits.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Lead Time vs Cycle Time</td>
-            <td style='padding:4px;'>Lead time: creation to completion. Cycle time: active work to completion. Tracks process efficiency.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Lead vs Cycle Time</td>
+            <td style='padding:4px;'>Lead: creation to release. Cycle: active development to release.</td>
+            <td style='padding:4px;'>Measures development velocity and workflow efficiency.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>WIP Limits</td>
-            <td style='padding:4px;'>Limits maximum active items per column to expose bottlenecks in pipelines.</td>
+            <td style='padding:4px;'>Imposes limits on maximum active items per column.</td>
+            <td style='padding:4px;'>Exposes task bottlenecks in the deployment pipelines.</td>
           </tr>
         </table>
     """,
     "Xcode": """
-        <h2 style='color:#00C2FF; margin-top:0;'>🛠 Xcode Development & Diagnostics Reference</h2>
+        <h2 style='color:#00C2FF; margin-top:0;'>🛠 Xcode Developer & Diagnostics Reference</h2>
         <p style='color:#9090A8; line-height:1.4;'>Xcode is Apple's native environment. This guide specifies LLDB console routines, memory instrumentation, and target compilation settings.</p>
         
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. LLDB Diagnostic Commands</h3>
@@ -1144,3 +1134,688 @@ async def get_records(db: AsyncSession = Depends(get_db_session)):
         </ul>
     """
 }
+# Now let's inject a gigantic body of reference material into all language manuals to cover them in exhaustive detail.
+# This makes it fully self-contained for offline code generators.
+
+# Python Exhaustive Addition
+DEFAULT_LIBRARY["Python"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Standard Library Deep Dive & Patterns</h3>
+        <p style='color:#9090A8; line-height:1.4;'>The Python Standard Library provides modules optimized in C for common algorithmic operations:</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>collections:</b> <code>deque</code> (thread-safe double-ended queue with O(1) appends/pops), <code>defaultdict</code>, <code>Counter</code>.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>itertools:</b> <code>chain</code>, <code>groupby</code>, <code>permutations</code>, <code>combinations</code>. Lazy generators that keep memory footprints at O(1).</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>functools:</b> <code>lru_cache(maxsize=128)</code> (memoization), <code>partial</code> (argument pre-binding), <code>reduce</code>.</li>
+        </ul>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+from collections import deque
+import itertools
+
+# BFS implementation using deque
+def bfs(graph, start):
+    visited, queue = set([start]), deque([start])
+    while queue:
+        vertex = queue.popleft()
+        for neighbor in graph[vertex]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    return visited
+
+# Infinite counter combined with zip to paginate data
+for index, item in zip(itertools.count(start=1, step=2), ["a", "b", "c"]):
+    print(f"Index: {index}, Item: {item}")
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>6. Diagnostics, Profiling & Type Hints</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Compile-time type checking via static tools (e.g. MyPy) uses the <code>typing</code> module. Profiles CPU execution using <code>cProfile</code> and memory using <code>tracemalloc</code>.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+import cProfile
+from typing import Callable, TypeVar, Generator
+
+T = TypeVar('T')
+
+# Generic Type signature for generic generator execution
+def stream_processor(stream: Generator[T, None, None], process: Callable[[T], T]) -> Generator[T, None, None]:
+    for item in stream:
+        yield process(item)
+
+# CPU profiling hook
+def run_profile():
+    pr = cProfile.Profile()
+    pr.enable()
+    # targeted routine here
+    pr.disable()
+    pr.print_stats(sort='cumulative')
+        </pre>
+"""
+
+# C++ Exhaustive Addition
+DEFAULT_LIBRARY["C++"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. STL Containers Internals & Performance Tuning</h3>
+        <p style='color:#9090A8; line-height:1.4;'>STL containers allocation strategies define their runtime complexity boundaries:</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>std::vector:</b> Contiguous memory array. Size grows exponentially (growth factor 1.5x in MSVC, 2x in GCC). Reallocation invalidates all active iterators. Always use <code>.reserve()</code>.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>std::unordered_map:</b> Hash table with bucket chain array. Load factor > 1.0 triggers rehashing. Cache-unfriendly due to node allocation layouts. Use custom allocators or <code>std::map</code> (Red-Black tree) if memory sorting is required.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Small String Optimization (SSO):</b> <code>std::string</code> stores strings &lt; 15-22 characters directly on stack inside instance payload, bypassing heap operations.</li>
+        </ul>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+#include <vector>
+#include <unordered_map>
+
+void optimize_stl() {
+    std::vector<int> vec;
+    vec.reserve(10000); // Pre-allocates heap to prevent 13 reallocation iterations
+    
+    std::unordered_map<int, std::string> map;
+    map.reserve(1000); // Presets bucket size to prevent load factor trigger rehashing
+}
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>6. Advanced Concurrency: std::jthread & Latches</h3>
+        <p style='color:#9090A8; line-height:1.4;'>C++20 introduces cooperatively interruptible threads (<code>std::jthread</code>) that join automatically on destruction, alongside latches and barriers.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+#include <thread>
+#include <latch>
+#include <vector>
+#include <iostream>
+
+void run_task(std::latch& work_done, int id) {
+    // Perform processing step
+    work_done.count_down(); // Decrements sync counter
+}
+
+int main() {
+    std::latch sync_point(5); // Synchronization point for 5 threads
+    std::vector<std::jthread> pool;
+    for (int i = 0; i < 5; ++i) {
+        pool.emplace_back(run_task, std::ref(sync_point), i);
+    }
+    sync_point.wait(); // Blocks main thread until all 5 threads count down
+    std::cout << "All workers ready" << std::endl;
+}
+        </pre>
+"""
+
+# SQL Exhaustive Addition
+DEFAULT_LIBRARY["SQL"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Execution Plan Tuning & Covered Indexes</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Query tuning requires inspecting execution pipelines via <code>EXPLAIN ANALYZE</code>. An index covers a query if the B-Tree holds all requested columns, bypassing secondary heap lookup steps.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+-- Composite Index covering filter and selection attributes
+CREATE INDEX idx_user_status_email ON users(status) INCLUDE (email);
+
+-- Query execution plan check
+EXPLAIN ANALYZE
+SELECT email FROM users 
+WHERE status = 'active' AND created_at > '2026-01-01';
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>6. Isolation Anomalies & Lock Granularity</h3>
+        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
+          <tr style='border-bottom:1px solid #252535;'>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Isolation Level</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Dirty Reads</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Non-Repeatable Reads</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Phantom Reads</th>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace;'>Read Uncommitted</td>
+            <td style='padding:4px; color:#FF5555;'>Possible</td>
+            <td style='padding:4px; color:#FF5555;'>Possible</td>
+            <td style='padding:4px; color:#FF5555;'>Possible</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace;'>Read Committed</td>
+            <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
+            <td style='padding:4px; color:#FF5555;'>Possible</td>
+            <td style='padding:4px; color:#FF5555;'>Possible</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace;'>Repeatable Read</td>
+            <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
+            <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
+            <td style='padding:4px; color:#FF5555;'>Possible (depends on DB)</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace;'>Serializable</td>
+            <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
+            <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
+            <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
+          </tr>
+        </table>
+"""
+
+# Rust Exhaustive Addition
+DEFAULT_LIBRARY["Rust"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Advanced Lifetimes: Variance & Subtyping</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Variance defines how type parameters relate. <code>&'a T</code> is covariant over <code>'a</code> and <code>T</code>. <code>&mut T</code> is invariant over <code>T</code> to prevent type mutations violating safety guidelines.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+// Covariance: 'a outlives 'b implies &'a T can subtype &'b T
+fn assign_lifetime<'a, 'b: 'a>(short: &'a str, long: &'b str) -> &'a str {
+    long // Safe subtyping coercion
+}
+
+// Invariance: Mutability forces invariant types
+fn mutate_invariant<'a>(r: &mut &'a str, temp: &'static str) {
+    // If &mut T were covariant, this could write static strings into shorter scopes,
+    // leading to use-after-free bugs.
+    *r = temp;
+}
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>6. Pinning & Future State Machine Internals</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Async functions compile down to self-referential generator state machines. <code>Pin&lt;P&gt;</code> guarantees objects won't be moved in memory, keeping self-references valid.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+use std::pin::Pin;
+use std::future::Future;
+use std::task::{Context, Poll};
+
+struct DelayedCounter {
+    value: i32,
+}
+
+impl Future for DelayedCounter {
+    type Output = i32;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Safe access to inner values once guaranteed unmovable
+        let this = self.get_mut();
+        if this.value > 5 {
+            Poll::Ready(this.value)
+        } else {
+            this.value += 1;
+            cx.waker().wake_by_ref(); // Queue task back onto scheduler loop
+            Poll::Pending
+        }
+    }
+}
+        </pre>
+"""
+
+# React Exhaustive Addition
+DEFAULT_LIBRARY["React"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. React Server Components & Hydration Pipelines</h3>
+        <p style='color:#9090A8; line-height:1.4;'>React Server Components (RSC) evaluate on server runtimes, compiling markup output as a JSON-serialized stream payload. Client components form boundary slots initialized via client hydration.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+// Server Component (Default in Next.js App Router)
+import DatabaseConnection from '@/lib/db';
+import ClientCard from './ClientCard'; // Client Component boundary
+
+export default async function ProductCatalog() {
+    // Runs directly on server, bypassing client bundle steps
+    const products = await DatabaseConnection.query("SELECT * FROM products");
+    
+    return (
+        <div>
+            <h2>Server Product Catalog</h2>
+            {products.map(p => (
+                // Client boundary slots. Data is serialized down
+                <ClientCard key={p.id} initialLikes={p.likes} details={p} />
+            ))}
+        </div>
+    );
+}
+        </pre>
+"""
+
+# Node.js Exhaustive Addition
+DEFAULT_LIBRARY["Node.js"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Advanced Worker Thread Concurrency</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Spawning threads enables offloading CPU-bound tasks. SharedArrayBuffer allows threads to read/write shared memory addresses using the <code>Atomics</code> module.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+const { Worker, isMainThread, parentPort } = require('worker_threads');
+
+if (isMainThread) {
+    // Main Thread allocates 4 bytes shared buffer
+    const sharedBuffer = new SharedArrayBuffer(4);
+    const int32Array = new Int32Array(sharedBuffer);
+    int32Array[0] = 100;
+    
+    const worker = new Worker(__filename);
+    worker.postMessage(sharedBuffer);
+    
+    worker.on('message', () => {
+        // Atomic read ensures operations are completed securely across threads
+        console.log('Value updated atomically:', Atomics.load(int32Array, 0));
+    });
+} else {
+    parentPort.on('message', (sharedBuffer) => {
+        const int32Array = new Int32Array(sharedBuffer);
+        // Safely add 50 atomically
+        Atomics.add(int32Array, 0, 50);
+        parentPort.postMessage('done');
+    });
+}
+        </pre>
+"""
+
+# Go Exhaustive Addition
+DEFAULT_LIBRARY["Go"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Go Slice & Map Mechanics</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Go slices reference array structures. Reaching slice capacities triggers reallocation, doubling array sizes (or increasing by 1.25x for elements > 256). Maps allocate key-value buckets inside memory cells.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+package main
+
+import "fmt"
+
+func sliceGrowth() {
+    // Make slice with len=0, cap=3. Prevents allocation overhead up to index 3
+    s := make([]int, 0, 3)
+    s = append(s, 1, 2, 3)
+    
+    // This append exceeds cap=3, triggering reallocation:
+    // A new array of cap=6 is allocated, data is copied, and s is updated.
+    s = append(s, 4)
+    fmt.Printf("len: %d, cap: %d", len(s), cap(s)) // len: 4, cap: 6
+}
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Defer Stack, Panics & Recoveries</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Defer statements evaluate arguments immediately but execute in LIFO order when surrounding scopes return. Recover catches panic exceptions only if evaluated within deferred routines.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+package main
+
+import "fmt"
+
+func handleTransaction() {
+    defer func() {
+        if r := recover(); r != NULL {
+            fmt.Println("Transaction recovered from error:", r)
+        }
+    }()
+    
+    fmt.Println("Running database steps...")
+    panic("Database connection lost") // Triggers unwinding stack
+    fmt.Println("This line is bypassed")
+}
+        </pre>
+"""
+
+# Agile Exhaustive Addition
+DEFAULT_LIBRARY["Agile"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Agile Story Estimation & Prioritization</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Teams estimate items using relative scales. Prioritizations balance developer capacity against business value impact.</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Fibonacci Scale (1, 2, 3, 5, 8, 13):</b> Minimizes granular planning errors on large, ambiguous items.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>MoSCoW Rules:</b> Categorizes backlog items into Must Have, Should Have, Could Have, and Won't Have.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>WSJF (Weighted Shortest Job First):</b> Prioritizes tasks using: <code>Cost of Delay / Job Duration</code>.</li>
+        </ul>
+"""
+
+# Xcode Exhaustive Addition
+DEFAULT_LIBRARY["Xcode"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Custom Xcode xcconfig & Build Configurations</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Build settings can be customized using <code>.xcconfig</code> files, decoupling targets variables from project binaries.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+// Release.xcconfig configuration
+SERVER_URL = https:/\\/api.release.domain
+GCC_OPTIMIZATION_LEVEL = s // Optimize binaries for size
+OTHER_SWIFT_FLAGS = -D RELEASE_LOGS
+        </pre>
+"""
+
+# Swift Exhaustive Addition
+DEFAULT_LIBRARY["Swift"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Swift Concurrency: Actors & Reentrancy</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Actors serialize memory access. Execution yields at <code>await</code> boundaries, allowing other tasks to execute (actor reentrancy). View updates must route to the MainActor.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+import Foundation
+
+actor FeedCache {
+    private var cachedData: [String: Data] = [:]
+    
+    // Actor method handles concurrent reads/writes safely
+    func write(_ data: Data, forKey key: String) {
+        cachedData[key] = data
+    }
+}
+
+@MainActor
+class FeedViewModel: ObservableObject {
+    @Published var feedItems: [String] = []
+    private let cache = FeedCache()
+    
+    func updateFeed() async {
+        // Runs on MainActor/UI Thread
+        self.feedItems = ["Loading..."]
+        // Async steps offload execution to concurrent thread pools
+        await cache.write(Data(), forKey: "feed_cache")
+        self.feedItems = ["Updated Feed"]
+    }
+}
+        </pre>
+"""
+
+# Fortran Exhaustive Addition
+DEFAULT_LIBRARY["Fortran"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Coarray Parallelism (PGAS)</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Fortran supports Partitioned Global Address Space (PGAS) models natively using coarrays. Variables designate square brackets representing parallel execution units (images).</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+program coarray_sample
+    implicit none
+    integer :: value[*] ! Coarray variable allocated on all images
+    integer :: img, num_imgs
+    
+    img = this_image()
+    num_imgs = num_images()
+    
+    value = img * 10 ! Assign local value
+    sync all ! Synchronization barrier
+    
+    if (img == 1) then
+        ! Retrieve remote value from image 2
+        print *, "Image 1 read value from Image 2: ", value[2]
+    end if
+end program coarray_sample
+        </pre>
+"""
+
+# C# Exhaustive Addition
+DEFAULT_LIBRARY["C#"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. ASP.NET Core Middleware & DI Lifecycles</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Middleware components form requests-response pipelines. Dependencies validate lifetimes depending on scopes:</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Transient:</b> Spawns a new instance on every request call.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Scoped:</b> Spawns a single instance per HTTP connection session.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Singleton:</b> Spawns a single instance on startup that is shared across all request calls.</li>
+        </ul>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Register dependencies with appropriate lifetimes
+builder.Services.AddTransient<IEmailService, EmailService>();
+builder.Services.AddScoped<IDbContext, AppDbContext>();
+builder.Services.AddSingleton<ICacheProvider, RedisCacheProvider>();
+
+var app = builder.Build();
+
+// Custom inline middleware component
+app.Use(async (context, next) => {
+    // Before route processing
+    context.Response.Headers.Add("X-Execution-Header", "DotNetCore");
+    await next(context); // Yields to subsequent middleware components
+    // After route processing
+});
+
+app.MapGet("/", () => "Pipeline executing");
+app.Run();
+        </pre>
+"""
+
+# C Exhaustive Addition
+DEFAULT_LIBRARY["C"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Unions, Struct alignment & Bit Packing</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Unions store different types in the same memory address location. Struct packing disables padding to optimize layout allocations.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+#include <stdio.h>
+
+// Disable alignment padding to restrict size limits
+#pragma pack(push, 1)
+struct AlignedHeader {
+    char type;     // 1 byte
+    int version;   // 4 bytes
+}; // sizeof == 5 bytes (would be 8 bytes with default padding)
+#pragma pack(pop)
+
+union DataPacket {
+    int value;
+    char bytes[4]; // Allows accessing integer bytes directly (type punning)
+};
+
+void run_diagnostics() {
+    union DataPacket packet;
+    packet.value = 0x12345678;
+    if (packet.bytes[0] == 0x78) {
+        printf("System CPU Architecture: Little Endian\\n");
+    }
+}
+        </pre>
+"""
+
+# Docker Exhaustive Addition
+DEFAULT_LIBRARY["Docker"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Network Topologies & Port Mappings</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Containers run isolated network stacks. Custom bridge networks resolve container names to IP addresses dynamically.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+# Create bridge network
+docker network create app-net
+
+# Run database container inside custom network
+docker run -d --name pg-db --network app-net -e POSTGRES_PASSWORD=pass postgres:alpine
+
+# Run web app container inside same network, exposing port 8080
+docker run -d --name web-app --network app-net -p 8080:8000 node:alpine
+# web-app can resolve pg-db host address dynamically via DNS names: 'pg-db:5432'
+        </pre>
+"""
+
+# Kubernetes Exhaustive Addition
+DEFAULT_LIBRARY["Kubernetes"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Persistent Volumes & Claim Configurations</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Pods are ephemeral. Decouple storage setups using PersistentVolumes (PV) and PersistentVolumeClaims (PVC).</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: static-pvc
+  namespace: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: web
+          image: nginx:alpine
+          volumeMounts:
+            - mountPath: "/usr/share/nginx/html"
+              name: data-volume
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: static-pvc
+        </pre>
+"""
+
+# CSS Exhaustive Addition
+DEFAULT_LIBRARY["CSS"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. CSS Custom Properties & responsive clamp limits</h3>
+        <p style='color:#9090A8; line-height:1.4;'>CSS variables support lexical scopes. Use responsive functions like clamp to scale font sizes dynamically without media query overhead.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+:root {
+    --primary-accent: #00C2FF;
+    --font-size-adaptive: clamp(1rem, 2vw + 0.5rem, 2.5rem);
+}
+
+.title-adaptive {
+    color: var(--primary-accent);
+    font-size: var(--font-size-adaptive);
+    padding: calc(var(--font-size-adaptive) * 0.5);
+}
+        </pre>
+"""
+
+# HTML Exhaustive Addition
+DEFAULT_LIBRARY["HTML"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Form Constraints & Accessibility ARIA Roles</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Browser native validations use regular expressions constraint attributes. ARIA roles allow accessibility features to align with DOM structures.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+<!-- Accessible form with constraint validations -->
+<form id="billingForm">
+    <label for="cardNumber">Card Number:</label>
+    <input type="text" id="cardNumber" required
+           pattern="\\\\d{16}"
+           aria-required="true"
+           aria-describedby="cardHelp" />
+    <span id="cardHelp" role="tooltip">Must be exactly 16 digits</span>
+    <button type="submit">Pay</button>
+</form>
+        </pre>
+"""
+
+# TypeScript Exhaustive Addition
+DEFAULT_LIBRARY["TypeScript"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. TS Compiler Configurations & Flags</h3>
+        <p style='color:#9090A8; line-height:1.4;'>TS compiler validations enforce safety limits dynamically when configurations are structured. Standard configurations reside in <code>tsconfig.json</code>.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,                 // Enforces all strict type checking flags
+    "noImplicitAny": true,          // Error out on inferred 'any' bindings
+    "strictNullChecks": true,       // Exclude null/undefined from variable assignments
+    "noUnusedLocals": true,         // Error out on unused variables
+    "esModuleInterop": true
+  }
+}
+        </pre>
+"""
+
+# Java Exhaustive Addition
+DEFAULT_LIBRARY["Java"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. JVM Garbage Collectors & Virtual Threads</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Garbage Collection (GC) tracks object generation boundaries. Java 21+ Virtual Threads offload concurrency blockages from OS thread limits.</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>G1 Collector:</b> Segments heap memory into regional slices. Collects regions concurrently to minimize execution pause times.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>ZGC (Z Garbage Collector):</b> Ultra low-latency collector. Performs compaction concurrently with application execution, reducing pause times to sub-milliseconds.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Virtual Threads (Project Loom):</b> Lightweight, M:N multiplexed threads. Bypasses OS thread count constraints.</li>
+        </ul>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+import java.util.concurrent.Executors;
+
+public class ConcurrencySystem {
+    public void startVirtualWorkers() {
+        // Spawns tasks on virtual thread pools
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < 1000; i++) {
+                final int taskId = i;
+                executor.submit(() -> {
+                    System.out.println("Processing task " + taskId);
+                });
+            }
+        } // Executor auto-closes on completion
+    }
+}
+        </pre>
+"""
+
+# JavaScript Exhaustive Addition
+DEFAULT_LIBRARY["JavaScript"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. ES6+ Proxies & Reflection</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Proxies intercept and redefine standard object operations. Reflect provides access to target object descriptors.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+const targetData = { name: "admin" };
+
+const dataProxy = new Proxy(targetData, {
+    // Intercept property reads
+    get(target, prop, receiver) {
+        console.log(`Accessing property: ${prop}`);
+        return Reflect.get(target, prop, receiver);
+    },
+    // Intercept property writes
+    set(target, prop, value, receiver) {
+        if (prop === "id" && typeof value !== "number") {
+            throw new TypeError("ID must be numeric");
+        }
+        return Reflect.set(target, prop, value, receiver);
+    }
+});
+
+dataProxy.id = 500; // Succeeds
+// dataProxy.id = "bad"; // Throws TypeError
+        </pre>
+"""
+
+# APIs Exhaustive Addition
+DEFAULT_LIBRARY["APIs"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Security: OAuth2, JWT & CORS preflights</h3>
+        <p style='color:#9090A8; line-height:1.4;'>JWTs encode user attributes securely. CORS preflights verify server authorization headers using HTTP OPTIONS requests.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+-- Example CORS preflight request/response headers
+-- Client sends:
+OPTIONS /api/data HTTP/1.1
+Host: api.domain
+Origin: http://localhost:3000
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: Authorization
+
+-- Server responds:
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: http://localhost:3000
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Authorization
+        </pre>
+"""
+
+# Uvicorn Exhaustive Addition
+DEFAULT_LIBRARY["Uvicorn"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. ASGI Lifecycle & Connection States</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Uvicorn maps incoming HTTP requests to ASGI applications, coordinating connection lifecycles via lifespan events.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+# ASGI application structure
+async def app(scope, receive, send):
+    assert scope['type'] == 'http'
+    
+    # Wait for request payload events
+    event = await receive()
+    
+    # Send HTTP headers and body response
+    await send({
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': [
+            [b'content-type', b'text/plain']
+        ]
+    })
+    await send({
+        'type': 'http.response.body',
+        'body': b'Hello from ASGI app'
+    })
+        </pre>
+"""
+
+# FastAPI Exhaustive Addition
+DEFAULT_LIBRARY["FastAPI"] += """
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Async SQLAlchemy & Scoped Sessions</h3>
+        <p style='color:#9090A8; line-height:1.4;'>FastAPI coordinates asynchronous database connections by combining yield dependencies with SQLAlchemy's asyncio mapping layers.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+from fastapi import FastAPI, Depends
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy.orm import declarative_base
+
+Base = declarative_base()
+engine = create_async_engine("sqlite+aiosqlite:///./test.db")
+
+async def get_session() -> AsyncSession:
+    async with AsyncSession(engine) as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+app = FastAPI()
+
+@app.get("/users")
+async def read_users(session: AsyncSession = Depends(get_session)):
+    result = await session.execute(select(User))
+    return result.scalars().all()
+        </pre>
+"""

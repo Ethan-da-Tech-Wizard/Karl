@@ -30,3 +30,17 @@
 }
         </pre>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. CSS Custom Properties & responsive clamp limits</h3>
+        <p style='color:#9090A8; line-height:1.4;'>CSS variables support lexical scopes. Use responsive functions like clamp to scale font sizes dynamically without media query overhead.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+:root {
+    --primary-accent: #00C2FF;
+    --font-size-adaptive: clamp(1rem, 2vw + 0.5rem, 2.5rem);
+}
+
+.title-adaptive {
+    color: var(--primary-accent);
+    font-size: var(--font-size-adaptive);
+    padding: calc(var(--font-size-adaptive) * 0.5);
+}
+        </pre>

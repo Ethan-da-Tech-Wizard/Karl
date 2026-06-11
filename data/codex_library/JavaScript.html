@@ -28,3 +28,26 @@ console.log('4'); // Runs synchronously
 // Output order: 1, 4, 3, 2
         </pre>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. ES6+ Proxies & Reflection</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Proxies intercept and redefine standard object operations. Reflect provides access to target object descriptors.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+const targetData = { name: "admin" };
+
+const dataProxy = new Proxy(targetData, {
+    // Intercept property reads
+    get(target, prop, receiver) {
+        console.log(`Accessing property: ${prop}`);
+        return Reflect.get(target, prop, receiver);
+    },
+    // Intercept property writes
+    set(target, prop, value, receiver) {
+        if (prop === "id" && typeof value !== "number") {
+            throw new TypeError("ID must be numeric");
+        }
+        return Reflect.set(target, prop, value, receiver);
+    }
+});
+
+dataProxy.id = 500; // Succeeds
+// dataProxy.id = "bad"; // Throws TypeError
+        </pre>

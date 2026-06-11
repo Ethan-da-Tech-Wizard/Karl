@@ -37,3 +37,38 @@ kubectl port-forward svc/database-service 5432:5432
 kubectl logs -f -l app=payment-processor --all-containers -n production
         </pre>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Persistent Volumes & Claim Configurations</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Pods are ephemeral. Decouple storage setups using PersistentVolumes (PV) and PersistentVolumeClaims (PVC).</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: static-pvc
+  namespace: production
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: web
+          image: nginx:alpine
+          volumeMounts:
+            - mountPath: "/usr/share/nginx/html"
+              name: data-volume
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: static-pvc
+        </pre>

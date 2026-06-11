@@ -29,3 +29,26 @@ server {
 }
         </pre>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. ASGI Lifecycle & Connection States</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Uvicorn maps incoming HTTP requests to ASGI applications, coordinating connection lifecycles via lifespan events.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+# ASGI application structure
+async def app(scope, receive, send):
+    assert scope['type'] == 'http'
+    
+    # Wait for request payload events
+    event = await receive()
+    
+    # Send HTTP headers and body response
+    await send({
+        'type': 'http.response.start',
+        'status': 200,
+        'headers': [
+            [b'content-type', b'text/plain']
+        ]
+    })
+    await send({
+        'type': 'http.response.body',
+        'body': b'Hello from ASGI app'
+    })
+        </pre>

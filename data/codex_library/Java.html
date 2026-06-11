@@ -24,3 +24,27 @@ public class StreamProcessor {
 }
         </pre>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. JVM Garbage Collectors & Virtual Threads</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Garbage Collection (GC) tracks object generation boundaries. Java 21+ Virtual Threads offload concurrency blockages from OS thread limits.</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>G1 Collector:</b> Segments heap memory into regional slices. Collects regions concurrently to minimize execution pause times.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>ZGC (Z Garbage Collector):</b> Ultra low-latency collector. Performs compaction concurrently with application execution, reducing pause times to sub-milliseconds.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Virtual Threads (Project Loom):</b> Lightweight, M:N multiplexed threads. Bypasses OS thread count constraints.</li>
+        </ul>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+import java.util.concurrent.Executors;
+
+public class ConcurrencySystem {
+    public void startVirtualWorkers() {
+        // Spawns tasks on virtual thread pools
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < 1000; i++) {
+                final int taskId = i;
+                executor.submit(() -> {
+                    System.out.println("Processing task " + taskId);
+                });
+            }
+        } // Executor auto-closes on completion
+    }
+}
+        </pre>

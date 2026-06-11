@@ -1,71 +1,117 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>🦀 Rust Systems & Memory Management Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Rust delivers performance guarantees alongside memory safety. This guide specifies borrowing semantics, trait dispatch models, concurrency containers, and raw unsafe operations.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>🦀 Rust Memory, Lifetimes & Systems Programming Manual</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Rust ensures memory safety at compile-time without garbage collectors by implementing strict borrowing and ownership rules, lifetime tracking, and algebraic type models.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Ownership, Lifetimes & Drop Checker</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Rust enforces safety at compile-time. Values are owned exclusively by single scopes. References are bounded by explicit lifetimes (<code>'a</code>) to prevent dangling references.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Ownership, Borrow Checker & Lifetimes</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Variables own heap assets exclusively. You can lease resources using immutable references (<code>&T</code>) or a single mutable reference (<code>&mut T</code>). Lifetimes enforce compile-time bounds constraints.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-// Structure capturing references must specify lifetime mappings
+// Segment captures a slice, referencing array memory
 struct Segment<'a> {
-    buffer: &'a [u8],
+    buffer: &'a [u8], // Reference must not outlive the array lifetime 'a
 }
 
-// Function returning longest slice enforces matching inputs and output lifetimes
-fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
-    if x.len() > y.len() { x } else { y }
+// Lifetime Elision: Compiler maps input lifetimes to output references
+fn parse_header<'a>(data: &'a [u8]) -> Result<Segment<'a>, &'static str> {
+    if data.len() < 4 { return Err("Too short"); }
+    Ok(Segment { buffer: &data[..4] })
 }
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Static vs Dynamic Dispatch</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Traits represent abstract structures. Compilers dispatch them statically using monomorphization, or dynamically using virtual lookup tables (vtables).</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Trait Dispatch: Static vs Dynamic</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Polymorphism resolves using static templates generation (monomorphization) or dynamic virtual table pointer redirects.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-trait Executor {
-    fn run(&self);
+trait Target {
+    fn execute(&self);
 }
 
-// Static Dispatch (Generates separate functions at compile-time, zero runtime overhead)
-fn process_static<E: Executor>(exec: E) {
-    exec.run();
+// Static Dispatch (Generates a copy of function for each type. Zero runtime overhead)
+fn run_static(item: impl Target) {
+    item.execute();
 }
 
-// Dynamic Dispatch (Single function using runtime vtable pointers)
-fn process_dynamic(exec: &dyn Executor) {
-    exec.run();
+// Dynamic Dispatch (Requires a vtable pointer lookup. Bypasses code expansion)
+fn run_dynamic(item: &dyn Target) {
+    item.execute(); // Traverses vtable pointer at runtime
 }
         </pre>
 
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Concurrency Safety: Send, Sync & Smart Containers</h3>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Smart Pointer</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Strategy, Thread-Safety & Interior Mutability</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Container</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Target Allocation & Thread-Safety Behavior</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Box&lt;T&gt;</td>
-            <td style='padding:4px;'>Standard heap allocation. Exclusive ownership. Implements <code>Send</code> if T is <code>Send</code>.</td>
+            <td style='padding:4px;'>Smart pointer for heap allocation. Exclusive ownership. Implements <code>Send</code> if T is <code>Send</code>.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Rc&lt;T&gt; / RefCell&lt;T&gt;</td>
-            <td style='padding:4px;'>Single-threaded reference counting. RefCell enforces write borrowing checks at runtime. Not thread-safe (lacks <code>Send</code> and <code>Sync</code>).</td>
+            <td style='padding:4px;'>Single-threaded reference counting. RefCell allows mutating contents through immutable shells (interior mutability). Not thread-safe.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Arc&lt;T&gt; / Mutex&lt;T&gt;</td>
-            <td style='padding:4px;'>Atomic Reference Counter. Mutex wraps objects, locking write threads concurrently. Safe to share across threads.</td>
+            <td style='padding:4px;'>Atomic Reference Counter. Mutex guarantees exclusive write locks. Safe to share across execution threads.</td>
           </tr>
         </table>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Unsafe Rust & FFI</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Unsafe blocks allow dereferencing raw pointers, calling foreign external C functions, and mutating static variables.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Unsafe & FFI boundaries</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Unsafe blocks enable raw memory dereferencing, mutating static fields, and calling foreign C bindings.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-fn unsafe_swap(a: &mut i32, b: &mut i32) {
-    let raw_a = a as *mut i32;
-    let raw_b = b as *mut i32;
+// Interacting with external C headers
+extern "C" {
+    fn abs(input: i32) -> i32;
+}
+
+fn raw_math() {
+    let mut num = 42;
+    let raw_ptr = &mut num as *mut i32;
     unsafe {
-        // Direct memory dereference bypasses borrow checker
-        let temp = std::ptr::read(raw_a);
-        std::ptr::write(raw_a, std::ptr::read(raw_b));
-        std::ptr::write(raw_b, temp);
+        // Dereference raw pointer directly, bypassing borrow rules
+        *raw_ptr = abs(-100);
     }
 }
         </pre>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Advanced Lifetimes: Variance & Subtyping</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Variance defines how type parameters relate. <code>&'a T</code> is covariant over <code>'a</code> and <code>T</code>. <code>&mut T</code> is invariant over <code>T</code> to prevent type mutations violating safety guidelines.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+// Covariance: 'a outlives 'b implies &'a T can subtype &'b T
+fn assign_lifetime<'a, 'b: 'a>(short: &'a str, long: &'b str) -> &'a str {
+    long // Safe subtyping coercion
+}
+
+// Invariance: Mutability forces invariant types
+fn mutate_invariant<'a>(r: &mut &'a str, temp: &'static str) {
+    // If &mut T were covariant, this could write static strings into shorter scopes,
+    // leading to use-after-free bugs.
+    *r = temp;
+}
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>6. Pinning & Future State Machine Internals</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Async functions compile down to self-referential generator state machines. <code>Pin&lt;P&gt;</code> guarantees objects won't be moved in memory, keeping self-references valid.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+use std::pin::Pin;
+use std::future::Future;
+use std::task::{Context, Poll};
+
+struct DelayedCounter {
+    value: i32,
+}
+
+impl Future for DelayedCounter {
+    type Output = i32;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Safe access to inner values once guaranteed unmovable
+        let this = self.get_mut();
+        if this.value > 5 {
+            Poll::Ready(this.value)
+        } else {
+            this.value += 1;
+            cx.waker().wake_by_ref(); // Queue task back onto scheduler loop
+            Poll::Pending
+        }
+    }
+}
+        </pre>

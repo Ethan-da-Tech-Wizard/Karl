@@ -30,3 +30,20 @@
           </tr>
         </table>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Security: OAuth2, JWT & CORS preflights</h3>
+        <p style='color:#9090A8; line-height:1.4;'>JWTs encode user attributes securely. CORS preflights verify server authorization headers using HTTP OPTIONS requests.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+-- Example CORS preflight request/response headers
+-- Client sends:
+OPTIONS /api/data HTTP/1.1
+Host: api.domain
+Origin: http://localhost:3000
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: Authorization
+
+-- Server responds:
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: http://localhost:3000
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Authorization
+        </pre>

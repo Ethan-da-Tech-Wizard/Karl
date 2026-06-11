@@ -25,3 +25,17 @@
           </tr>
         </table>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Form Constraints & Accessibility ARIA Roles</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Browser native validations use regular expressions constraint attributes. ARIA roles allow accessibility features to align with DOM structures.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+<!-- Accessible form with constraint validations -->
+<form id="billingForm">
+    <label for="cardNumber">Card Number:</label>
+    <input type="text" id="cardNumber" required
+           pattern="\\d{16}"
+           aria-required="true"
+           aria-describedby="cardHelp" />
+    <span id="cardHelp" role="tooltip">Must be exactly 16 digits</span>
+    <button type="submit">Pay</button>
+</form>
+        </pre>

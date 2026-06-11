@@ -29,3 +29,16 @@ CMD ["node", "dist/index.js"]
           <li style='color:#9090A8; margin-bottom:4px;'><b>Read-Only Root File System:</b> Add <code>--read-only</code> flags at runtime to block malicious file modifications.</li>
         </ul>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Network Topologies & Port Mappings</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Containers run isolated network stacks. Custom bridge networks resolve container names to IP addresses dynamically.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+# Create bridge network
+docker network create app-net
+
+# Run database container inside custom network
+docker run -d --name pg-db --network app-net -e POSTGRES_PASSWORD=pass postgres:alpine
+
+# Run web app container inside same network, exposing port 8080
+docker run -d --name web-app --network app-net -p 8080:8000 node:alpine
+# web-app can resolve pg-db host address dynamically via DNS names: 'pg-db:5432'
+        </pre>

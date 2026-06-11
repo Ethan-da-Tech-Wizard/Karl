@@ -43,3 +43,29 @@ struct ControlRegister {
 }; // Packaged into single word allocation
         </pre>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Unions, Struct alignment & Bit Packing</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Unions store different types in the same memory address location. Struct packing disables padding to optimize layout allocations.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+#include <stdio.h>
+
+// Disable alignment padding to restrict size limits
+#pragma pack(push, 1)
+struct AlignedHeader {
+    char type;     // 1 byte
+    int version;   // 4 bytes
+}; // sizeof == 5 bytes (would be 8 bytes with default padding)
+#pragma pack(pop)
+
+union DataPacket {
+    int value;
+    char bytes[4]; // Allows accessing integer bytes directly (type punning)
+};
+
+void run_diagnostics() {
+    union DataPacket packet;
+    packet.value = 0x12345678;
+    if (packet.bytes[0] == 0x78) {
+        printf("System CPU Architecture: Little Endian\n");
+    }
+}
+        </pre>

@@ -36,3 +36,23 @@ subroutine run_parallel(inputs, outputs, size)
 end subroutine run_parallel
         </pre>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Coarray Parallelism (PGAS)</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Fortran supports Partitioned Global Address Space (PGAS) models natively using coarrays. Variables designate square brackets representing parallel execution units (images).</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+program coarray_sample
+    implicit none
+    integer :: value[*] ! Coarray variable allocated on all images
+    integer :: img, num_imgs
+    
+    img = this_image()
+    num_imgs = num_images()
+    
+    value = img * 10 ! Assign local value
+    sync all ! Synchronization barrier
+    
+    if (img == 1) then
+        ! Retrieve remote value from image 2
+        print *, "Image 1 read value from Image 2: ", value[2]
+    end if
+end program coarray_sample
+        </pre>

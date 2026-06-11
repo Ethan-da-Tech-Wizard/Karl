@@ -1,6 +1,6 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>🐹 Go Concurrency & Runtime Internals</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Go is a statically typed language compiling into structured binary targets. This manual covers goroutine scheduling, channel semantics, maps allocation, and recovery blocks.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>🐹 Go Runtime & Concurrency Guide</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Go runs on a runtime compiler that targets native hardware. This document details scheduling loops, channels CSP model, array/slice bounds, and panic recovery.</p>
         
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. The GMP Scheduler</h3>
         <p style='color:#9090A8; line-height:1.4;'>The Go runtime handles concurrent execution multiplexing three structures:</p>
@@ -10,7 +10,8 @@
           <li style='color:#9090A8; margin-bottom:4px;'><b>P (Processor):</b> Represents logical context resource limits. Handles queues of runnable goroutines, stealing workloads from other processors if queues empty out.</li>
         </ul>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Channels, CSP & State Semantics</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Channels CSP State Lookup Matrix</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Channels coordinate Goroutine data sharing. Select blocks multiplex execution across active channel operations.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 package main
 
@@ -59,3 +60,41 @@ func worker(ctx context.Context, jobs <-chan int, results chan<- int) {
           </tr>
         </table>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Go Slice & Map Mechanics</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Go slices reference array structures. Reaching slice capacities triggers reallocation, doubling array sizes (or increasing by 1.25x for elements > 256). Maps allocate key-value buckets inside memory cells.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+package main
+
+import "fmt"
+
+func sliceGrowth() {
+    // Make slice with len=0, cap=3. Prevents allocation overhead up to index 3
+    s := make([]int, 0, 3)
+    s = append(s, 1, 2, 3)
+    
+    // This append exceeds cap=3, triggering reallocation:
+    // A new array of cap=6 is allocated, data is copied, and s is updated.
+    s = append(s, 4)
+    fmt.Printf("len: %d, cap: %d", len(s), cap(s)) // len: 4, cap: 6
+}
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Defer Stack, Panics & Recoveries</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Defer statements evaluate arguments immediately but execute in LIFO order when surrounding scopes return. Recover catches panic exceptions only if evaluated within deferred routines.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+package main
+
+import "fmt"
+
+func handleTransaction() {
+    defer func() {
+        if r := recover(); r != NULL {
+            fmt.Println("Transaction recovered from error:", r)
+        }
+    }()
+    
+    fmt.Println("Running database steps...")
+    panic("Database connection lost") // Triggers unwinding stack
+    fmt.Println("This line is bypassed")
+}
+        </pre>

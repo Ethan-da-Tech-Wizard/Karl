@@ -25,3 +25,19 @@ type UnpackPromise<T> = T extends Promise<infer U> ? U : T;
 type ResolvedVal = UnpackPromise<Promise<string>>; // Resolves to: string
         </pre>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. TS Compiler Configurations & Flags</h3>
+        <p style='color:#9090A8; line-height:1.4;'>TS compiler validations enforce safety limits dynamically when configurations are structured. Standard configurations reside in <code>tsconfig.json</code>.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,                 // Enforces all strict type checking flags
+    "noImplicitAny": true,          // Error out on inferred 'any' bindings
+    "strictNullChecks": true,       // Exclude null/undefined from variable assignments
+    "noUnusedLocals": true,         // Error out on unused variables
+    "esModuleInterop": true
+  }
+}
+        </pre>

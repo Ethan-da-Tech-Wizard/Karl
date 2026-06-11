@@ -1,94 +1,143 @@
 
         <h2 style='color:#00C2FF; margin-top:0;'>🐍 Python Exhaustive Reference Guide</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Python is a highly dynamic, multi-paradigm interpreted language. This manual delivers a low-level and high-level structural reference on the CPython runtime, scopes, descriptors, metaprogramming, and concurrent event loops.</p>
+        <p style='color:#9090A8; line-height:1.4;'>Python is an interpreted, multi-paradigm language. This manual defines namespaces resolution, descriptors protocol, asyncio executors, and CPython runtime internals.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Scopes, Decorators & Closures</h3>
-        <p style='color:#9090A8; line-height:1.4;'>CPython resolves variables using the <b>LEGB</b> scoping rule (Local, Enclosing, Global, Built-in). Closures bind lexical scopes to nested scopes even when calling outside enclosing environments.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Scope Resolution (LEGB) & Closure Compilation</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Variables resolve via Local, Enclosing, Global, and Built-in boundaries. Nested scopes capture enclosing states in cells, creating closures.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 import functools
 
-def register_call(limit=100):
+def limit_concurrency(max_active=5):
     def decorator(func):
-        calls = 0  # Enclosed scope variable
+        active_count = 0  # Enclosed scope variable stored in __closure__ cell
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            nonlocal calls  # Modifies variable in enclosing scope
-            calls += 1
-            if calls > limit:
-                raise RuntimeError(f"{func.__name__} limit exceeded")
-            return func(*args, **kwargs)
+            nonlocal active_count  # Points to cell reference, bypassing new local binding
+            if active_count >= max_active:
+                raise RuntimeError("Rate limit hit")
+            active_count += 1
+            try:
+                return func(*args, **kwargs)
+            finally:
+                active_count -= 1
         return wrapper
     return decorator
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Metaprogramming & Descriptors</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Metaclasses customize class instantiation lifecycle. Descriptors customize attribute access by implementing the descriptor protocol.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Metaprogramming, Custom Descriptors & Slots</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Descriptors intercept property reads/writes. Metaclasses manipulate the <code>__new__</code> creation process of class types. <code>__slots__</code> suppresses the instance <code>__dict__</code> to save RAM.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-# Descriptor Protocol for type validation
-class NonNegative:
+# Descriptor Protocol validation
+class TypedField:
+    def __init__(self, expected_type):
+        self.expected_type = expected_type
     def __set_name__(self, owner, name):
-        self.name = name
+        self.private_name = f"_{name}"
     def __get__(self, instance, owner):
         if instance is None: return self
-        return instance.__dict__.get(self.name, 0)
+        return getattr(instance, self.private_name, None)
     def __set__(self, instance, value):
-        if value < 0:
-            raise ValueError(f"{self.name} cannot be negative")
-        instance.__dict__[self.name] = value
+        if not isinstance(value, self.expected_type):
+            raise TypeError(f"Expected {self.expected_type}")
+        setattr(instance, self.private_name, value)
 
-# Metaclass enforcing class-wide slot allocations
-class StrictMeta(type):
+# Metaclass enforcing Slots allocation
+class SlotEnforcer(type):
     def __new__(cls, name, bases, attrs):
         if "__slots__" not in attrs:
-            # Enforce slots to optimize memory and disable dynamic __dict__
-            attrs["__slots__"] = tuple(k for k in attrs.keys() if not k.startswith("__"))
+            # Generate immutable slots from current annotations
+            attrs["__slots__"] = tuple(attrs.get("__annotations__", {}).keys())
         return super().__new__(cls, name, bases, attrs)
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Asyncio, Event Loops & Cooperative Tasks</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Asyncio implements single-threaded cooperative multitasking. Cooperative yields are triggered explicitly using `await` on awaitables.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Asyncio, Event Loops & TaskGroups</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Asyncio cooperative multitasking executes coroutines on an event loop. <code>TaskGroup</code> (Python 3.11+) ensures tasks are completed or cancelled atomically.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 import asyncio
 
-async def worker(queue: asyncio.Queue, id: int):
-    while True:
-        task_id = await queue.get()
-        try:
-            print(f"Worker {id} processing {task_id}")
-            await asyncio.sleep(0.1)  # Cooperative yield
-        finally:
-            queue.task_done()
+async def fetch_endpoint(id: int, sem: asyncio.Semaphore) -> dict:
+    async with sem:
+        await asyncio.sleep(0.05)  # Cooperative yield
+        return {"id": id, "data": "payload"}
 
-async def main():
-    queue = asyncio.Queue()
-    for item in range(20):
-        await queue.put(item)
-    
-    # TaskGroups ensure clean exception propagation
+async def run_pipeline():
+    sem = asyncio.Semaphore(3)  # Max 3 concurrent operations
     async with asyncio.TaskGroup() as tg:
-        workers = [tg.create_task(worker(queue, i)) for i in range(3)]
-        await queue.join()
-        for w in workers:
-            w.cancel()
+        # Spawns tasks concurrently; any exception triggers automatic cancel of peers
+        tasks = [tg.create_task(fetch_endpoint(i, sem)) for i in range(10)]
+    results = [t.result() for t in tasks]
+    print(results)
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. CPython Memory Management & GIL</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. CPython Memory Layout & GIL Mechanics</h3>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Mechanism</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Operation Strategy & Impact</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Topic</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Internal Mechanics</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Optimizations & APIs</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Reference Counting</td>
-            <td style='padding:4px;'>Every PyObject tracks active references. Reaches zero yields instant memory deallocation.</td>
+            <td style='padding:4px;'>Increments on assignments, decrements on delete. Zero value triggers immediate garbage collection.</td>
+            <td style='padding:4px;'>Fast lookup. Bypasses stop-the-world phases. API: <code>sys.getrefcount(obj)</code>.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Cyclic Garbage Collector</td>
-            <td style='padding:4px;'>Generational GC (Gen 0/1/2) scanning container objects to break reference cycles using heuristics.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Generational GC</td>
+            <td style='padding:4px;'>Generations 0, 1, and 2. GC tracks container types. Breaks cyclic dependencies by verifying reference decreases.</td>
+            <td style='padding:4px;'>Configured via <code>gc.set_threshold()</code>. Can be disabled dynamically during batch processes.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Global Interpreter Lock (GIL)</td>
-            <td style='padding:4px;'>Protects internal state from race conditions. Threads yield control periodically, bypassing multi-core compute.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Global Interpreter Lock</td>
+            <td style='padding:4px;'>CPython uses a mutex to prevent threads from concurrently accessing memory structures. Limit to single-core.</td>
+            <td style='padding:4px;'>Bypass using <code>multiprocessing</code>, or write C/Rust extensions releasing the lock.</td>
           </tr>
         </table>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Standard Library Deep Dive & Patterns</h3>
+        <p style='color:#9090A8; line-height:1.4;'>The Python Standard Library provides modules optimized in C for common algorithmic operations:</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>collections:</b> <code>deque</code> (thread-safe double-ended queue with O(1) appends/pops), <code>defaultdict</code>, <code>Counter</code>.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>itertools:</b> <code>chain</code>, <code>groupby</code>, <code>permutations</code>, <code>combinations</code>. Lazy generators that keep memory footprints at O(1).</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>functools:</b> <code>lru_cache(maxsize=128)</code> (memoization), <code>partial</code> (argument pre-binding), <code>reduce</code>.</li>
+        </ul>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+from collections import deque
+import itertools
+
+# BFS implementation using deque
+def bfs(graph, start):
+    visited, queue = set([start]), deque([start])
+    while queue:
+        vertex = queue.popleft()
+        for neighbor in graph[vertex]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    return visited
+
+# Infinite counter combined with zip to paginate data
+for index, item in zip(itertools.count(start=1, step=2), ["a", "b", "c"]):
+    print(f"Index: {index}, Item: {item}")
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>6. Diagnostics, Profiling & Type Hints</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Compile-time type checking via static tools (e.g. MyPy) uses the <code>typing</code> module. Profiles CPU execution using <code>cProfile</code> and memory using <code>tracemalloc</code>.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+import cProfile
+from typing import Callable, TypeVar, Generator
+
+T = TypeVar('T')
+
+# Generic Type signature for generic generator execution
+def stream_processor(stream: Generator[T, None, None], process: Callable[[T], T]) -> Generator[T, None, None]:
+    for item in stream:
+        yield process(item)
+
+# CPU profiling hook
+def run_profile():
+    pr = cProfile.Profile()
+    pr.enable()
+    # targeted routine here
+    pr.disable()
+    pr.print_stats(sort='cumulative')
+        </pre>

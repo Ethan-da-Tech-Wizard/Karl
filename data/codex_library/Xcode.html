@@ -1,5 +1,5 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>🛠 Xcode Development & Diagnostics Reference</h2>
+        <h2 style='color:#00C2FF; margin-top:0;'>🛠 Xcode Developer & Diagnostics Reference</h2>
         <p style='color:#9090A8; line-height:1.4;'>Xcode is Apple's native environment. This guide specifies LLDB console routines, memory instrumentation, and target compilation settings.</p>
         
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. LLDB Diagnostic Commands</h3>
@@ -24,3 +24,11 @@ breakpoint set --name "-[UIViewController viewDidLoad]"
           <li style='color:#9090A8; margin-bottom:4px;'><b>Core Data:</b> Visualizes fetch operations, database transactions, and memory cache faults.</li>
         </ul>
     
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Custom Xcode xcconfig & Build Configurations</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Build settings can be customized using <code>.xcconfig</code> files, decoupling targets variables from project binaries.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+// Release.xcconfig configuration
+SERVER_URL = https:/\/api.release.domain
+GCC_OPTIMIZATION_LEVEL = s // Optimize binaries for size
+OTHER_SWIFT_FLAGS = -D RELEASE_LOGS
+        </pre>
