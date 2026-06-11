@@ -3,7 +3,7 @@
   "displayName": "Karl",
   "description": "Local Multi-Agent Software Engineering swarm for VS Code, powered by Karl.",
   "version": "1.0.0",
-  "publisher": "ethan",
+  "publisher": "karl",
   "engines": {
     "vscode": "^1.75.0"
   },
