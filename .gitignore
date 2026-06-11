@@ -43,3 +43,7 @@ t/
 # Scratch directory
 scratch/
 
+# Build artifacts for VS Code extension
+*.vsix
+package-lock.json
+node_modules/
