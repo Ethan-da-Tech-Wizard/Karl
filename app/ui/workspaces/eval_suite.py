@@ -444,12 +444,20 @@ class EvalSuiteWorkspace(QWidget):
         failed = report.failed
         pass_rate = report.pass_rate
 
+        # Compute block bar representing the pass rate (10 segments)
+        filled = int(round(pass_rate * 10))
+        empty = 10 - filled
+        bar = "█" * filled + "░" * empty
+        
+        # Color coding for pass rate
+        accent = self.state.custom_accent or "#00C2FF"
+
         self._summary_lbl.setText(
-            f"<div style='margin-top:4px; font-size:10pt; line-height:1.4;'>"
+            f"<div style='margin-top:4px; font-size:10pt; line-height:1.5;'>"
             f"Total Cases: <b style='color:#E4E4F0;'>{total}</b><br/>"
-            f"Passed: <b style='color:#2DD4A0;'>{passed}</b><br/>"
-            f"Failed: <b style='color:#F05050;'>{failed}</b><br/>"
-            f"Pass Rate: <b style='color:#00C2FF; font-size:12pt;'>{pass_rate:.1%}</b>"
+            f"Passed: <b style='color:#2DD4A0;'>{passed}</b> &nbsp;&middot;&nbsp; Failed: <b style='color:#F05050;'>{failed}</b><br/>"
+            f"Pass Rate: <b style='color:#E4E4F0;'>{pass_rate:.1%}</b><br/>"
+            f"<span style='color:{accent}; font-family:monospace; font-size:12pt;'>[{bar}]</span>"
             f"</div>"
         )
 
@@ -518,16 +526,16 @@ class EvalSuiteWorkspace(QWidget):
                 )
 
             html_parts.append(
-                f"<div style='margin-bottom:12px;'>"
-                f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:4px; letter-spacing:1px;'>PROMPT</div>"
-                f"<div style='background:#111119; border:1px solid #252535; border-radius:4px; padding:8px 12px; color:#E4E4F0; white-space:pre-wrap;'>{html.escape(case.prompt)}</div>"
+                f"<div style='margin-bottom:14px;'>"
+                f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:6px; letter-spacing:1.5px;'>PROMPT</div>"
+                f"<div style='background:#111119; border:1px solid #252535; border-radius:6px; padding:10px 14px; color:#E4E4F0; font-size:9.5pt; line-height:1.4; white-space:pre-wrap;'>{html.escape(case.prompt)}</div>"
                 f"</div>"
             )
 
             html_parts.append(
-                f"<div style='margin-bottom:12px;'>"
-                f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:4px; letter-spacing:1px;'>OUTPUT</div>"
-                f"<div style='background:#0A0A14; border:1px solid #252535; border-radius:4px; padding:8px 12px; color:#505080; white-space:pre-wrap;'>{html.escape(case.output)}</div>"
+                f"<div style='margin-bottom:14px;'>"
+                f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:6px; letter-spacing:1.5px;'>OUTPUT</div>"
+                f"<div style='background:#0A0A14; border:1px solid #252535; border-radius:6px; padding:10px 14px; color:#2DD4A0; font-size:9.5pt; line-height:1.4; white-space:pre-wrap;'>{html.escape(case.output)}</div>"
                 f"</div>"
             )
 
@@ -538,9 +546,9 @@ class EvalSuiteWorkspace(QWidget):
                     context_html += f"<div style='margin-bottom:10px; font-size:8.5pt; color:#9090A8; white-space:pre-wrap;'>{html.escape(chunk)}</div>"
                 
                 html_parts.append(
-                    f"<div style='margin-bottom:12px;'>"
-                    f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:4px; letter-spacing:1px;'>CONTEXT USED</div>"
-                    f"<div style='background:#14141F; border:1px solid #252535; border-radius:4px; padding:8px 12px;'>{context_html}</div>"
+                    f"<div style='margin-bottom:14px;'>"
+                    f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:6px; letter-spacing:1.5px;'>CONTEXT USED</div>"
+                    f"<div style='background:#14141F; border:1px solid #252535; border-radius:6px; padding:10px 14px;'>{context_html}</div>"
                     f"</div>"
                 )
 

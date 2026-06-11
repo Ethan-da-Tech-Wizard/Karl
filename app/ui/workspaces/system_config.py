@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QGroupBox, QScrollArea, QProgressBar,
     QComboBox, QColorDialog,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QColor
 
 from app.ui.themes import MONO
@@ -144,6 +144,12 @@ class SystemConfigWorkspace(QWidget):
         self.setObjectName("workspace-root")
         self._build_ui()
         self._refresh_hardware()
+        
+        # Start diagnostic hardware monitoring timer
+        self._hardware_timer = QTimer(self)
+        self._hardware_timer.timeout.connect(self._update_live_hardware)
+        self._hardware_timer.start(2000)
+        self._update_live_hardware()
 
     def set_workbench(self, wb):
         self._workbench = wb
@@ -428,16 +434,15 @@ class SystemConfigWorkspace(QWidget):
             if is_active:
                 btn.setText("Active")
                 btn.setEnabled(False)
-                btn.setStyleSheet("background-color: #162a23; color: #2DD4A0; border: 1px solid #1c523e; font-weight: bold; padding: 4px 12px;")
+                btn.setStyleSheet("background-color: rgba(45, 212, 160, 0.15); color: #2DD4A0; border: 1px solid rgba(45, 212, 160, 0.4); border-radius: 4px; font-weight: bold; padding: 5px 14px;")
             elif is_downloaded:
                 btn.setText("Activate")
                 btn.clicked.connect(lambda checked, f=filename: self._activate_registry_model(f))
-                btn.setObjectName("btn-secondary")
-                btn.setStyleSheet("padding: 4px 12px;")
+                btn.setStyleSheet("background-color: rgba(0, 194, 255, 0.1); color: #00C2FF; border: 1px solid rgba(0, 194, 255, 0.35); border-radius: 4px; padding: 5px 14px;")
             else:
                 btn.setText("Download")
                 btn.setObjectName("btn-primary")
-                btn.setStyleSheet("padding: 4px 12px;")
+                btn.setStyleSheet("padding: 5px 14px;")
                 btn.clicked.connect(lambda checked, u=url, f=filename: self._start_download(u, f))
                 
             h_layout.addWidget(btn)
@@ -663,16 +668,61 @@ class SystemConfigWorkspace(QWidget):
         hw_panel = QWidget()
         hw_panel.setObjectName("panel")
         hwp_layout = QVBoxLayout(hw_panel)
-        hwp_layout.setContentsMargins(12, 12, 12, 12)
-        hwp_layout.setSpacing(8)
+        hwp_layout.setContentsMargins(16, 16, 16, 16)
+        hwp_layout.setSpacing(12)
 
-        hwp_layout.addWidget(_section("HARDWARE PROFILE"))
+        hwp_layout.addWidget(_section("HARDWARE PROFILE & METERS"))
+
+        # CPU meter
+        cpu_row = QWidget()
+        cpu_l = QHBoxLayout(cpu_row)
+        cpu_l.setContentsMargins(0, 0, 0, 0)
+        cpu_lbl = QLabel("CPU Load:")
+        cpu_lbl.setFixedWidth(100)
+        cpu_lbl.setObjectName("lbl-muted")
+        self._cpu_progress = QProgressBar()
+        self._cpu_progress.setRange(0, 100)
+        self._cpu_progress.setValue(0)
+        self._cpu_progress.setFixedHeight(14)
+        cpu_l.addWidget(cpu_lbl)
+        cpu_l.addWidget(self._cpu_progress)
+        hwp_layout.addWidget(cpu_row)
+
+        # RAM meter
+        ram_row = QWidget()
+        ram_l = QHBoxLayout(ram_row)
+        ram_l.setContentsMargins(0, 0, 0, 0)
+        ram_lbl = QLabel("Memory:")
+        ram_lbl.setFixedWidth(100)
+        ram_lbl.setObjectName("lbl-muted")
+        self._ram_progress = QProgressBar()
+        self._ram_progress.setRange(0, 100)
+        self._ram_progress.setValue(0)
+        self._ram_progress.setFixedHeight(14)
+        ram_l.addWidget(ram_lbl)
+        ram_l.addWidget(self._ram_progress)
+        hwp_layout.addWidget(ram_row)
+        
+        # Disk Space meter
+        disk_row = QWidget()
+        disk_l = QHBoxLayout(disk_row)
+        disk_l.setContentsMargins(0, 0, 0, 0)
+        disk_lbl = QLabel("Disk Free:")
+        disk_lbl.setFixedWidth(100)
+        disk_lbl.setObjectName("lbl-muted")
+        self._disk_progress = QProgressBar()
+        self._disk_progress.setRange(0, 100)
+        self._disk_progress.setValue(0)
+        self._disk_progress.setFixedHeight(14)
+        disk_l.addWidget(disk_lbl)
+        disk_l.addWidget(self._disk_progress)
+        hwp_layout.addWidget(disk_row)
 
         self._hw_view = QTextBrowser()
-        self._hw_view.setFixedHeight(130)
+        self._hw_view.setFixedHeight(120)
         hwp_layout.addWidget(self._hw_view)
 
-        refresh_btn = QPushButton("refresh hardware")
+        refresh_btn = QPushButton("refresh profiles")
         refresh_btn.setToolTip("Re-scout RAM, VRAM, and storage specifications")
         refresh_btn.clicked.connect(self._refresh_hardware)
         hwp_layout.addWidget(refresh_btn)
@@ -705,6 +755,31 @@ class SystemConfigWorkspace(QWidget):
 
     # ── logic ─────────────────────────────────────────────────────────────────
 
+    def _update_live_hardware(self):
+        try:
+            import psutil
+            cpu = psutil.cpu_percent()
+            mem = psutil.virtual_memory()
+            
+            self._cpu_progress.setValue(int(cpu))
+            self._cpu_progress.setFormat(f"%p% ({cpu:.1f}%)")
+            
+            self._ram_progress.setValue(int(mem.percent))
+            used_gb = mem.used / 1_073_741_824
+            total_gb = mem.total / 1_073_741_824
+            self._ram_progress.setFormat(f"%p% ({used_gb:.1f} GB / {total_gb:.1f} GB)")
+            
+            # Disk space
+            import shutil
+            total, used, free = shutil.disk_usage("/")
+            free_percent = (free / total) * 100
+            self._disk_progress.setValue(int(100 - free_percent))
+            free_gb = free / 1_073_741_824
+            total_gb = total / 1_073_741_824
+            self._disk_progress.setFormat(f"{free_gb:.1f} GB free ({free_percent:.1f}%)")
+        except Exception as e:
+            print(f"[SystemConfig] Error updating live hardware meters: {e}")
+
     def _refresh_hardware(self):
         from core.hardware_scout import get_hardware_profile
         p = get_hardware_profile()
@@ -721,15 +796,15 @@ class SystemConfigWorkspace(QWidget):
         html_content = (
             f"<div style='font-family:{MONO}; color:#E4E4F0; line-height:1.6;'>"
             f"<div style='margin-bottom:8px; display:flex;'>"
-            f"<span style='display:inline-block; width:100px; color:#505068; font-size:8.5pt; font-weight:bold; letter-spacing:1px;'>RAM</span>"
+            f"<span style='display:inline-block; width:120px; color:#505068; font-size:8.5pt; font-weight:bold; letter-spacing:1px;'>RAM</span>"
             f"<span style='font-size:11pt; color:#00C2FF; font-weight:bold;'>{ram} <span style='font-size:8.5pt; font-weight:normal; color:#9090A8;'>GB</span></span>"
             f"</div>"
             f"<div style='margin-bottom:8px; display:flex;'>"
-            f"<span style='display:inline-block; width:100px; color:#505068; font-size:8.5pt; font-weight:bold; letter-spacing:1px;'>VRAM</span>"
+            f"<span style='display:inline-block; width:120px; color:#505068; font-size:8.5pt; font-weight:bold; letter-spacing:1px;'>VRAM</span>"
             f"<span style='font-size:11pt; color:#2DD4A0; font-weight:bold;'>{vram_str}</span>"
             f"</div>"
             f"<div style='margin-bottom:8px; display:flex;'>"
-            f"<span style='display:inline-block; width:100px; color:#505068; font-size:8.5pt; font-weight:bold; letter-spacing:1px;'>STORAGE</span>"
+            f"<span style='display:inline-block; width:120px; color:#505068; font-size:8.5pt; font-weight:bold; letter-spacing:1px;'>STORAGE</span>"
             f"<span style='font-size:11pt; color:#F0B030; font-weight:bold;'>{storage} <span style='font-size:8.5pt; font-weight:normal; color:#9090A8;'>GB free</span></span>"
             f"</div>"
             f"</div>"

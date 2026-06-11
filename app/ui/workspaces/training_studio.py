@@ -296,44 +296,58 @@ class TrainingStudioWorkspace(QWidget):
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setSpacing(16)
+
+        cards = QWidget()
+        cards_layout = QHBoxLayout(cards)
+        cards_layout.setContentsMargins(0, 0, 0, 0)
+        cards_layout.setSpacing(16)
 
         # SFT Panel
         sft_box = QWidget()
         sft_box.setObjectName("panel")
         sft_l = QVBoxLayout(sft_box)
-        sft_l.setContentsMargins(12, 12, 12, 12)
-        sft_l.setSpacing(8)
+        sft_l.setContentsMargins(16, 16, 16, 16)
+        sft_l.setSpacing(12)
         sft_l.addWidget(_section("UNSLOTH / SFT FORMAT"))
-        sft_l.addWidget(QLabel(
-            "Exports curated examples in Unsloth-compatible JSONL.\n"
-            "Fields: messages (compatible with HF chat format)."
-        ))
+        sft_desc = QLabel(
+            "Exports curated examples in Unsloth-compatible JSONL format. "
+            "Includes instruction-following message traces ideal for Supervised Fine-Tuning (SFT)."
+        )
+        sft_desc.setObjectName("lbl-muted")
+        sft_desc.setWordWrap(True)
+        sft_l.addWidget(sft_desc)
+        sft_l.addStretch()
         sft_btn = QPushButton("export SFT  →  unsloth_sft.jsonl")
         sft_btn.setObjectName("btn-primary")
         sft_btn.setToolTip("Export curated dataset in Unsloth SFT chat format")
         sft_btn.clicked.connect(lambda: self._export("sft"))
         sft_l.addWidget(sft_btn)
-        layout.addWidget(sft_box)
+        cards_layout.addWidget(sft_box, 1)
 
         # DPO Panel
         dpo_box = QWidget()
         dpo_box.setObjectName("panel")
         dpo_l = QVBoxLayout(dpo_box)
-        dpo_l.setContentsMargins(12, 12, 12, 12)
-        dpo_l.setSpacing(8)
+        dpo_l.setContentsMargins(16, 16, 16, 16)
+        dpo_l.setSpacing(12)
         dpo_l.addWidget(_section("DPO FORMAT"))
-        dpo_l.addWidget(QLabel(
-            "Exports thumbs-up (chosen) vs thumbs-down (rejected) pairs.\n"
-            "Requires at least one example of each type."
-        ))
+        dpo_desc = QLabel(
+            "Exports paired chosen (thumbs-up) vs rejected (thumbs-down) examples. "
+            "Requires at least one positive and one negative sample to construct comparison pairs."
+        )
+        dpo_desc.setObjectName("lbl-muted")
+        dpo_desc.setWordWrap(True)
+        dpo_l.addWidget(dpo_desc)
+        dpo_l.addStretch()
         dpo_btn = QPushButton("export DPO  →  unsloth_dpo.jsonl")
         dpo_btn.setToolTip("Export paired chosen/rejected examples in DPO format")
         dpo_btn.clicked.connect(lambda: self._export("dpo"))
         dpo_l.addWidget(dpo_btn)
-        layout.addWidget(dpo_box)
+        cards_layout.addWidget(dpo_box, 1)
 
-        layout.addStretch()
+        layout.addWidget(cards, 1)
+
         self._export_status = QLabel("")
         self._export_status.setObjectName("lbl-mid")
         self._export_status.setWordWrap(True)
@@ -453,6 +467,26 @@ class TrainingStudioWorkspace(QWidget):
         layout.addWidget(self._qlora_check)
         layout.addWidget(_hline())
 
+        # VRAM warning info panel
+        vram_info = QWidget()
+        vram_info.setObjectName("panel")
+        vram_info.setStyleSheet("background: rgba(240, 176, 48, 0.05); border: 1px solid rgba(240, 176, 48, 0.2); border-radius: 4px;")
+        vil = QVBoxLayout(vram_info)
+        vil.setContentsMargins(12, 10, 12, 10)
+        
+        warn_text = (
+            "⚠️ <b>Hardware Requirement Guide:</b><br>"
+            "• <b>1.5B Model:</b> ~6 GB VRAM (4-bit QLoRA) / ~10 GB VRAM (16-bit LoRA)<br>"
+            "• <b>7B / 8B Model:</b> ~14 GB VRAM (4-bit QLoRA) / ~22 GB VRAM (16-bit LoRA)<br>"
+            "Ensure you have PyTorch-compatible CUDA drivers and sufficient free GPU memory."
+        )
+        warn_lbl = QLabel(warn_text)
+        warn_lbl.setWordWrap(True)
+        warn_lbl.setStyleSheet("font-size: 8.5pt; color: #F0B030; line-height: 1.4;")
+        vil.addWidget(warn_lbl)
+        layout.addWidget(vram_info)
+        layout.addWidget(_hline())
+
         self._adapter_name_input = QLineEdit()
         self._adapter_name_input.setPlaceholderText("adapter name (saved to data/adapters/)")
         self._adapter_name_input.setToolTip("Enter folder name where the compiled model adapter will be saved")
@@ -463,7 +497,7 @@ class TrainingStudioWorkspace(QWidget):
         self._train_btn.setToolTip("Start adapter SFT training thread on the local GPU")
         self._train_btn.clicked.connect(self._begin_training)
         layout.addWidget(self._train_btn)
-        self._check_deps()  # now safe — _train_btn exists
+        self._check_deps()
 
         self._train_progress = QProgressBar()
         self._train_progress.setVisible(False)
@@ -494,6 +528,15 @@ class TrainingStudioWorkspace(QWidget):
         self._example_list.clear()
         for ex in self.state.curator.get_all_examples():
             source = ex.get("source", "unknown")
+            if source == "thumbs_up":
+                tag = "✓ positive"
+            elif source == "corrected":
+                tag = "✎ corrected"
+            elif source == "thumbs_down":
+                tag = "✗ negative"
+            else:
+                tag = f"● {source}"
+            
             messages = ex.get("messages", [])
             user_text = ""
             for m in messages:
@@ -501,7 +544,7 @@ class TrainingStudioWorkspace(QWidget):
                     user_text = m.get("content", "")
                     break
             preview = user_text[:60]
-            item = QListWidgetItem(f"[{source}]  {preview}")
+            item = QListWidgetItem(f"[{tag:<10}]  {preview}")
             self._example_list.addItem(item)
             
         self._refresh_base_models()

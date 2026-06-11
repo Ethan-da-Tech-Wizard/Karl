@@ -676,6 +676,33 @@ QPushButton#btn-danger:hover {{
     color: #ffffff;
 }}
 
+QPushButton#btn-success {{
+    background: transparent;
+    border: 1px solid {green};
+    color: {green};
+    border-radius: 4px;
+}}
+
+QPushButton#btn-success:hover {{
+    background: {green};
+    color: #050510;
+    font-weight: bold;
+}}
+
+QPushButton#btn-warning {{
+    background: transparent;
+    border: 1px solid {yellow};
+    color: {yellow};
+    border-radius: 4px;
+}}
+
+QPushButton#btn-warning:hover {{
+    background: {yellow};
+    color: #050510;
+    font-weight: bold;
+}}
+
+
 QPushButton#btn-ghost {{
     background: transparent;
     border: none;
@@ -796,24 +823,28 @@ QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
 QListWidget {{
     background: {bg_surface};
     border: 1px solid {border};
-    border-radius: 4px;
+    border-radius: 6px;
     color: {text_hi};
     font-family: {mono};
     outline: none;
+    padding: 4px;
 }}
 
 QListWidget::item {{
-    padding: 6px 10px;
-    border-bottom: 1px solid {border};
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin: 2px 4px;
 }}
 
 QListWidget::item:hover {{
     background: {bg_raised};
+    color: {text_hi};
 }}
 
 QListWidget::item:selected {{
     background: {sidebar_sel};
     color: {accent};
+    font-weight: bold;
 }}
 
 /* ── CheckBox ─────────────────────────────────────────────── */
@@ -855,23 +886,28 @@ QCheckBox::indicator:disabled {{
 QTreeWidget {{
     background: {bg_surface};
     border: 1px solid {border};
-    border-radius: 4px;
+    border-radius: 6px;
     color: {text_hi};
     font-family: {mono};
     outline: none;
+    padding: 4px;
 }}
 
 QTreeWidget::item {{
-    padding: 4px 6px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    margin: 1px 2px;
 }}
 
 QTreeWidget::item:hover {{
     background: {bg_raised};
+    color: {text_hi};
 }}
 
 QTreeWidget::item:selected {{
     background: {sidebar_sel};
     color: {accent};
+    font-weight: bold;
 }}
 
 QTreeWidget::branch {{
@@ -965,6 +1001,16 @@ QLabel#lbl-mid    {{ color: {text_mid}; }}
 QLabel#lbl-accent {{ color: {accent}; }}
 QLabel#lbl-green  {{ color: {green}; }}
 QLabel#lbl-red    {{ color: {red}; }}
+QLabel#model-pill {{
+    font-size: 8pt;
+    font-weight: bold;
+    color: {accent};
+    background: {bg_deep};
+    border: 1px solid {border};
+    border-radius: 4px;
+    padding: 2px 6px;
+}}
+
 
 QLabel#section-header {{
     color: {text_lo};
@@ -1008,19 +1054,19 @@ QTabBar::tab:hover:!selected {{
 
 /* ── Progress ─────────────────────────────────────────────── */
 QProgressBar {{
-    background: {bg_surface};
+    background: {bg_input};
     border: 1px solid {border};
-    border-radius: 3px;
+    border-radius: 6px;
     text-align: center;
-    color: {text_mid};
+    color: {text_hi};
     font-size: 8pt;
     font-family: {mono};
-    max-height: 10px;
+    height: 16px;
 }}
 
 QProgressBar::chunk {{
     background: {accent};
-    border-radius: 3px;
+    border-radius: 5px;
 }}
 
 /* ── CheckBox ─────────────────────────────────────────────── */

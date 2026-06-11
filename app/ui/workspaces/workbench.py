@@ -87,12 +87,12 @@ class ChatView(QTextBrowser):
         border = self.theme_colors.get("border", "#252535")
         text_hi = self.theme_colors.get("text_hi", "#E4E4F0")
         return (
-            f'<div style="margin:10px 60px 0 0;">'
-            f'<div style="color:{text_lo};font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">'
-            f'KARL &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:{accent};text-decoration:none;">branch</a></div>'
-            f'<div style="background:{bg_surface};border:1px solid {border};border-radius:4px;'
-            f'padding:10px 14px;color:{text_hi};font-size:10pt;'
-            f'white-space:pre-wrap;min-height:1em;">'
+            f'<div style="margin:16px 80px 4px 0px;">'
+            f'<div style="color:{text_lo};font-size:7.5pt;font-weight:bold;margin-bottom:4px;letter-spacing:1.5px;">'
+            f'KARL &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:{accent};text-decoration:none;font-weight:bold;">↳ branch</a></div>'
+            f'<div style="background:{bg_surface};border:1px solid {border};border-radius:6px;'
+            f'padding:12px 16px;color:{text_hi};font-size:10pt;'
+            f'line-height:1.4;white-space:pre-wrap;min-height:1em;">'
         )
 
     def _get_user_html(self, text: str, node_id: str) -> str:
@@ -103,14 +103,15 @@ class ChatView(QTextBrowser):
         text_hi = self.theme_colors.get("text_hi", "#E4E4F0")
         safe_text = _escape(text)
         return (
-            f'<div style="margin:10px 0 4px 60px; text-align:right;">'
-            f'<div style="color:{text_lo};font-size:7.5pt;font-weight:bold;margin-bottom:3px;letter-spacing:1px;">'
-            f'YOU &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:{accent};text-decoration:none;">branch</a></div>'
-            f'<div style="background:{bg_raised};border:1px solid {border_hi};border-radius:4px;'
-            f'padding:10px 14px;color:{text_hi};font-size:10pt;'
-            f'white-space:pre-wrap;display:inline-block;text-align:left;">{safe_text}</div>'
+            f'<div style="margin:16px 0px 4px 80px; text-align:right;">'
+            f'<div style="color:{text_lo};font-size:7.5pt;font-weight:bold;margin-bottom:4px;letter-spacing:1.5px;">'
+            f'YOU &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:{accent};text-decoration:none;font-weight:bold;">↳ branch</a></div>'
+            f'<div style="background:{bg_raised};border:1px solid {border_hi};border-radius:6px;'
+            f'padding:12px 16px;color:{text_hi};font-size:10pt;'
+            f'line-height:1.4;white-space:pre-wrap;display:inline-block;text-align:left;">{safe_text}</div>'
             f'</div>'
         )
+
 
     def begin_stream(self, node_id: str = ""):
         self._streaming = True
@@ -400,19 +401,19 @@ class WorkbenchWorkspace(QWidget):
         fb_layout.addStretch()
 
         self._thumb_btn = QPushButton("✓ good")
-        self._thumb_btn.setObjectName("btn-ghost")
+        self._thumb_btn.setObjectName("btn-success")
         self._thumb_btn.setEnabled(False)
         self._thumb_btn.setToolTip("Curate this response as a positive training example")
         self._thumb_btn.clicked.connect(self._on_thumb_up)
 
         self._thumb_down_btn = QPushButton("✗ bad")
-        self._thumb_down_btn.setObjectName("btn-ghost")
+        self._thumb_down_btn.setObjectName("btn-danger")
         self._thumb_down_btn.setEnabled(False)
         self._thumb_down_btn.setToolTip("Flag this response as an incorrect/negative training example")
         self._thumb_down_btn.clicked.connect(self._on_thumb_down)
 
         self._correct_btn = QPushButton("✎ correct")
-        self._correct_btn.setObjectName("btn-ghost")
+        self._correct_btn.setObjectName("btn-warning")
         self._correct_btn.setEnabled(False)
         self._correct_btn.setToolTip("Manually edit the response to create a corrected training pair")
         self._correct_btn.clicked.connect(self._on_correct)
@@ -487,6 +488,11 @@ class WorkbenchWorkspace(QWidget):
 
         ctrl_layout.addStretch()
 
+        self._model_pill = QLabel("● no model")
+        self._model_pill.setObjectName("model-pill")
+        self._model_pill.setToolTip("Active base model and adapter overlay")
+        ctrl_layout.addWidget(self._model_pill)
+
         self._stop_btn = QPushButton("■ stop")
         self._stop_btn.setObjectName("btn-danger")
         self._stop_btn.setEnabled(False)
@@ -504,6 +510,7 @@ class WorkbenchWorkspace(QWidget):
         layout.addWidget(input_container)
 
         return w
+
 
     def _build_params_drawer(self) -> QWidget:
         drawer = QWidget()
@@ -809,6 +816,7 @@ class WorkbenchWorkspace(QWidget):
         if not found and self._model_combo.count() > 0:
             self._model_combo.setCurrentIndex(0)
                 
+        self._update_model_pill()
         self._model_combo.blockSignals(False)
 
     def _on_model_selected(self, index: int):
@@ -852,6 +860,7 @@ class WorkbenchWorkspace(QWidget):
             
             self.model_changed.emit(filename)
             self.adapter_changed.emit(adapter_name or "")
+            self._update_model_pill()
             
             note = f"— Active model switched to: {filename} (adapter: {adapter_name or 'none'}) —"
             self._chat_view.append_system_note(note)
@@ -860,6 +869,14 @@ class WorkbenchWorkspace(QWidget):
         finally:
             self._set_busy(False)
             self.status_changed.emit("idle", False)
+
+    def _update_model_pill(self):
+        model = self.state.model_name or "no model"
+        adapter = self.state.adapter_name
+        if adapter:
+            self._model_pill.setText(f"● {model} ({adapter})")
+        else:
+            self._model_pill.setText(f"● {model}")
 
     def _new_session(self):
         self._save_current_session()

@@ -166,13 +166,19 @@ class KnowledgeBaseWorkspace(QWidget):
         layout.addWidget(ingest_box)
         layout.addWidget(_hline())
 
-        # Retrieval settings row
+        # Retrieval container
         layout.addWidget(_section("RETRIEVAL"))
+
+        ret_box = QWidget()
+        ret_box.setObjectName("panel")
+        ret_box_layout = QVBoxLayout(ret_box)
+        ret_box_layout.setContentsMargins(10, 10, 10, 10)
+        ret_box_layout.setSpacing(10)
 
         ret_row = QWidget()
         ret_layout = QHBoxLayout(ret_row)
-        ret_layout.setContentsMargins(0, 4, 0, 4)
-        ret_layout.setSpacing(8)
+        ret_layout.setContentsMargins(0, 0, 0, 0)
+        ret_layout.setSpacing(6)
 
         ret_layout.addWidget(QLabel("threshold"))
         self._threshold_spin = QDoubleSpinBox()
@@ -186,7 +192,7 @@ class KnowledgeBaseWorkspace(QWidget):
         self._threshold_spin.valueChanged.connect(self._on_threshold_changed)
         ret_layout.addWidget(self._threshold_spin)
 
-        ret_layout.addSpacing(10)
+        ret_layout.addSpacing(5)
 
         ret_layout.addWidget(QLabel("top-k"))
         self._topk_spin = QSpinBox()
@@ -198,7 +204,8 @@ class KnowledgeBaseWorkspace(QWidget):
         ret_layout.addWidget(self._topk_spin)
 
         ret_layout.addStretch()
-        layout.addWidget(ret_row)
+        ret_box_layout.addWidget(ret_row)
+        layout.addWidget(ret_box)
 
         # danger zone
         layout.addStretch()
@@ -266,9 +273,9 @@ class KnowledgeBaseWorkspace(QWidget):
         ]
         for d in docs[:20]:
             lines.append(
-                f"<div style='background:#14141F;border:1px solid #252535;border-radius:4px;padding:8px;margin-bottom:8px;'>"
-                f"<div style='font-size:8.5pt;color:#9090A8;margin-bottom:4px;font-weight:bold;'>Chunk {d['chunk_id']}</div>"
-                f"<div style='font-size:9.5pt;color:#E4E4F0;white-space:pre-wrap;'>{html.escape(d['text'][:250])}{'...' if len(d['text']) > 250 else ''}</div>"
+                f"<div style='background:#141424;border:1px solid #28283f;border-radius:6px;padding:12px;margin-bottom:12px;'>"
+                f"<div style='font-size:8.5pt;color:#9090A8;margin-bottom:6px;font-weight:bold;'>Chunk {d['chunk_id']}</div>"
+                f"<div style='font-size:9.5pt;color:#ECECF5;white-space:pre-wrap;line-height:1.5;'>{html.escape(d['text'][:250])}{'...' if len(d['text']) > 250 else ''}</div>"
                 f"</div>"
             )
         if len(docs) > 20:
@@ -335,12 +342,16 @@ class KnowledgeBaseWorkspace(QWidget):
             f"<div style='font-size:9pt;color:#9090A8;margin-bottom:12px;'>Found {len(results)} chunks:</div>"
         ]
         for r in results:
+            dist = r["distance"]
+            dist_color = "#2DD4A0" if dist < 0.4 else ("#F0B030" if dist < 0.8 else "#F05050")
             lines.append(
-                f"<div style='background:#14141F;border:1px solid #252535;border-radius:4px;padding:10px;margin-bottom:10px;'>"
-                f"<div style='font-size:8.5pt;color:#9090A8;margin-bottom:4px;font-weight:bold;'>"
-                f"Chunk {r['chunk_id']} &middot; {r['source_file']} &middot; <span style='color:#F0B030;'>dist={r['distance']:.4f}</span>"
+                f"<div style='background:#141424;border:1px solid #28283f;border-radius:6px;padding:12px;margin-bottom:12px;'>"
+                f"<div style='font-size:8.5pt;color:#9090A8;margin-bottom:6px;font-weight:bold;'>"
+                f"<span style='color:#00C2FF;'>📄 {html.escape(r['source_file'])}</span>"
+                f" &nbsp;&middot;&nbsp; <span>Chunk {r['chunk_id']}</span>"
+                f" &nbsp;&middot;&nbsp; <span style='background:rgba(240,176,48,0.06); border:1px solid {dist_color}; border-radius:3px; padding:1px 5px; color:{dist_color};'>dist: {dist:.4f}</span>"
                 f"</div>"
-                f"<div style='font-size:9.5pt;color:#E4E4F0;white-space:pre-wrap;line-height:1.4;'>{html.escape(r['text'])}</div>"
+                f"<div style='font-size:9.5pt;color:#ECECF5;white-space:pre-wrap;line-height:1.5;'>{html.escape(r['text'])}</div>"
                 f"</div>"
             )
         self._search_results.setHtml("".join(lines))
