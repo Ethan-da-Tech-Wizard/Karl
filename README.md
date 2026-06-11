@@ -8,7 +8,7 @@ It is not LM Studio. It is not Ollama. It is a surgical instrument.
 
 ## What Karl Does Differently
 
-- **Zero network calls.** The engine runs as a C-extension inside your Python process. No localhost servers. No telemetry.
+- **Zero remote inference calls.** The model runs as a C-extension inside your Python process. The optional VS Code bridge uses localhost only; there is no telemetry and no cloud model server.
 - **You see exactly how it thinks.** Karl splits DeepSeek-R1's `<think>` reasoning blocks into a dedicated live stream panel, separate from the final response.
 - **Session Branching.** Interactive conversation tree view allowing you to branch off any message to explore alternate prompts and generation paths.
 - **Every generation is logged.** An immutable JSONL trace file captures the exact prompt, hyperparameters, thought process, and response for every single generation. Your experimental audit trail is guaranteed.
@@ -62,9 +62,19 @@ python main.py
 
 ---
 
-## VS Code & Code OSS Extension (Local Swarm Bridge)
+## VS Code & Code OSS Extension
 
-Karl contains an integrated editor extension located under `vscode-extension/` to link your local coding workspace to Karl's multi-agent swarm.
+Karl contains an integrated editor extension under `vscode-extension/`. It is a
+local WebSocket client for the running Karl app, so the editor can use Karl's
+chat, reasoning stream, prompt lab, Codex docs, and multi-agent coding swarm
+without moving inference or training out of your machine.
+
+The extension is the bridge toward the full "Karl inside VS Code" experience:
+model selection, prompt comparison, RAG, evals, LoRA/QLoRA training, adapter
+loading, and local code-maintenance agents controlled from the editor.
+
+See [docs/08_vscode_extension.md](docs/08_vscode_extension.md) for the current
+bridge API, safety model, and roadmap.
 
 ### 1. Compile & Package Extension
 Make sure you have Node.js installed, then compile the extension into a local package:
@@ -73,25 +83,25 @@ cd vscode-extension
 npm install
 npx @vscode/vsce package
 ```
-This produces `karl-1.0.0.vsix` in the directory.
+This produces `karl-1.1.0.vsix` in the directory.
 
 ### 2. Install on VS Code
 Install the package directly into VS Code:
 ```bash
-code --install-extension karl-1.0.0.vsix
+code --install-extension karl-1.1.0.vsix
 ```
 
 ### 3. Install on Code OSS (Arch Linux)
 To install the package directly into Code OSS on Arch:
 ```bash
-code-oss --install-extension karl-1.0.0.vsix
+code-oss --install-extension karl-1.1.0.vsix
 ```
 
 ### 4. Publish to Open VSX Registry (for Code OSS Marketplace)
 To publish the extension under your own verified namespace on Open VSX (open-vsx.org):
 ```bash
 npx ovsx create-namespace your-github-username -p <your-open-vsx-access-token>
-npx ovsx publish karl-1.0.0.vsix -p <your-open-vsx-access-token>
+npx ovsx publish karl-1.1.0.vsix -p <your-open-vsx-access-token>
 ```
 
 ---

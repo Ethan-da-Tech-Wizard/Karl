@@ -170,10 +170,27 @@ Sidebar: Workbench, Prompt Lab, Knowledge Base, Training Studio, Eval Suite, Sys
 
 ---
 
-## Remaining Work — Phase Plan
+### ✅ M18 — VS Code / Code OSS Bridge
+**Files:** `vscode-extension/extension.js`, `vscode-extension/package.json`,
+`app/engine/websocket_server.py`, `app/engine/swarm_orchestrator.py`,
+`tests/test_websocket_bridge.py`
 
-The phases below must be executed in strict order.
-Each phase has a defined scope, commit strategy, and risk level.
+Karl now has an editor-facing WebSocket bridge and VS Code / Code OSS extension.
+The extension exposes the local swarm, chat, live introspection stream, prompt
+lab diffing, Codex reference library, and basic generation overrides. Agent file
+edits open in the VS Code diff editor and can be accepted or rolled back.
+
+This is the foundation for the full editor-native Karl experience: model
+selection, RAG controls, evals, LoRA/QLoRA training, adapter loading, and local
+self-maintaining code agents controlled from the editor while all heavy work
+continues to run inside Karl.
+
+---
+
+## Completed Phase Plan
+
+The phases below are preserved as the historical build plan. They are complete
+as of the current repo state.
 
 ---
 
@@ -362,6 +379,7 @@ where each node can have multiple child turns. Plan carefully before touching co
 | M15 | Training Path Formalisation | ✅ Done |
 | M16 | Multi-Workspace UI Rebuild | ✅ Done |
 | M17 | Foundation Hardening | ✅ Done |
+| M18 | VS Code / Code OSS Bridge | ✅ Done |
 | — | Phase 1: Wire It Together | ✅ Done |
 | — | Phase 2: Data Pipeline | ✅ Done |
 | — | Phase 2.5a: UX Polish — Workbench | ✅ Done |
@@ -376,3 +394,38 @@ where each node can have multiple child turns. Plan carefully before touching co
 | — | Phase 4.2: DPO Export Completion | ✅ Done |
 | — | Phase 4.3: Session Branching | ✅ Done |
 | — | Phase 5: Docs, Tests, Accuracy | ✅ Done |
+
+---
+
+## Next Product Horizon — Full Karl In VS Code
+
+The next major product direction is to expose the complete Karl app through the
+VS Code extension without duplicating the Python runtime in the extension host.
+The PyQt app remains the local engine and system tray/control process; the
+extension becomes a first-class editor shell over the same local APIs.
+
+Priority order:
+
+| Priority | Capability | Practical target |
+|----------|------------|------------------|
+| 1 | Runtime status | Extension shows active model, adapter, RAM/VRAM, bridge state, generation state. |
+| 2 | Model registry | Extension can list installed GGUF files, show registry tiers, and set active model. |
+| 3 | Prompt Lab parity | Extension can save/load prompt pairs and run A/B comparisons with diff output. |
+| 4 | Knowledge Base parity | Extension can ingest selected files/folders and test retrieval with top-k/threshold controls. |
+| 5 | Training Studio parity | Extension can browse curated examples, export SFT/DPO, start LoRA/QLoRA training, stream loss, and load adapters. |
+| 6 | Eval Suite parity | Extension can run local eval datasets and show grader results. |
+| 7 | Agent transactions | Multi-file swarm edits are grouped under task IDs with accept-all/rollback-all. |
+| 8 | Self-maintenance loop | Local agents can inspect Karl's own code, propose upgrades, run tests, and hand the diff to the user for approval. |
+
+Non-negotiable constraints:
+
+- Inference remains local.
+- Training remains local.
+- RAG data remains local.
+- The extension never sends user code or traces to a remote service.
+- Agent writes remain inspectable and reversible.
+- Git push, dependency installation, and destructive filesystem operations
+  require explicit user approval.
+
+The detailed extension architecture and JSON-RPC roadmap live in
+[`docs/08_vscode_extension.md`](08_vscode_extension.md).

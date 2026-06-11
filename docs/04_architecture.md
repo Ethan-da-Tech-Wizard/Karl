@@ -368,3 +368,74 @@ Manages generation parameters dynamically based on the active LoRA overlay:
 - **Math Solver Adapters**: If the active adapter is `"math_solver"`, the compiler pre-seeds `<think>\n` to force standard chain-of-thought formatting.
 - **RAG Integration**: Preserves custom pirate system prompts or injected RAG context strings instead of overriding with static defaults when adapters are loaded.
 
+---
+
+## 14. VS Code / Code OSS Bridge
+
+Karl has two user-facing shells over the same local engine:
+
+```
+PyQt6 desktop app
+  -> MainWindow / workspaces
+  -> AppState
+  -> engine threads, RAG, trace logger, training curator, ModelLoader
+
+VS Code / Code OSS extension
+  -> vscode-extension/extension.js webview
+  -> ws://localhost:<port>
+  -> app/engine/websocket_server.py
+  -> engine threads, RAG, trace logger, training curator, ModelLoader
+```
+
+The extension is intentionally a thin editor client. It owns editor-native
+behavior such as command registration, selection capture, webview rendering,
+and opening diffs. Karl owns model execution, training, retrieval, traces,
+evals, adapters, and agent orchestration.
+
+Current bridge class:
+
+```python
+# app/engine/websocket_server.py
+class WebSocketServerManager:
+    get_instance(port=8080) -> WebSocketServerManager
+    reset_instance() -> None
+```
+
+Current JSON-RPC methods:
+
+| Method | Engine path | Purpose |
+|--------|-------------|---------|
+| `submit_task` | `SwarmOrchestratorThread` | Run the local Architect/Coder/Tester swarm against a workspace path. |
+| `submit_chat` | `LLMThread` or `AgenticThread` | Stream local chat or agentic-loop output to the editor. |
+| `stop_task` | active QThread | Stop the running swarm/chat task. |
+| `compute_diff` | `prompt_lab.generate_char_diff_html` | Produce Prompt Lab diff HTML. |
+| `list_codex_topics` | `data/codex_library/` | List local reference topics. |
+| `get_codex_content` | `data/codex_library/` | Return one local reference page. |
+
+Current notifications:
+
+| Notification | Meaning |
+|--------------|---------|
+| `status_update` | Log/status message. |
+| `task_plan_created` | Architect generated a task plan. |
+| `file_edited` | Coder produced replacement content for a file. |
+| `test_result` | Tester command passed or failed. |
+| `finished_swarm` | Multi-agent run ended. |
+| `chat_thought_token` | Reasoning token from `<think>` stream. |
+| `chat_response_token` | Final answer token. |
+| `chat_finished` | Chat generation completed. |
+
+File writes from agents are transactional from the editor's point of view:
+
+1. WebSocket server emits `file_edited`.
+2. Extension creates `<target>.original` if one does not already exist.
+3. Extension writes proposed content to the target file.
+4. Extension opens a VS Code diff between backup and modified file.
+5. User accepts by deleting the backup or rolls back by restoring it.
+
+This keeps autonomous code edits visible and reversible. Future multi-file
+agent runs should extend the same idea with a task ID and a transaction manifest
+so an entire run can be accepted or reverted as one unit.
+
+The detailed extension product plan and API roadmap live in
+[`docs/08_vscode_extension.md`](08_vscode_extension.md).

@@ -30,7 +30,7 @@ Karl/
 │   ├── cognitive_parser.py     ← parse_thought_stream(raw_text) → (thought, response)
 │   │                              Batch parser — used by engine_test.py and eval harness only
 │   └── hardware_scout.py       ← get_hardware_profile() → {ram_gb, vram_gb, storage_gb}
-│                                  Run once at startup via UpgradeCheckThread
+│                                  Used by System Config and model tier guidance
 │
 ├── app/
 │   ├── engine/
@@ -39,8 +39,11 @@ Karl/
 │   │   ├── llm_thread.py       ← LLMThread(QThread): single-shot streaming generation
 │   │   │                          Inline state machine: routes <think> tokens to thought panel
 │   │   │                          Handles truncation chaining (finish_reason == "length")
-│   │   └── agentic_thread.py   ← AgenticThread(QThread): autonomous multi-turn loop
-│   │                              Hot-reloads agentic_loop.py between iterations
+│   │   ├── agentic_thread.py   ← AgenticThread(QThread): autonomous multi-turn loop
+│   │   │                          Hot-reloads agentic_loop.py between iterations
+│   │   ├── swarm_orchestrator.py ← Architect/Coder/Tester loop for local code edits
+│   │   ├── swarm_agents.py     ← Agent implementations used by the orchestrator
+│   │   └── websocket_server.py ← Local JSON-RPC bridge for VS Code / Code OSS
 │   │
 │   ├── ui/
 │   │   ├── main_window.py      ← MainWindow(QMainWindow): full UI layout stack
@@ -94,15 +97,26 @@ Karl/
 │   ├── qlora_config_template.yaml ← Ready-to-use QLoRA config for Unsloth
 │   └── validate_dataset.py     ← Validates curated.jsonl before a training run
 │
+├── vscode-extension/
+│   ├── extension.js            ← VS Code / Code OSS webview client and editor commands
+│   ├── package.json            ← Extension manifest, commands, settings, Activity Bar view
+│   ├── package-lock.json       ← npm lockfile
+│   ├── media/icon.svg          ← Activity Bar icon
+│   └── *.vsix                  ← Locally packaged extension artifacts
+│
 ├── data/                       ← Local state — partially gitignored
-│   ├── model_registry.json     ← Source-controlled: tier definitions for upgrade manager
+│   ├── model_registry.json     ← Source-controlled: model tier definitions
 │   ├── active_model.json       ← Written at runtime: current model path + tier
 │   ├── models/                 ← GITIGNORED: GGUF model files (large binaries)
+│   ├── hf_models/              ← GITIGNORED: HuggingFace weights for LoRA/QLoRA training
+│   ├── adapters/               ← GITIGNORED: trained LoRA adapters
+│   ├── codex_library/          ← Local reference docs served to the extension
 │   ├── logs/
 │   │   ├── traces/             ← GITIGNORED: trace_YYYY-MM-DD.jsonl files
 │   │   └── raw/                ← GITIGNORED: *.tokens raw archive files
 │   ├── sessions/               ← GITIGNORED: saved conversation JSON files
-│   ├── training/               ← GITIGNORED: curated.jsonl + adapter checkpoints
+│   ├── training/               ← GITIGNORED: curated.jsonl + exported datasets
+│   ├── prompt_pairs/           ← GITIGNORED: saved Prompt Lab A/B pairs
 │   └── vector_db/              ← GITIGNORED: index.faiss + metadata.json
 │
 └── docs/
@@ -112,7 +126,8 @@ Karl/
     ├── 04_architecture.md
     ├── 05_scope_and_milestones.md
     ├── 06_repo_structure.md    ← THIS FILE
-    └── 07_risk_register.md
+    ├── 07_risk_register.md
+    └── 08_vscode_extension.md  ← VS Code bridge architecture and roadmap
 ```
 
 ---
