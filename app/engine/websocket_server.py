@@ -10,6 +10,7 @@ import json
 import asyncio
 import threading
 import re
+import uuid
 import websockets
 from typing import Set, Optional, Any
 from PyQt6.QtCore import Qt
@@ -49,6 +50,7 @@ class WebSocketServerManager:
         self.loop_thread: Optional[threading.Thread] = None
         self.orchestrator: Optional[SwarmOrchestratorThread] = None
         self.chat_thread = None
+        self.kb_ingest_thread: Optional[threading.Thread] = None
         self.rag = RAGPipeline()
         self._seed_codex()
         self.server = None
@@ -278,6 +280,176 @@ class WebSocketServerManager:
             os.remove(path)
         return {"name": safe_name, "deleted": True}
 
+    def _kb_supported_extensions(self) -> set[str]:
+        return {".pdf", ".docx", ".txt", ".md", ".py", ".csv"}
+
+    def _kb_snapshot(self) -> dict:
+        self.rag._load_index()
+        sources = []
+        counts = {}
+        ingested_at = {}
+        for doc in self.rag.documents:
+            source = doc.get("source_file", "unknown")
+            counts[source] = counts.get(source, 0) + 1
+            if source not in ingested_at:
+                ingested_at[source] = doc.get("ingested_at")
+
+        for source in sorted(counts):
+            sources.append({
+                "name": source,
+                "chunks": counts[source],
+                "ingested_at": ingested_at.get(source),
+            })
+
+        return {
+            "sources": sources,
+            "total_sources": len(sources),
+            "total_chunks": self.rag.total_chunks,
+            "supported_extensions": sorted(self._kb_supported_extensions()),
+            "ingesting": bool(self.kb_ingest_thread and self.kb_ingest_thread.is_alive()),
+        }
+
+    def _collect_kb_files(self, path: str, recursive: bool) -> list[str]:
+        if not path:
+            raise ValueError("Path is required.")
+
+        expanded = os.path.abspath(os.path.expanduser(path))
+        if os.path.isfile(expanded):
+            ext = os.path.splitext(expanded)[1].lower()
+            if ext not in self._kb_supported_extensions():
+                raise ValueError(f"Unsupported file type: {ext or 'none'}")
+            return [expanded]
+
+        if not os.path.isdir(expanded):
+            raise FileNotFoundError(f"Path not found: {path}")
+
+        files = []
+        if recursive:
+            for root, dirs, names in os.walk(expanded):
+                dirs[:] = [d for d in dirs if d not in {".git", "venv", ".venv", "__pycache__", "node_modules"}]
+                for name in names:
+                    ext = os.path.splitext(name)[1].lower()
+                    if ext in self._kb_supported_extensions():
+                        files.append(os.path.join(root, name))
+        else:
+            for name in os.listdir(expanded):
+                candidate = os.path.join(expanded, name)
+                ext = os.path.splitext(name)[1].lower()
+                if os.path.isfile(candidate) and ext in self._kb_supported_extensions():
+                    files.append(candidate)
+
+        return sorted(files)
+
+    def _start_kb_ingest(self, params: dict) -> dict:
+        if self.kb_ingest_thread and self.kb_ingest_thread.is_alive():
+            raise RuntimeError("Knowledge Base ingestion is already running.")
+
+        path = params.get("path", "")
+        recursive = bool(params.get("recursive", True))
+        chunk_size = int(params.get("chunk_size", 200))
+        overlap = int(params.get("overlap", 50))
+        if chunk_size < 50 or chunk_size > 2000:
+            raise ValueError("chunk_size must be between 50 and 2000.")
+        if overlap < 0 or overlap >= chunk_size:
+            raise ValueError("overlap must be non-negative and lower than chunk_size.")
+
+        files = self._collect_kb_files(path, recursive)
+        if not files:
+            raise ValueError("No supported files found for ingestion.")
+
+        task_id = str(uuid.uuid4())
+
+        def worker():
+            total_chunks = 0
+            per_file = []
+            errors = []
+            total = len(files)
+            for index, filepath in enumerate(files, 1):
+                filename = os.path.basename(filepath)
+                self._send_notification("kb_ingest_progress", {
+                    "task_id": task_id,
+                    "current": index,
+                    "total": total,
+                    "filename": filename,
+                    "status": "ingesting",
+                })
+                try:
+                    chunks = self.rag.ingest_file(
+                        filepath,
+                        chunk_size=chunk_size,
+                        overlap=overlap,
+                    )
+                    total_chunks += chunks
+                    per_file.append({
+                        "path": filepath,
+                        "filename": filename,
+                        "chunks": chunks,
+                    })
+                except Exception as exc:
+                    errors.append({
+                        "path": filepath,
+                        "filename": filename,
+                        "error": str(exc),
+                    })
+
+            self._send_notification("kb_ingest_finished", {
+                "task_id": task_id,
+                "files": per_file,
+                "errors": errors,
+                "file_count": len(per_file),
+                "error_count": len(errors),
+                "chunks_added": total_chunks,
+                "snapshot": self._kb_snapshot(),
+            })
+
+        self.kb_ingest_thread = threading.Thread(target=worker, daemon=True)
+        self.kb_ingest_thread.start()
+        return {
+            "status": "started",
+            "task_id": task_id,
+            "file_count": len(files),
+            "path": os.path.abspath(os.path.expanduser(path)),
+        }
+
+    def _search_kb(self, params: dict) -> dict:
+        query = (params.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required.")
+
+        top_k = int(params.get("top_k", 3))
+        threshold = float(params.get("threshold", 0.0))
+        source_filter = params.get("source_filter") or None
+        top_k = max(1, min(top_k, 25))
+        threshold = max(0.0, threshold)
+
+        self.rag._load_index()
+        results = self.rag.retrieve_with_metadata(
+            query,
+            top_k=top_k,
+            source_filter=source_filter,
+        )
+        if threshold > 0.0:
+            results = [r for r in results if float(r.get("distance", 0.0)) <= threshold]
+
+        return {
+            "query": query,
+            "top_k": top_k,
+            "threshold": threshold,
+            "source_filter": source_filter,
+            "results": [
+                {
+                    "text": r.get("text", ""),
+                    "source_file": r.get("source_file", "unknown"),
+                    "chunk_id": r.get("chunk_id"),
+                    "rank": r.get("rank"),
+                    "distance": float(r.get("distance", 0.0)),
+                    "ingested_at": r.get("ingested_at"),
+                }
+                for r in results
+            ],
+            "snapshot": self._kb_snapshot(),
+        }
+
     def _runtime_status(self) -> dict:
         active_model = self._active_model_config()
         loaded = ModelLoader.is_loaded()
@@ -441,6 +613,27 @@ class WebSocketServerManager:
                             "result": self._delete_prompt_pair(params.get("name", ""))
                         }))
 
+                    elif method == "list_kb_sources":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._kb_snapshot()
+                        }))
+
+                    elif method == "ingest_path":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._start_kb_ingest(params)
+                        }))
+
+                    elif method == "search_kb":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._search_kb(params)
+                        }))
+
                     elif method == "submit_task":
                         objective = params.get("objective")
                         workspace_path = params.get("workspace_path")
@@ -542,7 +735,13 @@ class WebSocketServerManager:
                         if hyperparams.get("rag_enabled", True):
                             try:
                                 self.rag._load_index()
-                                retrieved_chunks = self.rag.retrieve(query=message, top_k=3)
+                                rag_top_k = int(hyperparams.get("rag_top_k", 3))
+                                rag_threshold = float(hyperparams.get("rag_threshold", 0.0))
+                                retrieved_chunks = self.rag.retrieve(
+                                    query=message,
+                                    top_k=rag_top_k,
+                                    threshold=rag_threshold,
+                                )
                             except Exception as re:
                                 print(f"[WebSocket] RAG retrieval error: {re}")
 

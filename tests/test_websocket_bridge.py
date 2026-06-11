@@ -20,6 +20,49 @@ from PyQt6.QtCore import QCoreApplication
 from app.engine.websocket_server import WebSocketServerManager
 
 
+class FakeBridgeRAG:
+    def __init__(self):
+        self.documents = []
+
+    def _load_index(self):
+        return None
+
+    @property
+    def total_chunks(self):
+        return len(self.documents)
+
+    def ingest_file(self, filepath, chunk_size=200, overlap=50):
+        filename = os.path.basename(filepath)
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+        self.documents.append({
+            "text": text,
+            "source_file": filename,
+            "chunk_id": len(self.documents),
+            "ingested_at": "2026-06-11T00:00:00Z",
+        })
+        return 1
+
+    def retrieve(self, query, top_k=3, source_filter=None, threshold=0.0):
+        results = self.retrieve_with_metadata(query, top_k=top_k, source_filter=source_filter)
+        if threshold > 0:
+            results = [r for r in results if r["distance"] <= threshold]
+        return [r["text"] for r in results]
+
+    def retrieve_with_metadata(self, query, top_k=3, source_filter=None):
+        results = []
+        for idx, doc in enumerate(self.documents):
+            if source_filter and doc.get("source_file") != source_filter:
+                continue
+            distance = 0.05 if query.lower() in doc.get("text", "").lower() else 1.5
+            results.append({
+                **doc,
+                "rank": idx,
+                "distance": distance,
+            })
+        return results[:top_k]
+
+
 class TestWebSocketBridge(unittest.TestCase):
     def setUp(self):
         # Initialize a PyQt application instance for QObject/QThread creation safety
@@ -193,6 +236,78 @@ class TestWebSocketBridge(unittest.TestCase):
                 os.remove(pair_path)
             except FileNotFoundError:
                 pass
+
+    def test_knowledge_base_rpc(self):
+        self.manager.rag = FakeBridgeRAG()
+        doc_path = os.path.join(self.workspace_path, "notes.md")
+        with open(doc_path, "w", encoding="utf-8") as f:
+            f.write("Karl retrieves local project knowledge for prompt context.")
+
+        async def run_client():
+            async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 50,
+                    "method": "list_kb_sources"
+                }))
+                initial_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                self.assertEqual(initial_resp.get("id"), 50)
+                self.assertEqual(initial_resp["result"]["total_chunks"], 0)
+
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 51,
+                    "method": "ingest_path",
+                    "params": {
+                        "path": doc_path,
+                        "chunk_size": 100,
+                        "overlap": 10,
+                    }
+                }))
+                ingest_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                self.assertEqual(ingest_resp.get("id"), 51)
+                self.assertEqual(ingest_resp["result"]["status"], "started")
+                self.assertEqual(ingest_resp["result"]["file_count"], 1)
+
+                notifications = []
+                finished = None
+                for _ in range(10):
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                    method = msg.get("method")
+                    if method:
+                        notifications.append(method)
+                    if method == "kb_ingest_finished":
+                        finished = msg["params"]
+                        break
+
+                self.assertIn("kb_ingest_progress", notifications)
+                self.assertIn("kb_ingest_finished", notifications)
+                self.assertIsNotNone(finished)
+                self.assertEqual(finished["chunks_added"], 1)
+                self.assertEqual(finished["snapshot"]["total_chunks"], 1)
+
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 52,
+                    "method": "search_kb",
+                    "params": {
+                        "query": "project knowledge",
+                        "top_k": 5,
+                        "threshold": 0.2,
+                    }
+                }))
+                search_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                self.assertEqual(search_resp.get("id"), 52)
+                self.assertEqual(len(search_resp["result"]["results"]), 1)
+                result = search_resp["result"]["results"][0]
+                self.assertEqual(result["source_file"], "notes.md")
+                self.assertLessEqual(result["distance"], 0.2)
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(run_client())
+        finally:
+            loop.close()
 
     @patch("app.engine.model_loader.ModelLoader.get_instance")
     def test_websocket_bridge_flow(self, mock_get_llm):

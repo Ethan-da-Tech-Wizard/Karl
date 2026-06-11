@@ -144,6 +144,52 @@ class KarlSidebarProvider {
                 case 'show_error':
                     vscode.window.showErrorMessage(message.text);
                     break;
+                case 'choose_kb_file': {
+                    const files = await vscode.window.showOpenDialog({
+                        canSelectFiles: true,
+                        canSelectFolders: false,
+                        canSelectMany: false,
+                        filters: {
+                            'Knowledge files': ['pdf', 'docx', 'txt', 'md', 'py', 'csv'],
+                            'All files': ['*']
+                        },
+                        title: 'Select a file to ingest into Karl Knowledge Base'
+                    });
+                    if (files && files[0]) {
+                        this.postMessageToWebview({
+                            command: 'set_kb_path',
+                            path: files[0].fsPath
+                        });
+                    }
+                    break;
+                }
+                case 'choose_kb_folder': {
+                    const folders = await vscode.window.showOpenDialog({
+                        canSelectFiles: false,
+                        canSelectFolders: true,
+                        canSelectMany: false,
+                        title: 'Select a folder to ingest into Karl Knowledge Base'
+                    });
+                    if (folders && folders[0]) {
+                        this.postMessageToWebview({
+                            command: 'set_kb_path',
+                            path: folders[0].fsPath
+                        });
+                    }
+                    break;
+                }
+                case 'use_active_file_for_kb': {
+                    const editor = vscode.window.activeTextEditor;
+                    if (!editor) {
+                        vscode.window.showWarningMessage('No active editor found.');
+                        return;
+                    }
+                    this.postMessageToWebview({
+                        command: 'set_kb_path',
+                        path: editor.document.uri.fsPath
+                    });
+                    break;
+                }
             }
         });
     }
@@ -521,6 +567,102 @@ class KarlSidebarProvider {
             font-size: 10px;
         }
 
+        /* Knowledge Base Styling */
+        .kb-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .kb-stat-row {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .kb-stat {
+            border: 1px solid var(--vscode-widget-border, #3c3c3c);
+            border-radius: 4px;
+            background: var(--vscode-editor-background, #1e1e1e);
+            padding: 8px;
+            min-width: 0;
+        }
+        .kb-stat-value {
+            display: block;
+            font-size: 13px;
+            font-weight: 700;
+            color: #7bf19f;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .kb-stat-label {
+            display: block;
+            color: var(--vscode-descriptionForeground, #989898);
+            font-size: 8px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+        .kb-source-list {
+            max-height: 120px;
+            overflow-y: auto;
+            border: 1px solid var(--vscode-widget-border, #3c3c3c);
+            border-radius: 4px;
+            background: var(--vscode-editor-background, #1e1e1e);
+            margin-bottom: 10px;
+        }
+        .kb-source-item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            padding: 6px 8px;
+            border-bottom: 1px solid var(--vscode-widget-border, #3c3c3c);
+            cursor: pointer;
+        }
+        .kb-source-item:hover {
+            background: var(--vscode-list-hoverBackground, #2a2d2e);
+        }
+        .kb-source-item.active {
+            background: var(--vscode-list-activeSelectionBackground, #094771);
+            color: var(--vscode-list-activeSelectionForeground, #ffffff);
+            font-weight: 600;
+        }
+        .kb-source-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .kb-source-count {
+            color: var(--vscode-descriptionForeground, #989898);
+            font-size: 9px;
+        }
+        .kb-result-list {
+            max-height: 360px;
+            overflow-y: auto;
+        }
+        .kb-result-card {
+            border: 1px solid var(--vscode-widget-border, #3c3c3c);
+            border-radius: 4px;
+            background: var(--vscode-editor-background, #1e1e1e);
+            padding: 8px;
+            margin-bottom: 8px;
+        }
+        .kb-result-meta {
+            color: var(--vscode-descriptionForeground, #989898);
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+        .kb-result-text {
+            font-family: var(--vscode-editor-font-family, "Courier New", monospace);
+            white-space: pre-wrap;
+            color: var(--vscode-editor-foreground, #cccccc);
+            font-size: 10px;
+            line-height: 1.45;
+        }
+
         /* Codex Library Styling */
         .codex-list {
             max-height: 140px;
@@ -596,13 +738,13 @@ class KarlSidebarProvider {
         }
 
         /* Custom scrollbars */
-        #chat-messages::-webkit-scrollbar, #terminal::-webkit-scrollbar, .introspection-stream::-webkit-scrollbar, .lab-output::-webkit-scrollbar, .lab-diff-container::-webkit-scrollbar, .codex-list::-webkit-scrollbar, .codex-viewer::-webkit-scrollbar {
+        #chat-messages::-webkit-scrollbar, #terminal::-webkit-scrollbar, .introspection-stream::-webkit-scrollbar, .lab-output::-webkit-scrollbar, .lab-diff-container::-webkit-scrollbar, .kb-source-list::-webkit-scrollbar, .kb-result-list::-webkit-scrollbar, .codex-list::-webkit-scrollbar, .codex-viewer::-webkit-scrollbar {
             width: 6px;
         }
-        #chat-messages::-webkit-scrollbar-track, #terminal::-webkit-scrollbar-track, .introspection-stream::-webkit-scrollbar-track, .lab-output::-webkit-scrollbar-track, .lab-diff-container::-webkit-scrollbar-track, .codex-list::-webkit-scrollbar-track, .codex-viewer::-webkit-scrollbar-track {
+        #chat-messages::-webkit-scrollbar-track, #terminal::-webkit-scrollbar-track, .introspection-stream::-webkit-scrollbar-track, .lab-output::-webkit-scrollbar-track, .lab-diff-container::-webkit-scrollbar-track, .kb-source-list::-webkit-scrollbar-track, .kb-result-list::-webkit-scrollbar-track, .codex-list::-webkit-scrollbar-track, .codex-viewer::-webkit-scrollbar-track {
             background: transparent;
         }
-        #chat-messages::-webkit-scrollbar-thumb, #terminal::-webkit-scrollbar-thumb, .introspection-stream::-webkit-scrollbar-thumb, .lab-output::-webkit-scrollbar-thumb, .lab-diff-container::-webkit-scrollbar-thumb, .codex-list::-webkit-scrollbar-thumb, .codex-viewer::-webkit-scrollbar-thumb {
+        #chat-messages::-webkit-scrollbar-thumb, #terminal::-webkit-scrollbar-thumb, .introspection-stream::-webkit-scrollbar-thumb, .lab-output::-webkit-scrollbar-thumb, .lab-diff-container::-webkit-scrollbar-thumb, .kb-source-list::-webkit-scrollbar-thumb, .kb-result-list::-webkit-scrollbar-thumb, .codex-list::-webkit-scrollbar-thumb, .codex-viewer::-webkit-scrollbar-thumb {
             background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
             border-radius: 3px;
         }
@@ -619,6 +761,7 @@ class KarlSidebarProvider {
             <option value="chat">💬 Chat Workspace</option>
             <option value="models">🧠 Models</option>
             <option value="lab">🧪 Prompt Lab</option>
+            <option value="kb">📎 Knowledge Base</option>
             <option value="codex">📚 Codex Library</option>
         </select>
     </div>
@@ -787,6 +930,86 @@ class KarlSidebarProvider {
     </div>
 
     <!-- Workspace 5: Codex Library Content -->
+    <div class="tab-content" id="contentKb">
+        <div class="kb-stat-row">
+            <div class="kb-stat">
+                <span class="kb-stat-value" id="kbSourceCount">0</span>
+                <span class="kb-stat-label">Sources</span>
+            </div>
+            <div class="kb-stat">
+                <span class="kb-stat-value" id="kbChunkCount">0</span>
+                <span class="kb-stat-label">Chunks</span>
+            </div>
+            <div class="kb-stat">
+                <span class="kb-stat-value" id="kbIngestState">Idle</span>
+                <span class="kb-stat-label">Index</span>
+            </div>
+        </div>
+
+        <label>Indexed Sources</label>
+        <div class="kb-source-list" id="kbSourceList">
+            <div style="padding:8px; color:var(--vscode-descriptionForeground)">Connect to Karl to inspect indexed sources.</div>
+        </div>
+
+        <div class="form-group">
+            <label for="kbPath">File Or Folder To Ingest</label>
+            <input id="kbPath" type="text" placeholder="/path/to/file-or-folder">
+        </div>
+        <div class="actions-row" style="margin-top:0;">
+            <button onclick="useActiveFileForKb()">Active File</button>
+            <button onclick="chooseKbFile()">Choose File</button>
+            <button onclick="chooseKbFolder()">Choose Folder</button>
+        </div>
+
+        <div class="kb-grid" style="margin-top:12px;">
+            <div class="form-group">
+                <label for="kbChunkSize">Chunk Size</label>
+                <input id="kbChunkSize" type="number" min="50" max="2000" step="50" value="200">
+            </div>
+            <div class="form-group">
+                <label for="kbOverlap">Overlap</label>
+                <input id="kbOverlap" type="number" min="0" max="1000" step="10" value="50">
+            </div>
+        </div>
+        <div class="checkbox-row">
+            <input id="kbRecursive" type="checkbox" checked>
+            <label for="kbRecursive" style="display:inline; text-transform:none; font-size:11px;">Ingest folders recursively</label>
+        </div>
+        <div class="actions-row">
+            <button id="kbIngestBtn" onclick="ingestKbPath()">Ingest Path</button>
+            <button onclick="loadKbSources()">Refresh Index</button>
+        </div>
+
+        <div class="kb-grid" style="margin-top:12px;">
+            <div class="form-group">
+                <label for="kbTopK">Top-K</label>
+                <input id="kbTopK" type="number" min="1" max="25" value="5">
+            </div>
+            <div class="form-group">
+                <label for="kbThreshold">Distance Threshold</label>
+                <input id="kbThreshold" type="number" min="0" max="100" step="0.05" value="0">
+            </div>
+        </div>
+        <div class="form-group">
+            <label for="kbSourceFilter">Source Filter</label>
+            <select id="kbSourceFilter">
+                <option value="">All sources</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="kbQuery">Retrieval Preview Query</label>
+            <textarea id="kbQuery" rows="2" placeholder="Search indexed project knowledge before sending it into generation..."></textarea>
+        </div>
+        <button onclick="searchKb()">Search Knowledge Base</button>
+
+        <div class="form-group" style="margin-top:12px;">
+            <label>Retrieval Preview</label>
+            <div class="kb-result-list" id="kbResults">
+                <div style="padding:8px; color:var(--vscode-descriptionForeground)">Search results will appear here.</div>
+            </div>
+        </div>
+    </div>
+
     <div class="tab-content" id="contentCodex">
         <div class="form-group">
             <input type="text" id="codexSearch" placeholder="Search references..." oninput="filterCodex()">
@@ -819,6 +1042,7 @@ class KarlSidebarProvider {
         let activeEditPath = '';
         let chatFinished = true;
         let runtimeStatusTimer = null;
+        let kbSelectedSource = '';
 
         // Prompt Lab tracking variables
         let labOutputA = '';
@@ -848,6 +1072,10 @@ class KarlSidebarProvider {
                     \`Target File: \${data.filepath}\\nObjective: \${data.objective}\\n\\nCode Selection:\\n\${data.code}\`;
                 activeFile = data.filepath;
                 connectAndRun();
+            } else if (message.command === 'set_kb_path') {
+                document.getElementById('kbPath').value = message.path || '';
+                document.getElementById('workspace-select').value = 'kb';
+                switchWorkspace('kb');
             }
         });
 
@@ -864,6 +1092,9 @@ class KarlSidebarProvider {
             } else if (wsId === 'lab') {
                 document.getElementById('contentLab').classList.add('active');
                 loadPromptPairs();
+            } else if (wsId === 'kb') {
+                document.getElementById('contentKb').classList.add('active');
+                loadKbSources();
             } else if (wsId === 'codex') {
                 document.getElementById('contentCodex').classList.add('active');
                 loadCodexTopics();
@@ -913,12 +1144,26 @@ class KarlSidebarProvider {
                 if (document.getElementById('workspace-select').value === 'codex') {
                     loadCodexTopics();
                 }
+                if (document.getElementById('workspace-select').value === 'kb') {
+                    loadKbSources();
+                }
             };
 
             socket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 const method = data.method;
                 const params = data.params;
+
+                if (data.error) {
+                    const message = data.error.message || 'Unknown bridge error';
+                    log('[Bridge Error] ' + message);
+                    if (data.id === 51) {
+                        document.getElementById('kbIngestBtn').disabled = false;
+                        document.getElementById('kbIngestState').innerText = 'Error';
+                    }
+                    vscode.postMessage({ command: 'show_error', text: message });
+                    return;
+                }
 
                 // Handle RPC response results
                 if (data.result) {
@@ -947,6 +1192,14 @@ class KarlSidebarProvider {
                         log('[PromptLab] Deleted pair: ' + data.result.name);
                         document.getElementById('promptPairName').value = '';
                         loadPromptPairs();
+                    } else if (data.id === 50) { // list KB sources
+                        renderKbSnapshot(data.result);
+                    } else if (data.id === 51) { // ingest path
+                        document.getElementById('kbIngestBtn').disabled = true;
+                        document.getElementById('kbIngestState').innerText = 'Running';
+                        log('[KB] Ingestion started for ' + data.result.file_count + ' file(s).');
+                    } else if (data.id === 52) { // search KB
+                        renderKbSearch(data.result);
                     } else if (data.id === 20) { // list topics
                         renderCodexTopics(data.result.topics);
                     } else if (data.id === 21) { // get topic content
@@ -984,6 +1237,17 @@ class KarlSidebarProvider {
                     const outcome = params.success ? 'SUCCESS' : 'FAILURE';
                     log('[Swarm] Swarm finished: ' + outcome);
                     log('[Summary] ' + params.summary);
+                } else if (method === 'kb_ingest_progress') {
+                    document.getElementById('kbIngestState').innerText = params.current + '/' + params.total;
+                    log('[KB] Ingesting ' + params.current + '/' + params.total + ': ' + params.filename);
+                } else if (method === 'kb_ingest_finished') {
+                    document.getElementById('kbIngestBtn').disabled = false;
+                    document.getElementById('kbIngestState').innerText = params.error_count ? 'Check Log' : 'Ready';
+                    renderKbSnapshot(params.snapshot || {});
+                    log('[KB] Ingestion finished. Added ' + params.chunks_added + ' chunk(s) from ' + params.file_count + ' file(s).');
+                    if (params.error_count) {
+                        (params.errors || []).forEach(err => log('[KB] Error: ' + err.filename + ' — ' + err.error));
+                    }
                 }
 
                 // Chat / Prompt Lab streaming notifications
@@ -1101,6 +1365,15 @@ class KarlSidebarProvider {
             document.getElementById('runtimeState').className = 'runtime-value warn';
         }
 
+        function getKbSettings() {
+            const topKEl = document.getElementById('kbTopK');
+            const thresholdEl = document.getElementById('kbThreshold');
+            return {
+                top_k: Math.max(1, Math.min(25, parseInt(topKEl ? topKEl.value : '3') || 3)),
+                threshold: Math.max(0, parseFloat(thresholdEl ? thresholdEl.value : '0') || 0)
+            };
+        }
+
         function loadModels() {
             if (!socket || socket.readyState !== WebSocket.OPEN) {
                 document.getElementById('modelList').innerHTML = '<div class="model-card"><div class="model-meta">Karl bridge is offline.</div></div>';
@@ -1205,6 +1478,7 @@ class KarlSidebarProvider {
             const maxtok = parseInt(document.getElementById('karl-maxtok').value);
             const rag = document.getElementById('karl-rag').checked;
             const loop = document.getElementById('karl-loop').checked;
+            const kb = getKbSettings();
 
             socket.send(JSON.stringify({
                 jsonrpc: '2.0',
@@ -1219,7 +1493,9 @@ class KarlSidebarProvider {
                         top_p: topp,
                         max_tokens: maxtok,
                         rag_enabled: rag,
-                        agentic_loop_enabled: loop
+                        agentic_loop_enabled: loop,
+                        rag_top_k: kb.top_k,
+                        rag_threshold: kb.threshold
                     }
                 }
             }));
@@ -1289,6 +1565,7 @@ class KarlSidebarProvider {
             const maxtok = parseInt(document.getElementById('karl-maxtok').value);
             const rag = document.getElementById('karl-rag').checked;
             const loop = document.getElementById('karl-loop').checked;
+            const kb = getKbSettings();
             const wspace = document.getElementById('workspace').value;
 
             socket.send(JSON.stringify({
@@ -1303,7 +1580,9 @@ class KarlSidebarProvider {
                         top_p: topp,
                         max_tokens: maxtok,
                         rag_enabled: rag,
-                        agentic_loop_enabled: loop
+                        agentic_loop_enabled: loop,
+                        rag_top_k: kb.top_k,
+                        rag_threshold: kb.threshold
                     }
                 }
             }));
@@ -1388,6 +1667,8 @@ class KarlSidebarProvider {
                         max_tokens: maxtok,
                         rag_enabled: rag,
                         agentic_loop_enabled: loop,
+                        rag_top_k: getKbSettings().top_k,
+                        rag_threshold: getKbSettings().threshold,
                         system_prompt: systemPrompt
                     }
                 }
@@ -1505,6 +1786,149 @@ class KarlSidebarProvider {
                 method: 'delete_prompt_pair',
                 params: { name: name }
             }));
+        }
+
+        // Knowledge Base Implementation
+        function loadKbSources() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                document.getElementById('kbSourceList').innerHTML = '<div style="padding:8px; color:var(--vscode-descriptionForeground)">Karl bridge is offline.</div>';
+                return;
+            }
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 50,
+                method: 'list_kb_sources'
+            }));
+        }
+
+        function renderKbSnapshot(snapshot) {
+            const sources = snapshot.sources || [];
+            document.getElementById('kbSourceCount').innerText = snapshot.total_sources || sources.length || 0;
+            document.getElementById('kbChunkCount').innerText = snapshot.total_chunks || 0;
+            document.getElementById('kbIngestState').innerText = snapshot.ingesting ? 'Running' : 'Ready';
+
+            const list = document.getElementById('kbSourceList');
+            const filter = document.getElementById('kbSourceFilter');
+            const previousFilter = filter.value || kbSelectedSource;
+
+            if (!sources.length) {
+                list.innerHTML = '<div style="padding:8px; color:var(--vscode-descriptionForeground)">No indexed sources yet.</div>';
+            } else {
+                list.innerHTML = sources.map(source => {
+                    const active = source.name === kbSelectedSource ? ' active' : '';
+                    return '<div class="kb-source-item' + active + '" data-source="' + escapeHtml(source.name) + '" onclick="selectKbSourceFromRow(this)">' +
+                        '<span class="kb-source-name">' + escapeHtml(source.name) + '</span>' +
+                        '<span class="kb-source-count">' + Number(source.chunks || 0) + ' chunks</span>' +
+                        '</div>';
+                }).join('');
+            }
+
+            filter.innerHTML = '<option value="">All sources</option>' + sources.map(source => {
+                return '<option value="' + escapeHtml(source.name) + '">' + escapeHtml(source.name) + '</option>';
+            }).join('');
+            if (previousFilter && sources.some(source => source.name === previousFilter)) {
+                filter.value = previousFilter;
+                kbSelectedSource = previousFilter;
+            } else {
+                kbSelectedSource = '';
+            }
+        }
+
+        function selectKbSourceFromRow(row) {
+            kbSelectedSource = row.dataset.source || '';
+            document.querySelectorAll('.kb-source-item').forEach(item => item.classList.remove('active'));
+            row.classList.add('active');
+            document.getElementById('kbSourceFilter').value = kbSelectedSource;
+        }
+
+        function chooseKbFile() {
+            vscode.postMessage({ command: 'choose_kb_file' });
+        }
+
+        function chooseKbFolder() {
+            vscode.postMessage({ command: 'choose_kb_folder' });
+        }
+
+        function useActiveFileForKb() {
+            vscode.postMessage({ command: 'use_active_file_for_kb' });
+        }
+
+        function ingestKbPath() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                vscode.postMessage({ command: 'show_error', text: 'Karl is disconnected. Start the desktop app bridge first.' });
+                return;
+            }
+            const ingestPath = document.getElementById('kbPath').value.trim();
+            if (!ingestPath) {
+                vscode.postMessage({ command: 'show_error', text: 'Choose a file or folder to ingest first.' });
+                return;
+            }
+
+            const chunkSize = parseInt(document.getElementById('kbChunkSize').value) || 200;
+            const overlap = parseInt(document.getElementById('kbOverlap').value) || 0;
+            if (overlap >= chunkSize) {
+                vscode.postMessage({ command: 'show_error', text: 'Overlap must be lower than chunk size.' });
+                return;
+            }
+
+            document.getElementById('kbIngestBtn').disabled = true;
+            document.getElementById('kbIngestState').innerText = 'Starting';
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 51,
+                method: 'ingest_path',
+                params: {
+                    path: ingestPath,
+                    recursive: document.getElementById('kbRecursive').checked,
+                    chunk_size: chunkSize,
+                    overlap: overlap
+                }
+            }));
+        }
+
+        function searchKb() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                vscode.postMessage({ command: 'show_error', text: 'Karl is disconnected.' });
+                return;
+            }
+            const query = document.getElementById('kbQuery').value.trim();
+            if (!query) {
+                vscode.postMessage({ command: 'show_error', text: 'Enter a retrieval preview query.' });
+                return;
+            }
+            const kb = getKbSettings();
+            document.getElementById('kbResults').innerHTML = '<div style="padding:8px; color:var(--vscode-descriptionForeground)">Searching index...</div>';
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 52,
+                method: 'search_kb',
+                params: {
+                    query: query,
+                    top_k: kb.top_k,
+                    threshold: kb.threshold,
+                    source_filter: document.getElementById('kbSourceFilter').value || null
+                }
+            }));
+        }
+
+        function renderKbSearch(payload) {
+            renderKbSnapshot(payload.snapshot || {});
+            const results = payload.results || [];
+            const container = document.getElementById('kbResults');
+            if (!results.length) {
+                container.innerHTML = '<div style="padding:8px; color:var(--vscode-descriptionForeground)">No chunks matched the current query and threshold.</div>';
+                return;
+            }
+
+            container.innerHTML = results.map((result, index) => {
+                const text = escapeHtml(result.text || '').slice(0, 1800);
+                const rank = result.rank === null || result.rank === undefined ? index : result.rank;
+                const distance = Number(result.distance || 0).toFixed(4);
+                return '<div class="kb-result-card">' +
+                    '<div class="kb-result-meta">Rank ' + rank + ' · ' + escapeHtml(result.source_file || 'unknown') + ' · Chunk ' + escapeHtml(result.chunk_id) + ' · dist=' + distance + '</div>' +
+                    '<div class="kb-result-text">' + text + '</div>' +
+                    '</div>';
+            }).join('');
         }
 
         // Codex Library Implementation
