@@ -1,6 +1,6 @@
 {
-  "name": "karl-swe-agent",
-  "displayName": "Karl SWE Agent",
+  "name": "karl",
+  "displayName": "Karl",
   "description": "Local Multi-Agent Software Engineering swarm for VS Code, powered by Karl.",
   "version": "1.0.0",
   "publisher": "ethan",
@@ -18,12 +18,12 @@
       {
         "command": "karl.fixSelection",
         "title": "Ask Karl to Refactor Selection",
-        "category": "Karl Swarm"
+        "category": "Karl"
       },
       {
         "command": "karl.openSidebar",
-        "title": "Open Karl Swarm Panel",
-        "category": "Karl Swarm"
+        "title": "Open Karl Panel",
+        "category": "Karl"
       }
     ],
     "menus": {
@@ -39,7 +39,7 @@
       "activitybar": [
         {
           "id": "karl-swarm",
-          "title": "Karl Swarm",
+          "title": "Karl",
           "icon": "media/icon.svg"
         }
       ]
@@ -52,6 +52,21 @@
           "title": "Karl Agent Swarm"
         }
       ]
+    },
+    "configuration": {
+      "title": "Karl Settings",
+      "properties": {
+        "karl.port": {
+          "type": "integer",
+          "default": 8080,
+          "description": "Port of the local Karl WebSocket server."
+        },
+        "karl.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to the Karl server when the sidebar is opened."
+        }
+      }
     }
   }
 }
