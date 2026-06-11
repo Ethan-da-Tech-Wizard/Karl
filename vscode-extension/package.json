@@ -220,7 +220,7 @@
         {
           "type": "webview",
           "id": "karl.sidebarView",
-          "name": "Karl Agent Swarm"
+          "name": "Karl Control Deck"
         }
       ]
     },

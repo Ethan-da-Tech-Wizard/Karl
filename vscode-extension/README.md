@@ -4,13 +4,21 @@ Karl adds a local coding cockpit for the Karl desktop bridge.
 
 ## Main Surfaces
 
-- **Swarm**: compose workspace tasks, refactors, reviews, and test-generation jobs.
-- **Chat**: ask Karl direct questions with live introspection streaming.
-- **Changes**: review proposed file edits before applying them.
-- **Knowledge**: ingest files or folders into Karl's local RAG index.
-- **Lab**: run prompt A/B comparisons through the local bridge.
-- **Models**: inspect and activate local model registry entries.
+- **Workbench**: direct chat, live thought routing, branch tracking, quick actions,
+  workspace tasks, refactors, reviews, and test-generation jobs.
+- **Knowledge Base**: inspect RAG health, queue files or folders for batch ingest,
+  and preview retrieval chunks with distance scores.
+- **Prompt Lab**: run A/B prompt comparisons, save prompt pairs, sync prompt
+  columns, and render diffs.
+- **Training**: configure fine-tuning runs, adapter metadata, dataset paths, and
+  loss-log surfaces. Runtime training actions show a bridge-required state until
+  matching backend methods are exposed.
+- **Eval**: configure benchmark datasets, progress/ETA display, log filtering,
+  and summary export surfaces. Runtime eval actions require bridge harness methods.
+- **System**: inspect runtime status, model registry entries, download tiers,
+  RAM/context signals, and adapter compatibility warnings.
 - **Codex**: browse local reference material exposed by Karl.
+- **Review Bay**: review proposed file edits before applying them.
 - **Look**: choose visual themes, custom accent colors, and cockpit layouts.
 
 ## Appearance
@@ -88,12 +96,14 @@ path copying, and rollback for applied files when a `.original` backup exists.
 
 ## Productivity Flow
 
-The Swarm tab includes a Quick Actions launcher, recent objective history,
-context-size warnings, and a lightweight task queue. Large files or diffs are
-packaged with a visible bounded-context notice instead of being sent blindly.
+The Workbench includes a Quick Actions launcher, recent objective history,
+conversation branch tracking, context-size warnings, live thought routing, and a
+lightweight task queue. Large files or diffs are packaged with a visible
+bounded-context notice instead of being sent blindly.
 
-The Knowledge tab keeps recent KB searches for fast reruns. Bridge status now
-shows heartbeat age, last connection time, and bridge version when available.
+The Knowledge Base keeps recent KB searches for fast reruns and supports a local
+batch-ingestion queue. Bridge status shows heartbeat age, last connection time,
+and bridge version when available.
 
 The extension expects the Karl desktop bridge to be listening on the configured
 `karl.port`, defaulting to `8080`.

@@ -1,48 +1,32 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>⚡ FastAPI Core Framework Reference</h2>
-        <p style='color:#9090A8; line-height:1.4;'>FastAPI framework parameters, dependency injection scopes, database session handling, and background executors.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>⚡ FastAPI & ASGI Systems</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Guide to high-performance asynchronous microservice design, WebSocket connections, and dependency injection hierarchies.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Dependency Injection Blueprint</h3>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-from fastapi import FastAPI, Depends, HTTPException
-from typing import Annotated
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. ASGI Async Event Loop & Websockets</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>ASGI serves as the interface between async python web servers (like Uvicorn) and applications. Fast WebSockets handle streaming tokens to chat view wrappers:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>from fastapi import FastAPI, WebSocket
 
 app = FastAPI()
 
-async def verify_api_key(token: str):
-    if token != "secret-admin-key":
-        raise HTTPException(status_code=401, detail="Unauthorized key")
-    return token
+@app.websocket("/stream")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    while True:
+        token = await get_new_token_async()
+        await websocket.send_text(token)</pre>
 
-@app.get("/system/secure-endpoint")
-async def secure_route(auth: Annotated[str, Depends(verify_api_key)]):
-    return {"access": "granted", "auth_token": auth}
-        </pre>
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. Dependency Injection Trees</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>FastAPI's dependency injection system computes dependency trees on-demand, caching outcomes across HTTP/WS requests:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>from fastapi import Depends
+
+async def get_db():
+    db = DatabaseSession()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@app.get("/items")
+async def read_items(db = Depends(get_db)):
+    return db.query_items()</pre>
     
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Async SQLAlchemy & Scoped Sessions</h3>
-        <p style='color:#9090A8; line-height:1.4;'>FastAPI coordinates asynchronous database connections by combining yield dependencies with SQLAlchemy's asyncio mapping layers.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-from fastapi import FastAPI, Depends
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy.orm import declarative_base
-
-Base = declarative_base()
-engine = create_async_engine("sqlite+aiosqlite:///./test.db")
-
-async def get_session() -> AsyncSession:
-    async with AsyncSession(engine) as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-
-app = FastAPI()
-
-@app.get("/users")
-async def read_users(session: AsyncSession = Depends(get_session)):
-    result = await session.execute(select(User))
-    return result.scalars().all()
-        </pre>

@@ -1,0 +1,17 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>🌳 AI Prompt Steering Tactics</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Manual for prompt engineering, dynamic prompt manipulation, and behavioral model steering techniques as they are applied in Karl.</p>
+        
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. Chain-of-Thought (CoT) and Thinking Control</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>DeepSeek-R1 outputs are steered by pre-seeding the assistant prompt with <code>&lt;think&gt;\n</code>. This forces the local model to enter reasoning mode rather than attempting to answer immediately. The parser routes incoming tokens based on state transitions:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'># Token-routing state transition logic
+if "</think>" in buffer:
+    in_thought = False
+    new_chat_token.emit(remainder)</pre>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. Context Budget Trimming</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>To respect context limits (e.g., 4096 to 32768 tokens depending on the model tier), Karl applies active context pruning, removing the oldest messages in the session tree history while preserving the system prompt and the latest turns.</p>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>3. Cognitive State Compression</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>When history exceeds threshold lengths, Karl invokes the model to summarize intermediate conversation cycles, replacing long sequences of chat history with a single dense summary context block before sending it to the next prompt completion pass.</p>
+    

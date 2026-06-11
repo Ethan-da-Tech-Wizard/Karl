@@ -162,5 +162,68 @@ class TestUIImprovements(unittest.TestCase):
         self.assertIsNotNone(workspace._cached_models_list)
         self.assertIsNotNone(workspace._cached_adapters_list)
 
+    def test_codex_rag_features(self):
+        from app.state import AppState
+        from app.ui.workspaces.docs import DocsWorkspace
+        from app.ui.workspaces.workbench import WorkbenchWorkspace
+        import tempfile
+        import shutil
+        
+        state = AppState()
+        temp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, temp_dir)
+        
+        from app.utils.rag_pipeline import RAGPipeline
+        state.rag = RAGPipeline(index_path=temp_dir, namespace="user")
+        state.codex_rag = RAGPipeline(index_path=temp_dir, namespace="codex")
+        
+        workbench = WorkbenchWorkspace(state)
+        docs_workspace = DocsWorkspace(state, workbench_ref=workbench)
+        
+        self.assertIn("codex_index.faiss", state.codex_rag.INDEX_FILE)
+        self.assertIn("index.faiss", state.rag.INDEX_FILE)
+        
+        test_file = os.path.join(temp_dir, "TestTopic.html")
+        with open(test_file, "w", encoding="utf-8") as f:
+            f.write("<h2>TestTopic</h2><p>This is a descriptor metaclass borrow checker query manual.</p>")
+            
+        state.codex_rag.ingest_file(test_file)
+        self.assertGreater(state.codex_rag.total_chunks, 0)
+        
+        user_file = os.path.join(temp_dir, "UserDoc.txt")
+        with open(user_file, "w", encoding="utf-8") as f:
+            f.write("Information about local client setups.")
+        state.rag.ingest_file(user_file)
+        
+        docs_workspace._cache["TestTopic"] = {
+            "filepath": test_file,
+            "content": "<h2>TestTopic</h2><p>This is a descriptor metaclass borrow checker query manual.</p>"
+        }
+        docs_workspace._cache["OtherTopic"] = {
+            "filepath": os.path.join(temp_dir, "OtherTopic.html"),
+            "content": "Some other content"
+        }
+        docs_workspace._topics_list.clear()
+        docs_workspace._topics_list.addItem("TestTopic")
+        docs_workspace._topics_list.addItem("OtherTopic")
+        
+        docs_workspace._filter_topics("borrow checker")
+        
+        current = docs_workspace._topics_list.currentItem()
+        self.assertIsNotNone(current)
+        self.assertEqual(current.text(), "TestTopic")
+        
+        from PyQt6.QtWidgets import QMessageBox
+        original_info = QMessageBox.information
+        QMessageBox.information = lambda *args, **kwargs: QMessageBox.StandardButton.Ok
+        try:
+            docs_workspace._send_to_workbench()
+        finally:
+            QMessageBox.information = original_info
+            
+        input_text = workbench._input.toPlainText()
+        self.assertIn("[Codex: TestTopic]", input_text)
+        self.assertIn("descriptor metaclass borrow checker query manual", input_text)
+
 if __name__ == "__main__":
     unittest.main()

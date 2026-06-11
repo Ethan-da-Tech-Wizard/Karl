@@ -762,8 +762,8 @@ class KarlSidebarProvider {
     <div class="shell">
         <header class="topbar glow-panel">
             <div>
-                <div class="eyebrow">Karl Cockpit</div>
-                <h1>Agent Swarm</h1>
+                <div class="eyebrow">Karl IDE</div>
+                <h1>Offline Control Deck</h1>
             </div>
             <div class="bridge">
                 <span id="statusDot" class="status-dot offline"></span>
@@ -779,13 +779,14 @@ class KarlSidebarProvider {
         </section>
 
         <nav class="tabs" aria-label="Karl workspaces">
-            <button class="tab active" data-workspace="swarm">Swarm</button>
-            <button class="tab" data-workspace="chat">Chat</button>
-            <button class="tab" data-workspace="changes">Changes</button>
-            <button class="tab" data-workspace="kb">Knowledge</button>
-            <button class="tab" data-workspace="lab">Lab</button>
-            <button class="tab" data-workspace="models">Models</button>
+            <button class="tab active" data-workspace="swarm">Workbench</button>
+            <button class="tab" data-workspace="kb">Knowledge Base</button>
+            <button class="tab" data-workspace="lab">Prompt Lab</button>
+            <button class="tab" data-workspace="training">Training</button>
+            <button class="tab" data-workspace="eval">Eval</button>
+            <button class="tab" data-workspace="system">System</button>
             <button class="tab" data-workspace="codex">Codex</button>
+            <button class="tab" data-workspace="changes">Review Bay</button>
             <button class="tab" data-workspace="appearance">Look</button>
         </nav>
 
@@ -820,10 +821,25 @@ class KarlSidebarProvider {
         <main>
             <section id="workspace-swarm" class="workspace active">
                 <div class="section-head">
-                    <div><div class="eyebrow">Deploy</div><h2>Task Composer</h2></div>
+                    <div><div class="eyebrow">Workbench</div><h2>Chat, Thought Stream, and Task Composer</h2></div>
                     <button id="askWorkspaceBtn">Ask Workspace</button>
                 </div>
                 <div class="quick-actions" id="quickActions" aria-label="Karl quick actions"></div>
+                <div class="workbench-grid">
+                    <section class="subpanel">
+                        <div class="section-head mini-head"><div><div class="eyebrow">Direct</div><h2>Chat + Introspection</h2></div><button id="branchLatestBtn">Branch Latest</button></div>
+                        <div id="introspectionBox" class="thoughts"><div class="eyebrow">Thought Stream</div><pre id="introspectionThoughts"></pre></div>
+                        <div id="chatMessages" class="chat"></div>
+                        <div class="composer">
+                            <input id="chatInput" type="text" placeholder="Ask Karl about the current codebase...">
+                            <button id="chatSendBtn" class="primary">Send</button>
+                        </div>
+                    </section>
+                    <section class="subpanel">
+                        <div class="section-head mini-head"><div><div class="eyebrow">Branches</div><h2>Conversation Forks</h2></div><button id="newBranchBtn">New Branch</button></div>
+                        <div id="branchTree" class="branch-tree empty">No conversation branches yet.</div>
+                    </section>
+                </div>
                 <div class="context-meter" id="contextMeter">Context package: none queued.</div>
                 <label>Workflow
                     <select id="taskMode">
@@ -853,16 +869,6 @@ class KarlSidebarProvider {
                 <pre id="terminal">--- Swarm Logs ---</pre>
             </section>
 
-            <section id="workspace-chat" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Direct</div><h2>Chat + Introspection</h2></div></div>
-                <div id="introspectionBox" class="thoughts"><div class="eyebrow">Thought Stream</div><pre id="introspectionThoughts"></pre></div>
-                <div id="chatMessages" class="chat"></div>
-                <div class="composer">
-                    <input id="chatInput" type="text" placeholder="Ask Karl about the current codebase...">
-                    <button id="chatSendBtn" class="primary">Send</button>
-                </div>
-            </section>
-
             <section id="workspace-changes" class="workspace">
                 <div class="section-head"><div><div class="eyebrow">Review</div><h2>Pending File Changes</h2></div><div class="action-row compact-actions"><button id="previewAllBtn">Preview All</button><button id="rejectAllBtn" class="danger">Reject All</button><button id="copySummaryBtn">Copy Summary</button></div></div>
                 <label>Filter <select id="changeFilter"><option value="">All</option><option value="proposed">Proposed</option><option value="previewed">Previewed</option><option value="applied">Applied</option><option value="rolled_back">Rolled Back</option></select></label>
@@ -883,6 +889,12 @@ class KarlSidebarProvider {
                     <button id="chooseKbFileBtn">Choose File</button>
                     <button id="chooseKbFolderBtn">Choose Folder</button>
                 </div>
+                <div class="action-row">
+                    <button id="kbQueueAddBtn">Add To Queue</button>
+                    <button id="kbQueueRunBtn" class="primary">Ingest Queue</button>
+                    <button id="kbQueueClearBtn">Clear Queue</button>
+                </div>
+                <div id="kbQueue" class="queue-list empty">No files queued for batch ingest.</div>
                 <div class="settings-grid">
                     <label>Chunk Size <input id="kbChunkSize" type="number" min="50" max="2000" step="50" value="200"></label>
                     <label>Overlap <input id="kbOverlap" type="number" min="0" max="1000" step="10" value="50"></label>
@@ -907,7 +919,12 @@ class KarlSidebarProvider {
                 </div>
                 <label>System Prompt A <textarea id="labSysA" rows="3"></textarea></label>
                 <label>System Prompt B <textarea id="labSysB" rows="3"></textarea></label>
+                <label class="check"><input id="labLockSync" type="checkbox"> Lock system prompts while editing A</label>
                 <label>Common User Message <textarea id="labUser" rows="3"></textarea></label>
+                <div class="action-row">
+                    <button id="tokenizeLabBtn">Preview BPE Tokens</button>
+                </div>
+                <div id="tokenPreview" class="token-preview">Tokenizer visualization requires Karl bridge tokenization support.</div>
                 <button id="labRunBtn" class="primary">Run A/B Comparison</button>
                 <div class="split">
                     <pre id="labOutputA" class="lab-output">Output A will stream here...</pre>
@@ -917,9 +934,55 @@ class KarlSidebarProvider {
                 <div id="labDiff" class="diff-view">Diff comparisons will render here.</div>
             </section>
 
-            <section id="workspace-models" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Runtime</div><h2>Models</h2></div><button id="loadModelsBtn">Refresh</button></div>
+            <section id="workspace-training" class="workspace">
+                <div class="section-head"><div><div class="eyebrow">Training Studio</div><h2>Fine-Tuning Control Surface</h2></div><button id="trainingCheckBtn">Check Dependencies</button></div>
+                <section class="runtime-grid">
+                    <div class="metric"><span>Dataset</span><strong id="trainingDatasetState">not selected</strong></div>
+                    <div class="metric"><span>Examples</span><strong id="trainingExampleCount">--</strong></div>
+                    <div class="metric"><span>Adapter Path</span><strong id="trainingAdapterPath">data/adapters</strong></div>
+                    <div class="metric"><span>Status</span><strong id="trainingStatus">bridge required</strong></div>
+                </section>
+                <label>Dataset JSONL <input id="trainingDatasetPath" type="text" placeholder="data/training/curated.jsonl"></label>
+                <div class="settings-grid">
+                    <label>Adapter Name <input id="trainingAdapterName" type="text" value="karl-adapter"></label>
+                    <label>Epochs <input id="trainingEpochs" type="number" min="1" max="20" value="3"></label>
+                    <label>Learning Rate <input id="trainingLr" type="number" min="0" step="0.00001" value="0.0002"></label>
+                    <label>LoRA Rank <input id="trainingRank" type="number" min="1" max="256" value="16"></label>
+                    <label class="check"><input id="trainingQlorA" type="checkbox"> QLoRA 4-bit when available</label>
+                    <label class="check"><input id="trainingValidateOnly" type="checkbox" checked> Validate before run</label>
+                </div>
+                <div class="action-row"><button id="trainingValidateBtn">Validate Dataset</button><button id="trainingRunBtn" class="primary">Start Training</button><button id="trainingExportBtn">Export SFT/DPO</button></div>
+                <div class="loss-plot" id="trainingLossPlot"><span>Loss curve will render here when bridge training events are available.</span></div>
+                <pre id="trainingLog" class="studio-log">Training Studio is ready. Runtime training requires bridge methods for dependency checks, dataset validation, export, and training events.</pre>
+            </section>
+
+            <section id="workspace-eval" class="workspace">
+                <div class="section-head"><div><div class="eyebrow">Eval Suite</div><h2>Benchmark Harness</h2></div><button id="evalRefreshBtn">Refresh Status</button></div>
+                <section class="runtime-grid">
+                    <div class="metric"><span>Dataset</span><strong id="evalDatasetState">not selected</strong></div>
+                    <div class="metric"><span>Elapsed</span><strong id="evalElapsed">00:00</strong></div>
+                    <div class="metric"><span>ETA</span><strong id="evalEta">--</strong></div>
+                    <div class="metric"><span>Pass Rate</span><strong id="evalPassRate">--</strong></div>
+                </section>
+                <label>Dataset Path <input id="evalDatasetPath" type="text" placeholder="eval/datasets/grounded_answer.jsonl"></label>
+                <label>Benchmark Mode <select id="evalMode"><option>grounded_answer</option><option>code_review</option><option>json_valid</option><option>exact_match</option></select></label>
+                <div class="meter"><span id="evalProgressBar"></span></div>
+                <div class="action-row"><button id="evalRunBtn" class="primary">Run Eval</button><button id="evalStopBtn" class="danger">Stop</button><button id="evalExportBtn">Export Summary</button></div>
+                <label>Log Filter <select id="evalFilter"><option value="">All</option><option value="pass">PASS</option><option value="fail">FAIL</option></select></label>
+                <div id="evalLog" class="eval-log">Eval execution requires Karl bridge harness support. This workspace is prepared for async progress, ETA, PASS/FAIL filtering, and summary export.</div>
+            </section>
+
+            <section id="workspace-system" class="workspace">
+                <div class="section-head"><div><div class="eyebrow">System Config</div><h2>Runtime, Models, and Adapters</h2></div><button id="loadModelsBtn">Refresh</button></div>
+                <section class="runtime-grid">
+                    <div class="metric"><span>Active Model</span><strong id="systemActiveModel">unknown</strong></div>
+                    <div class="metric"><span>Context</span><strong id="systemContext">--</strong></div>
+                    <div class="metric"><span>RAM Check</span><strong id="systemRamCheck">waiting</strong></div>
+                    <div class="metric"><span>Adapter Warning</span><strong id="systemAdapterWarning">none</strong></div>
+                </section>
                 <div id="modelList" class="model-list"></div>
+                <div class="section-head mini-head"><div><div class="eyebrow">Registry</div><h2>Download Tiers</h2></div></div>
+                <div id="downloadRegistry" class="model-list"></div>
             </section>
 
             <section id="workspace-codex" class="workspace">

@@ -1,135 +1,31 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>🐍 Python Reference Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Python is a multi-paradigm language. This guide details namespaces scoping, metaclass bindings, descriptor protocols, cooperative concurrency, and memory GC thresholds.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>🐍 Python Deep Reference</h2>
+        <p style='color:#9090A8; line-height:1.4;'>A complete guide to advanced python memory protocols, cooperative concurrency, metaclasses, and custom descriptors.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Namespaces Scopes (LEGB) & Closure Cells</h3>
-        <p style='color:#9090A8; line-height:1.4;'>CPython resolves variables dynamically traversing Local, Enclosing, Global, and Built-in boundaries. Closures store outer variable references in cell arrays inside the <code>__closure__</code> attribute.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-import functools
-
-def rate_limiter(max_invocations: int):
-    def decorator(func):
-        counter = 0  # Captured variable compiled into a cell reference
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            nonlocal counter  # Bypasses new local binding, mutating cell storage
-            counter += 1
-            if counter > max_invocations:
-                raise RuntimeError("Execution limit hit")
-            return func(*args, **kwargs)
-        return wrapper
-    return decorator
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Metaprogramming & Descriptors</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Descriptors hook attribute access. Metaclasses run during class compilation to customize namespaces before instantiating types.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-class StringField:
-    def __set_name__(self, owner, name):
-        self.storage_name = f"_{name}"
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. Descriptor Protocol</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Descriptors form the core of properties, methods, static methods, and class methods. They are classes implementing <code>__get__</code>, <code>__set__</code>, or <code>__delete__</code>:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>class TypedString:
+    def __init__(self, name):
+        self.name = f"_{name}"
     def __get__(self, instance, owner):
-        if instance is None: return self
-        return getattr(instance, self.storage_name, "")
+        if instance is None:
+            return self
+        return getattr(instance, self.name, "")
     def __set__(self, instance, value):
         if not isinstance(value, str):
-            raise TypeError("Expected string value")
-        setattr(instance, self.storage_name, value)
+            raise TypeError("Expected string")
+        setattr(instance, self.name, value)</pre>
 
-class SchemaMetaclass(type):
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. Metaclass Bindings</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Metaclasses control class construction. They subclass <code>type</code> and intercept class creation via <code>__new__</code>:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>class MetaRegistry(type):
     def __new__(cls, name, bases, attrs):
-        # Enforce slots allocation based on declared string fields to optimize RAM
-        fields = [k for k, v in attrs.items() if isinstance(v, StringField)]
-        if fields:
-            attrs["__slots__"] = tuple(f"_{f}" for f in fields)
-        return super().__new__(cls, name, bases, attrs)
-        </pre>
+        attrs["__slots__"] = ("_cached_value",)
+        return super().__new__(cls, name, bases, attrs)</pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Asyncio, Event Loops & TaskGroups</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Asyncio executes coroutines using an event loop. <code>TaskGroup</code> (Python 3.11+) handles group lifecycles, propagating nested exceptions cleanly.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-import asyncio
-
-async def fetch_api(item: int) -> dict:
-    await asyncio.sleep(0.01)  # Cooperative yield yielding thread execution
-    return {"item": item, "status": "resolved"}
-
-async def main():
-    async with asyncio.TaskGroup() as tg:
-        # Spawns tasks concurrently; failures cancel all siblings immediately
-        tasks = [tg.create_task(fetch_api(i)) for i in range(5)]
-    results = [t.result() for t in tasks]
-    print(results)
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. CPython Memory Layout & GIL Mechanics</h3>
-        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
-          <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Feature</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Internal Mechanics</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Diagnostic Methods</th>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Reference Counting</td>
-            <td style='padding:4px;'>Every PyObject holds ref counts. Value dropping to 0 frees memory structures instantly.</td>
-            <td style='padding:4px;'><code>sys.getrefcount(obj)</code></td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Generational GC</td>
-            <td style='padding:4px;'>Tracks circular references across three generations (0, 1, 2) utilizing thresholds.</td>
-            <td style='padding:4px;'><code>gc.collect()</code>, <code>gc.set_threshold()</code></td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>GIL</td>
-            <td style='padding:4px;'>Protects CPython interpreter state from concurrent execution races. Limits threads to single core.</td>
-            <td style='padding:4px;'>Bypass via <code>multiprocessing</code> or C/Rust extensions.</td>
-          </tr>
-        </table>
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>3. Cooperative Concurrency & GC</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Python concurrency relies on cooperative event loops (<code>asyncio</code>) running coroutines. Memory management utilizes reference counting and an incremental cyclic garbage collector (GC) with three generational thresholds:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>import gc
+# Retrieve current generational thresholds
+thresholds = gc.get_threshold()  # default: (700, 10, 10)</pre>
     
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Standard Library Deep Dive & Patterns</h3>
-        <p style='color:#9090A8; line-height:1.4;'>The Python Standard Library provides modules optimized in C for common algorithmic operations:</p>
-        <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>collections:</b> <code>deque</code> (thread-safe double-ended queue with O(1) appends/pops), <code>defaultdict</code>, <code>Counter</code>.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>itertools:</b> <code>chain</code>, <code>groupby</code>, <code>permutations</code>, <code>combinations</code>. Lazy generators that keep memory footprints at O(1).</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>functools:</b> <code>lru_cache(maxsize=128)</code> (memoization), <code>partial</code> (argument pre-binding), <code>reduce</code>.</li>
-        </ul>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-from collections import deque
-import itertools
-
-# BFS implementation using deque
-def bfs(graph, start):
-    visited, queue = set([start]), deque([start])
-    while queue:
-        vertex = queue.popleft()
-        for neighbor in graph[vertex]:
-            if neighbor not in visited:
-                visited.add(neighbor)
-                queue.append(neighbor)
-    return visited
-
-# Infinite counter combined with zip to paginate data
-for index, item in zip(itertools.count(start=1, step=2), ["a", "b", "c"]):
-    print(f"Index: {index}, Item: {item}")
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>6. Diagnostics, Profiling & Type Hints</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Compile-time type checking via static tools (e.g. MyPy) uses the <code>typing</code> module. Profiles CPU execution using <code>cProfile</code> and memory using <code>tracemalloc</code>.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-import cProfile
-from typing import Callable, TypeVar, Generator
-
-T = TypeVar('T')
-
-# Generic Type signature for generic generator execution
-def stream_processor(stream: Generator[T, None, None], process: Callable[[T], T]) -> Generator[T, None, None]:
-    for item in stream:
-        yield process(item)
-
-# CPU profiling hook
-def run_profile():
-    pr = cProfile.Profile()
-    pr.enable()
-    # targeted routine here
-    pr.disable()
-    pr.print_stats(sort='cumulative')
-        </pre>

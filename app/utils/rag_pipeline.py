@@ -29,6 +29,7 @@ class RAGPipeline:
         model_name: str = "all-MiniLM-L6-v2",
         index_path: str = "data/vector_db",
         contextual_headers: bool = False,
+        namespace: str = "user",
     ):
         """
         Args:
@@ -36,12 +37,18 @@ class RAGPipeline:
             index_path:          Directory for persisted index files.
             contextual_headers:  If True, prepend "[Source: file | Chunk N]" to
                                  each retrieved chunk — aids model citation.
+            namespace:           Isolate user vs system index files.
         """
         self.model_name = model_name
         self._encoder = None
         self.index_path = index_path
-        self.INDEX_FILE = os.path.join(index_path, "index.faiss")
-        self.META_FILE  = os.path.join(index_path, "metadata.json")
+        self.namespace = namespace
+        if namespace == "codex":
+            self.INDEX_FILE = os.path.join(index_path, "codex_index.faiss")
+            self.META_FILE  = os.path.join(index_path, "codex_metadata.json")
+        else:
+            self.INDEX_FILE = os.path.join(index_path, "index.faiss")
+            self.META_FILE  = os.path.join(index_path, "metadata.json")
         self.contextual_headers = contextual_headers
 
         os.makedirs(self.index_path, exist_ok=True)

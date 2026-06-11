@@ -51,12 +51,19 @@ body::before {
 
 .glow-panel,
 .workspace,
+.subpanel,
 .metric,
 .queue-card,
 .change-card,
 .source-list,
 .result-card,
 .model-card,
+.queue-list,
+.branch-tree,
+.token-preview,
+.loss-plot,
+.studio-log,
+.eval-log,
 .lab-output,
 .diff-view,
 .codex-viewer,
@@ -352,6 +359,18 @@ select:focus {
     margin: 10px 0;
 }
 
+.workbench-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.subpanel {
+    padding: 10px;
+    min-width: 0;
+}
+
 .quick-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -399,7 +418,9 @@ select:focus {
 }
 
 .task-queue,
-.recent-list {
+.recent-list,
+.queue-list,
+.branch-tree {
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -407,7 +428,9 @@ select:focus {
 }
 
 .task-queue.empty,
-.recent-list.empty {
+.recent-list.empty,
+.queue-list.empty,
+.branch-tree.empty {
     padding: 8px;
     border: 1px solid rgba(125, 211, 252, 0.16);
     border-radius: 7px;
@@ -415,7 +438,9 @@ select:focus {
 }
 
 .task-item,
-.recent-item {
+.recent-item,
+.queue-row,
+.branch-node {
     border: 1px solid rgba(125, 211, 252, 0.18);
     border-radius: 7px;
     background: rgba(255, 255, 255, 0.035);
@@ -428,8 +453,35 @@ select:focus {
     display: block;
 }
 
+.queue-row,
+.branch-node {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.branch-node {
+    grid-template-columns: minmax(0, 1fr) auto;
+    cursor: pointer;
+}
+
+.branch-node.active {
+    border-color: var(--karl-accent);
+    box-shadow: inset 2px 0 0 var(--karl-accent);
+}
+
+.queue-row span,
+.branch-node span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .task-item strong,
-.recent-item strong {
+.recent-item strong,
+.queue-row strong,
+.branch-node strong {
     display: block;
     color: var(--karl-accent-2);
     font-size: 10px;
@@ -641,7 +693,10 @@ pre {
 .source-list,
 .result-list,
 .codex-viewer,
-.diff-view {
+.diff-view,
+.token-preview,
+.studio-log,
+.eval-log {
     padding: 8px;
     overflow: auto;
 }
@@ -689,6 +744,50 @@ pre {
 .diff-view {
     min-height: 140px;
     white-space: pre-wrap;
+}
+
+.token-preview {
+    min-height: 64px;
+    margin: 8px 0;
+    color: var(--karl-muted);
+}
+
+.loss-plot {
+    display: grid;
+    place-items: center;
+    min-height: 130px;
+    margin: 10px 0;
+    color: var(--karl-muted);
+    background:
+        linear-gradient(90deg, rgba(125, 211, 252, 0.08) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(125, 211, 252, 0.08) 1px, transparent 1px),
+        rgba(0, 194, 255, 0.035);
+    background-size: 28px 28px;
+}
+
+.studio-log,
+.eval-log {
+    min-height: 150px;
+    white-space: pre-wrap;
+    font-family: var(--vscode-editor-font-family, monospace);
+    color: var(--vscode-editor-foreground);
+}
+
+.meter {
+    width: 100%;
+    height: 10px;
+    overflow: hidden;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--karl-border) 55%, transparent);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.meter span {
+    display: block;
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, var(--karl-accent), var(--karl-accent-2));
+    box-shadow: 0 0 16px var(--karl-accent);
 }
 
 .diff-add {
@@ -824,11 +923,15 @@ code {
     .quick-actions {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
+
+    .workbench-grid {
+        grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr);
+    }
 }
 
 @media (min-width: 820px) {
     .tabs {
-        grid-template-columns: repeat(8, minmax(0, 1fr));
+        grid-template-columns: repeat(9, minmax(0, 1fr));
     }
 }
 

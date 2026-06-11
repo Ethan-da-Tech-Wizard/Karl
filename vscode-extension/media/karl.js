@@ -21,6 +21,12 @@ let activeTaskId = '';
 let lastHeartbeatAt = null;
 let lastConnectedAt = null;
 let lastBridgeError = '';
+let kbQueue = [];
+let kbQueueRunning = false;
+let conversationBranches = [];
+let activeBranchId = '';
+let currentConversationInput = '';
+let responseThinkActive = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -32,6 +38,9 @@ window.addEventListener('DOMContentLoaded', () => {
     renderRecentObjectives();
     renderRecentKbQueries();
     renderTaskQueue();
+    renderKbQueue();
+    renderBranches();
+    renderDownloadRegistry([]);
     setInterval(() => updateBridgeMeta(), 1000);
     appendMessageBubble('assistant', 'Karl bridge ready. Connect to the desktop app to start.');
     if (boot.autoConnect) connect();
@@ -75,6 +84,8 @@ function hydrate() {
     $('layoutSelect').value = persisted.layout || 'cockpit';
     recentObjectives = Array.isArray(persisted.recentObjectives) ? persisted.recentObjectives.slice(0, 12) : [];
     recentKbQueries = Array.isArray(persisted.recentKbQueries) ? persisted.recentKbQueries.slice(0, 12) : [];
+    conversationBranches = Array.isArray(persisted.conversationBranches) ? persisted.conversationBranches.slice(0, 20) : [];
+    activeBranchId = persisted.activeBranchId || (conversationBranches[0] && conversationBranches[0].id) || '';
     applyAppearance();
     if (persisted.workspaceTab) switchWorkspace(persisted.workspaceTab);
 }
@@ -93,7 +104,9 @@ function persist() {
                 customAccent: $('customAccent').value,
                 layout: $('layoutSelect').value,
                 recentObjectives: recentObjectives.slice(0, 12),
-                recentKbQueries: recentKbQueries.slice(0, 12)
+                recentKbQueries: recentKbQueries.slice(0, 12),
+                conversationBranches: conversationBranches.slice(0, 20),
+                activeBranchId
             }
         });
     }, 250);
@@ -117,6 +130,12 @@ function bindEvents() {
     $('activeFileKbBtn').addEventListener('click', () => vscode.postMessage({ command: 'use_active_file_for_kb' }));
     $('chooseKbFileBtn').addEventListener('click', () => vscode.postMessage({ command: 'choose_kb_file' }));
     $('chooseKbFolderBtn').addEventListener('click', () => vscode.postMessage({ command: 'choose_kb_folder' }));
+    $('kbQueueAddBtn').addEventListener('click', addKbQueuePath);
+    $('kbQueueRunBtn').addEventListener('click', ingestKbQueue);
+    $('kbQueueClearBtn').addEventListener('click', () => {
+        kbQueue = [];
+        renderKbQueue();
+    });
     $('kbIngestBtn').addEventListener('click', ingestKbPath);
     $('kbSearchBtn').addEventListener('click', searchKb);
     $('loadPairsBtn').addEventListener('click', loadPromptPairs);
@@ -126,7 +145,21 @@ function bindEvents() {
     $('deletePairBtn').addEventListener('click', deletePromptPair);
     $('labRunBtn').addEventListener('click', runLab);
     $('diffBtn').addEventListener('click', computeLabDiff);
+    $('labSysA').addEventListener('input', () => {
+        if ($('labLockSync').checked) $('labSysB').value = $('labSysA').value;
+    });
+    $('tokenizeLabBtn').addEventListener('click', () => requiresBridgeSupport('Prompt Lab tokenizer visualization', 'tokenize_text'));
     $('loadModelsBtn').addEventListener('click', loadModels);
+    $('branchLatestBtn').addEventListener('click', branchFromLatest);
+    $('newBranchBtn').addEventListener('click', createConversationBranch);
+    $('trainingCheckBtn').addEventListener('click', () => requiresBridgeSupport('Training dependency checks', 'training_status'));
+    $('trainingValidateBtn').addEventListener('click', validateTrainingForm);
+    $('trainingRunBtn').addEventListener('click', () => requiresBridgeSupport('Training run orchestration', 'start_training'));
+    $('trainingExportBtn').addEventListener('click', () => requiresBridgeSupport('Training export from VS Code', 'export_training_dataset'));
+    $('evalRefreshBtn').addEventListener('click', () => requiresBridgeSupport('Eval harness status', 'eval_status'));
+    $('evalRunBtn').addEventListener('click', () => requiresBridgeSupport('Eval harness execution', 'run_eval'));
+    $('evalStopBtn').addEventListener('click', () => requiresBridgeSupport('Eval cancellation', 'stop_eval'));
+    $('evalExportBtn').addEventListener('click', () => requiresBridgeSupport('Eval summary export', 'export_eval_summary'));
     $('codexSearch').addEventListener('input', filterCodex);
     $('workspace').addEventListener('change', persist);
     $('bridgePort').addEventListener('change', persist);
@@ -161,7 +194,7 @@ function switchWorkspace(wsId) {
     const section = $(`workspace-${wsId}`);
     if (section) section.classList.add('active');
 
-    if (wsId === 'models') loadModels();
+    if (wsId === 'system') loadModels();
     if (wsId === 'kb') loadKbSources();
     if (wsId === 'lab') loadPromptPairs();
     if (wsId === 'codex') loadCodexTopics();
@@ -282,9 +315,11 @@ function handleSocketMessage(data) {
     } else if (method === 'kb_ingest_finished') {
         $('kbIngestBtn').disabled = false;
         $('kbIngestState').innerText = params.error_count ? 'Check Log' : 'Ready';
+        markCurrentKbQueueDone(params.error_count ? 'error' : 'done');
         renderKbSnapshot(params.snapshot || {});
         log(`[KB] Added ${params.chunks_added} chunk(s) from ${params.file_count} file(s).`);
         (params.errors || []).forEach(err => log(`[KB] ${err.filename}: ${err.error}`));
+        if (kbQueueRunning) ingestNextQueuedPath();
     } else if (method === 'chat_thought_token') {
         if (!labRunning) {
             $('introspectionBox').classList.add('active');
@@ -310,6 +345,7 @@ function handleRpcResult(id, result) {
         updateBridgeMeta(result);
     } else if (id === 31) {
         renderModels(result.models || []);
+        renderDownloadRegistry(result.models || []);
     } else if (id === 32) {
         log(`[Models] ${result.message || 'Model updated.'}`);
         requestRuntimeStatus();
@@ -357,6 +393,18 @@ function renderRuntimeStatus(status) {
     $('runtimeState').innerText = `${runtime.state || 'idle'} · ${clients} client${clients === 1 ? '' : 's'}`;
     $('runtimeAdapter').innerText = adapter.name || 'none';
     $('runtimeSystem').innerText = `${system.ram_mb ?? '--'} MB · ${model.n_ctx || '--'} ctx`;
+    if ($('systemActiveModel')) $('systemActiveModel').innerText = model.name || 'none';
+    if ($('systemContext')) $('systemContext').innerText = `${model.n_ctx || '--'} ctx`;
+    if ($('systemRamCheck')) {
+        const ramGb = Number(system.ram_mb || 0) / 1024;
+        const needGb = Number(model.min_ram_gb || 0);
+        $('systemRamCheck').innerText = needGb && ramGb ? (ramGb >= needGb ? 'ok' : 'low ram') : 'unknown';
+    }
+    if ($('systemAdapterWarning')) {
+        $('systemAdapterWarning').innerText = adapter.name && adapter.base_model && model.name && adapter.base_model !== model.name
+            ? 'base mismatch'
+            : 'none';
+    }
     if (status.bridge && status.bridge.version) {
         $('bridgeMeta').dataset.version = status.bridge.version;
     }
@@ -458,6 +506,7 @@ function sendChatMessage() {
     }
     appendMessageBubble('user', text);
     appendMessageBubble('assistant', '');
+    currentConversationInput = text;
     input.value = '';
     chatFinished = false;
     $('chatSendBtn').disabled = true;
@@ -497,6 +546,81 @@ function handleChatFinished() {
     }
     chatFinished = true;
     $('chatSendBtn').disabled = false;
+    const lastAssistant = $('chatMessages').querySelector('.message.assistant:last-child .message-content');
+    recordConversationTurn(currentConversationInput, lastAssistant ? lastAssistant.innerText : '');
+    currentConversationInput = '';
+}
+
+function activeBranch() {
+    if (!activeBranchId) createConversationBranch();
+    return conversationBranches.find(branch => branch.id === activeBranchId) || conversationBranches[0];
+}
+
+function createConversationBranch(seedTitle = '') {
+    const id = `branch-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const branch = {
+        id,
+        title: seedTitle || `Branch ${conversationBranches.length + 1}`,
+        turns: [],
+        createdAt: new Date().toISOString()
+    };
+    conversationBranches.unshift(branch);
+    activeBranchId = id;
+    renderBranches();
+    persist();
+}
+
+function branchFromLatest() {
+    const current = activeBranch();
+    const id = `branch-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const branch = {
+        id,
+        title: `Fork of ${current.title || 'Workbench'}`,
+        turns: current.turns.slice(0, -1),
+        createdAt: new Date().toISOString()
+    };
+    conversationBranches.unshift(branch);
+    activeBranchId = id;
+    renderBranches();
+    vscode.postMessage({ command: 'show_message', text: 'Karl conversation branch created in the Workbench panel.' });
+    persist();
+}
+
+function recordConversationTurn(user, assistant) {
+    const prompt = String(user || '').trim();
+    const response = String(assistant || '').trim();
+    if (!prompt && !response) return;
+    const branch = activeBranch();
+    branch.turns.push({ user: prompt, assistant: response, at: new Date().toISOString() });
+    branch.title = prompt.slice(0, 48) || branch.title;
+    conversationBranches = [branch, ...conversationBranches.filter(item => item.id !== branch.id)].slice(0, 20);
+    activeBranchId = branch.id;
+    renderBranches();
+    persist();
+}
+
+function renderBranches() {
+    const panel = $('branchTree');
+    if (!panel) return;
+    if (!conversationBranches.length) {
+        panel.className = 'branch-tree empty';
+        panel.innerText = 'No conversation branches yet.';
+        return;
+    }
+    panel.className = 'branch-tree';
+    panel.innerHTML = conversationBranches.map(branch => `
+        <button class="branch-node ${branch.id === activeBranchId ? 'active' : ''}" data-branch="${escapeHtml(branch.id)}">
+            <span>${escapeHtml(branch.title || 'Untitled branch')}</span>
+            <strong>${branch.turns.length} turn${branch.turns.length === 1 ? '' : 's'}</strong>
+        </button>
+    `).join('');
+    panel.querySelectorAll('[data-branch]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            activeBranchId = btn.dataset.branch;
+            renderBranches();
+            persist();
+        });
+    });
 }
 
 function appendMessageBubble(role, text) {
@@ -511,9 +635,43 @@ function appendMessageBubble(role, text) {
 function appendChatToken(token) {
     const target = $('chatMessages').querySelector('.message.assistant:last-child .message-content');
     if (target) {
-        target.innerText += token;
+        routeThinkMarkup(token, target);
         $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
     }
+}
+
+function routeThinkMarkup(token, chatTarget) {
+    const text = String(token || '');
+    if (!responseThinkActive && !text.includes('<think') && !text.includes('</think>')) {
+        chatTarget.innerText += text;
+        return;
+    }
+    let remaining = text;
+    while (remaining.length) {
+        if (responseThinkActive) {
+            const close = remaining.indexOf('</think>');
+            $('introspectionBox').classList.add('active');
+            if (close === -1) {
+                $('introspectionThoughts').innerText += remaining;
+                remaining = '';
+            } else {
+                $('introspectionThoughts').innerText += remaining.slice(0, close);
+                remaining = remaining.slice(close + '</think>'.length);
+                responseThinkActive = false;
+            }
+            continue;
+        }
+
+        const open = remaining.indexOf('<think>');
+        if (open === -1) {
+            chatTarget.innerText += remaining;
+            break;
+        }
+        chatTarget.innerText += remaining.slice(0, open);
+        remaining = remaining.slice(open + '<think>'.length);
+        responseThinkActive = true;
+    }
+    $('introspectionThoughts').scrollTop = $('introspectionThoughts').scrollHeight;
 }
 
 function addPendingEdit(edit) {
@@ -756,6 +914,70 @@ function renderKbSnapshot(snapshot) {
     if (kbSelectedSource) $('kbSourceFilter').value = kbSelectedSource;
 }
 
+function addKbQueuePath() {
+    const ingestPath = $('kbPath').value.trim();
+    if (!ingestPath) {
+        vscode.postMessage({ command: 'show_error', text: 'Choose a file or folder before adding it to the queue.' });
+        return;
+    }
+    kbQueue = [{ path: ingestPath, status: 'queued' }, ...kbQueue.filter(item => item.path !== ingestPath)].slice(0, 50);
+    renderKbQueue();
+}
+
+function renderKbQueue() {
+    const panel = $('kbQueue');
+    if (!kbQueue.length) {
+        panel.className = 'queue-list empty';
+        panel.innerText = 'No files queued for batch ingest.';
+        return;
+    }
+    panel.className = 'queue-list';
+    panel.innerHTML = kbQueue.map((item, index) => `
+        <div class="queue-row ${escapeHtml(item.status || 'queued')}">
+            <span>${escapeHtml(item.path)}</span>
+            <strong>${escapeHtml(item.status || 'queued')}</strong>
+            <button data-remove-kb="${index}">Remove</button>
+        </div>
+    `).join('');
+    panel.querySelectorAll('[data-remove-kb]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            kbQueue.splice(Number(btn.dataset.removeKb), 1);
+            renderKbQueue();
+        });
+    });
+}
+
+function markCurrentKbQueueDone(status) {
+    const running = kbQueue.find(item => item.status === 'running');
+    if (running) {
+        running.status = status;
+        renderKbQueue();
+    }
+}
+
+function ingestKbQueue() {
+    if (!kbQueue.length) {
+        addKbQueuePath();
+    }
+    if (!kbQueue.length || kbQueueRunning) return;
+    ingestNextQueuedPath();
+}
+
+function ingestNextQueuedPath() {
+    const next = kbQueue.find(item => item.status === 'queued');
+    if (!next) {
+        kbQueueRunning = false;
+        renderKbQueue();
+        loadKbSources();
+        return;
+    }
+    kbQueueRunning = true;
+    next.status = 'running';
+    $('kbPath').value = next.path;
+    renderKbQueue();
+    ingestKbPath();
+}
+
 function ingestKbPath() {
     if (!isConnected()) {
         vscode.postMessage({ command: 'show_error', text: 'Karl is disconnected.' });
@@ -796,6 +1018,38 @@ function searchKb() {
         threshold: Number($('kbThreshold').value) || 0,
         source_filter: $('kbSourceFilter').value || null
     });
+}
+
+function requiresBridgeSupport(feature, method) {
+    const text = `${feature} requires Karl bridge method "${method}". The VS Code workspace is ready, but this backend endpoint is not exposed by the current desktop bridge.`;
+    vscode.postMessage({ command: 'show_error', text });
+    if ($('trainingLog') && feature.toLowerCase().includes('training')) {
+        $('trainingLog').innerText += `\n[Bridge Required] ${text}`;
+    }
+    if ($('evalLog') && feature.toLowerCase().includes('eval')) {
+        $('evalLog').innerText = `[Bridge Required] ${text}`;
+    }
+    if ($('tokenPreview') && feature.toLowerCase().includes('tokenizer')) {
+        $('tokenPreview').innerText = text;
+    }
+}
+
+function validateTrainingForm() {
+    const dataset = $('trainingDatasetPath').value.trim();
+    const adapter = $('trainingAdapterName').value.trim();
+    if (!dataset || !adapter) {
+        vscode.postMessage({ command: 'show_error', text: 'Training validation needs a dataset path and adapter name.' });
+        return;
+    }
+    $('trainingDatasetState').innerText = dataset;
+    $('trainingAdapterPath').innerText = `data/adapters/${adapter}`;
+    $('trainingStatus').innerText = 'local form valid';
+    $('trainingLog').innerText = [
+        'Local form validation passed.',
+        `Dataset: ${dataset}`,
+        `Adapter: data/adapters/${adapter}`,
+        'Runtime validation still requires bridge support for dataset inspection and dependency checks.'
+    ].join('\n');
 }
 
 function renderQuickActions() {
@@ -969,6 +1223,26 @@ function renderModels(models) {
     $('modelList').querySelectorAll('[data-model]').forEach(btn => {
         btn.addEventListener('click', () => rpc(32, 'set_active_model', { filename: btn.dataset.model }));
     });
+}
+
+function renderDownloadRegistry(models) {
+    const panel = $('downloadRegistry');
+    if (!panel) return;
+    const installed = new Set((models || []).filter(model => model.installed).map(model => model.name || model.filename));
+    const tiers = [
+        ['1.5B Qwen', 'Fast local scout tier for low-RAM systems and short context tests.', '4 GB'],
+        ['7B/8B Qwen/LLaMA', 'Balanced daily-driver tier for coding, review, and RAG workflows.', '12-16 GB'],
+        ['14B', 'Higher reasoning headroom for deep planning and longer workbench sessions.', '24 GB'],
+        ['70B', 'Maximum local quality tier for workstation-class systems.', '64+ GB']
+    ];
+    panel.innerHTML = tiers.map(([name, description, ram]) => {
+        const isInstalled = Array.from(installed).some(item => String(item).toLowerCase().includes(name.split(' ')[0].toLowerCase()));
+        return `<div class="model-card">
+            <div class="model-title">${escapeHtml(name)}</div>
+            <div class="model-meta">${escapeHtml(description)}<br>Recommended RAM: ${escapeHtml(ram)} · ${isInstalled ? 'Installed candidate detected' : 'Download requires desktop bridge support'}</div>
+            <button disabled>${isInstalled ? 'Available' : 'Bridge Download Required'}</button>
+        </div>`;
+    }).join('');
 }
 
 function loadCodexTopics() {

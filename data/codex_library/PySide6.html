@@ -1,0 +1,26 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>🖥️ PySide6 / PyQt6 GUI Engine</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Manual for PySide6 GUI development, signal-slot mechanics, custom layout architectures, and styling systems.</p>
+        
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. Signal & Slot Engine</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Signals and slots provide safe communication between PySide components, automatically executing slot callbacks on the main GUI thread when emitted from worker threads:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>from PyQt6.QtCore import QObject, pyqtSignal
+
+class TraceLoader(QObject):
+    trace_ready = pyqtSignal(dict)
+    
+    def process(self):
+        result = {"id": "42", "response": "done"}
+        self.trace_ready.emit(result)</pre>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. Custom Painting via QPainter</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Override the <code>paintEvent</code> method to draw custom shapes, borders, vector-painted icons, or active tracing borders using vectors:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>from PyQt6.QtGui import QPainter, QPen, QColor
+
+class CustomPanel(QWidget):
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        pen = QPen(QColor("#00C2FF"), 2)
+        painter.setPen(pen)
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)</pre>
+    

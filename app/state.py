@@ -11,6 +11,7 @@ from app.utils.training_curator import TrainingCurator
 class AppState:
     def __init__(self):
         self.rag = RAGPipeline()
+        self.codex_rag = RAGPipeline(namespace="codex")
         self.memory = MemoryManager()
         self.logger = TraceLogger()
         self.curator = TrainingCurator()

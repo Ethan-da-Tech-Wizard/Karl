@@ -1,0 +1,32 @@
+
+        <h2 style='color:#00C2FF; margin-top:0;'>⚙️ Karl Internal Architecture</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Karl is a PyQt6 offline LLM cockpit and multi-agent system designed for local execution. This manual documents Karl's internal threading models, trace log structure, and search heuristics.</p>
+        
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. Threading Execution Model</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Inference and heavy processing are completely offloaded from PySide's main GUI thread using <code>QThread</code>. The system runs two primary worker threads:</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>LLMThread (Single-shot):</b> Handles standard streaming requests, pre-seeding the output stream with the <code>&lt;think&gt;</code> tag and capturing stdout/stderr safely.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>AgenticThread (Multi-iteration loop):</b> Runs hot-reloadable agent loops, checking output states via a grader function and deciding if another model invocation is needed.</li>
+        </ul>
+        
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. JSONL Trace Schema</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Every generation traces an immutable JSONL line to <code>data/logs/traces/</code>. The record schema includes details such as hyperparams, system prompt, compiled prompt, thinking text, response text, and RAG chunk references:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>{
+  "id": "uuid4",
+  "timestamp": "ISO8601",
+  "model": "deepseek-r1-1.5b.gguf",
+  "hyperparams": {"temperature": 0.7, "top_p": 0.95},
+  "system_prompt": "Persona definition...",
+  "compiled_prompt": "Prompt construction...",
+  "thinking": "Real-time thinking blocks...",
+  "response": "Final parsed answer...",
+  "rag_chunks": [{"source_file": "manual.txt", "chunk_id": 42}]
+}</pre>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px;'>3. FAISS Alphanumeric Hybrid Search Heuristics</h4>
+        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>To bypass dense vector search limitations on specific codes or IDs, Karl extracts patterns via regular expressions and prioritizes exact substring matches over standard L2-normalized FAISS queries:</p>
+        <pre style='background:#10101C; border:1px solid #23233A; color:#A8D158; padding:8px; font-family:monospace;'># Extract uppercase alphanumeric codes between 3 and 10 characters
+id_tokens = re.findall(r"\b[A-Z0-9]{3,10}\b", query)
+# Extract decimal section numbering format (e.g. 19.3.2)
+section_tokens = re.findall(r"\b\d{1,2}\.\d{1,2}(?:\.\d{1,2})?\b", query)</pre>
+    

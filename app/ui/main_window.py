@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         self._system         = SystemConfigWorkspace(self._state)
         self._system.set_workbench(self._workbench)
         self._docs           = DocsWorkspace(self._state)
+        self._docs.set_workbench(self._workbench)
 
         for ws in (
             self._workbench,

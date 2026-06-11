@@ -667,13 +667,22 @@ class WorkbenchWorkspace(QMainWindow):
         self._chat_view.push_user(text, user_node.id)
 
         chunks = []
-        if self._rag_check.isChecked() and self.state.rag.total_chunks > 0:
+        if self._rag_check.isChecked():
             top_k = getattr(self.state, "rag_top_k", 3)
             threshold = getattr(self.state, "rag_threshold", 0.0)
-            retrieved_metadata = self.state.rag.retrieve_with_metadata(
-                text,
-                top_k=top_k
-            )
+            
+            retrieved_metadata = []
+            if self.state.rag.total_chunks > 0:
+                retrieved_metadata.extend(self.state.rag.retrieve_with_metadata(text, top_k=top_k))
+                
+            if hasattr(self.state, "codex_rag") and self.state.codex_rag.total_chunks > 0:
+                retrieved_metadata.extend(self.state.codex_rag.retrieve_with_metadata(text, top_k=top_k))
+                
+            # Sort combined results by distance (lower distance = closer match)
+            retrieved_metadata.sort(key=lambda x: x.get("distance", 999.0))
+            # Slice down to requested top_k limit
+            retrieved_metadata = retrieved_metadata[:top_k]
+            
             if threshold > 0.0:
                 retrieved_metadata = [r for r in retrieved_metadata if r["distance"] <= threshold]
             
@@ -1505,4 +1514,11 @@ class WorkbenchWorkspace(QMainWindow):
             self._maxtok_spin.blockSignals(True)
             self._maxtok_spin.setValue(params["max_tokens"])
             self._maxtok_spin.blockSignals(False)
+
+    def append_to_input(self, text: str):
+        existing = self._input.toPlainText()
+        if existing:
+            self._input.setPlainText(existing + "\n" + text)
+        else:
+            self._input.setPlainText(text)
 
