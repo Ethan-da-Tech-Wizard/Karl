@@ -127,6 +127,23 @@ class TestWebSocketBridge(unittest.TestCase):
         finally:
             loop.close()
 
+    def test_status_bar_reflection(self):
+        from app.ui.widgets.status_bar import StatusBar
+        
+        # Instantiate StatusBar
+        status_bar = StatusBar()
+        
+        # The WebSocketServerManager is currently listening on port 8081 (from setUp)
+        status_bar._tick()
+        self.assertEqual(status_bar._vscode_lbl.text(), "🔌 VS Code: listening")
+        
+        # Reset the server instance
+        WebSocketServerManager.reset_instance()
+        
+        # Tick again - should show offline
+        status_bar._tick()
+        self.assertEqual(status_bar._vscode_lbl.text(), "🔌 VS Code: offline")
+
 
 if __name__ == "__main__":
     unittest.main()

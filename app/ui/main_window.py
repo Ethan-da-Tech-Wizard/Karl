@@ -34,6 +34,9 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._init_model()
 
+        # Start WebSocket Server to bridge editor/VS Code extensions
+        self._init_websocket_server()
+
     # ── build ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
@@ -153,7 +156,22 @@ class MainWindow(QMainWindow):
         theme_colors = get_theme_colors(theme_name, custom_accent, bg_tone)
         self._workbench._chat_view.set_theme(theme_colors)
 
+    def _init_websocket_server(self):
+        from app.engine.websocket_server import WebSocketServerManager
+        try:
+            self._ws_server = WebSocketServerManager.get_instance(port=8080)
+        except Exception as e:
+            print(f"[WebSocket] Failed to start WebSocket server on boot: {e}")
+
     def closeEvent(self, event):
         self._workbench.on_close()
+        
+        # Safely shut down the WebSocket server connection bridge on exit
+        from app.engine.websocket_server import WebSocketServerManager
+        try:
+            WebSocketServerManager.reset_instance()
+        except Exception as e:
+            print(f"[WebSocket] Error during exit teardown: {e}")
+            
         event.accept()
 
