@@ -43,6 +43,18 @@ def test_node_to_from_dict_round_trip():
     assert restored.children[0].thought == "thinking..."
 
 
+def test_node_attachments_round_trip():
+    node = SessionNode(
+        "user",
+        "what is wrong here?",
+        node_id="img1",
+        attachments=[{"type": "image", "id": "abc", "path": "data/images/inbox/abc.png"}],
+    )
+    restored = SessionNode.from_dict(node.to_dict())
+    assert restored.attachments[0]["type"] == "image"
+    assert restored.attachments[0]["id"] == "abc"
+
+
 # ---------------------------------------------------------------------------
 # SessionTree tests
 # ---------------------------------------------------------------------------
@@ -65,10 +77,11 @@ def test_tree_add_message():
 
 def test_tree_active_path_content():
     tree = SessionTree()
-    tree.add_message("user", "Q1")
+    tree.add_message("user", "Q1", attachments=[{"type": "image", "id": "abc"}])
     tree.add_message("assistant", "A1")
     dicts = tree.get_active_path_dicts()
     assert dicts[0]["content"] == "Q1"
+    assert dicts[0]["attachments"][0]["id"] == "abc"
     assert dicts[1]["content"] == "A1"
     assert "id" in dicts[0]
 
@@ -224,6 +237,7 @@ if __name__ == "__main__":
     test_node_defaults()
     test_node_add_child()
     test_node_to_from_dict_round_trip()
+    test_node_attachments_round_trip()
     test_tree_empty_on_init()
     test_tree_add_message()
     test_tree_active_path_content()

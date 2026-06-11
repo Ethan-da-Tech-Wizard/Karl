@@ -13,6 +13,8 @@ Layout:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QTextEdit, QComboBox,
@@ -20,13 +22,15 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QSpinBox, QListWidget, QListWidgetItem,
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
     QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox,
+    QApplication,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QEvent, QUrl
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
 
 
 from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
+from app.engine.image_analysis_thread import ImageAnalysisThread
 from core.workflows import list_workflows
 from app.utils.session_tree import SessionTree
 from app.ui.widgets.tracing_panel import TracingPanel
@@ -80,9 +84,9 @@ class ChatView(QTextBrowser):
 
     # public API ──────────────────────────────────────────────────────────────
 
-    def push_user(self, text: str, node_id: str):
+    def push_user(self, text: str, node_id: str, attachments: list[dict] | None = None):
         self._finalize_stream()
-        self._messages.append(("user", text, node_id))
+        self._messages.append(("user", text, node_id, attachments or []))
         self._render_all()
 
     def _get_karl_hdr(self, node_id: str) -> str:
@@ -100,7 +104,7 @@ class ChatView(QTextBrowser):
             f'line-height:1.4;white-space:pre-wrap;min-height:1em;">'
         )
 
-    def _get_user_html(self, text: str, node_id: str) -> str:
+    def _get_user_html(self, text: str, node_id: str, attachments: list[dict] | None = None) -> str:
         text_lo = self.theme_colors.get("text_lo", "#505068")
         accent = self.theme_colors.get("accent", "#00C2FF")
         bg_raised = self.theme_colors.get("bg_raised", "#1C1C2A")
@@ -113,9 +117,39 @@ class ChatView(QTextBrowser):
             f'YOU &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:{accent};text-decoration:none;font-weight:bold;">↳ branch</a></div>'
             f'<div style="background:{bg_raised};border:1px solid {border_hi};border-radius:6px;'
             f'padding:12px 16px;color:{text_hi};font-size:10pt;'
-            f'line-height:1.4;white-space:pre-wrap;display:inline-block;text-align:left;">{safe_text}</div>'
+            f'line-height:1.4;white-space:pre-wrap;display:inline-block;text-align:left;">{safe_text}'
+            f'{self._attachments_html(attachments or [])}</div>'
             f'</div>'
         )
+
+    def _attachments_html(self, attachments: list[dict]) -> str:
+        if not attachments:
+            return ""
+        accent = self.theme_colors.get("accent", "#00C2FF")
+        text_lo = self.theme_colors.get("text_lo", "#505068")
+        border = self.theme_colors.get("border", "#252535")
+        parts = []
+        for attachment in attachments:
+            if attachment.get("type") != "image":
+                continue
+            path = attachment.get("thumbnail_path") or attachment.get("path") or ""
+            image_id = attachment.get("id", "")
+            label = attachment.get("label") or image_id[:8] or "image"
+            uri = ""
+            try:
+                if path:
+                    uri = QUrl.fromLocalFile(str(Path(path).resolve())).toString()
+            except Exception:
+                uri = ""
+            image_html = f'<img src="{uri}" style="max-width:260px;max-height:180px;border-radius:4px;margin-top:6px;">' if uri else ""
+            parts.append(
+                f'<div style="margin-top:10px;padding:8px;border:1px solid {border};border-radius:5px;">'
+                f'<div style="color:{accent};font-size:8pt;font-weight:bold;">IMAGE ATTACHMENT</div>'
+                f'<div style="color:{text_lo};font-size:8pt;">{_escape(label)}</div>'
+                f'{image_html}'
+                f'</div>'
+            )
+        return "".join(parts)
 
 
     def begin_stream(self, node_id: str = ""):
@@ -141,7 +175,7 @@ class ChatView(QTextBrowser):
         if not self._streaming:
             return
         final_node_id = node_id or self._streaming_node_id
-        self._messages.append(("assistant", self._streaming_buf, final_node_id))
+        self._messages.append(("assistant", self._streaming_buf, final_node_id, []))
         self._streaming_buf = ""
         self._streaming = False
         cursor = self.textCursor()
@@ -159,7 +193,7 @@ class ChatView(QTextBrowser):
 
     def replace_last_assistant(self, text: str):
         if self._messages and self._messages[-1][0] == "assistant":
-            self._messages[-1] = ("assistant", text, self._messages[-1][2])
+            self._messages[-1] = ("assistant", text, self._messages[-1][2], self._messages[-1][3] if len(self._messages[-1]) > 3 else [])
             self._render_all()
 
     def append_system_note(self, text: str):
@@ -247,9 +281,14 @@ class ChatView(QTextBrowser):
 
     def _render_all(self):
         parts = []
-        for role, text, node_id in self._messages:
+        for raw in self._messages:
+            if len(raw) == 3:
+                role, text, node_id = raw
+                attachments = []
+            else:
+                role, text, node_id, attachments = raw
             if role == "user":
-                parts.append(self._get_user_html(text, node_id))
+                parts.append(self._get_user_html(text, node_id, attachments))
             else:
                 parts.append(self._get_karl_hdr(node_id) + _escape(text) + '</div></div>')
         self.setHtml(
@@ -300,6 +339,9 @@ class WorkbenchWorkspace(QMainWindow):
         )
         self._current_session_file: str | None = None
         self._is_correcting = False
+        self._pending_image_attachments: list[dict] = []
+        self._pending_generation_history: list[dict] | None = None
+        self._image_threads = set()
 
         self._build_ui()
         
@@ -486,6 +528,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._input = QTextEdit()
         self._input.setPlaceholderText("Ask Karl...")
         self._input.setFixedHeight(72)
+        self._input.installEventFilter(self)
         ic_layout.addWidget(self._input)
 
         # controls
@@ -615,6 +658,13 @@ class WorkbenchWorkspace(QMainWindow):
         sc = QShortcut(QKeySequence("Ctrl+Return"), self)
         sc.activated.connect(self._send)
 
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "_input", None) and event.type() == QEvent.Type.KeyPress:
+            if event.matches(QKeySequence.StandardKey.Paste) and self._clipboard_has_image():
+                self._attach_clipboard_image()
+                return True
+        return super().eventFilter(obj, event)
+
     # ── actions ───────────────────────────────────────────────────────────────
 
     def _send(self):
@@ -663,8 +713,17 @@ class WorkbenchWorkspace(QMainWindow):
         self._thumb_down_btn.setEnabled(False)
         self._correct_btn.setEnabled(False)
 
-        user_node = self.chat_history.add_message("user", text)
-        self._chat_view.push_user(text, user_node.id)
+        attachments = list(self._pending_image_attachments)
+        self._pending_image_attachments = []
+        prompt_text = self._build_image_prompt_context(text, attachments) if attachments else text
+        user_node = self.chat_history.add_message("user", text, attachments=attachments)
+        self._chat_view.push_user(text, user_node.id, attachments=attachments)
+        self._pending_generation_history = list(self.chat_history)
+        if self._pending_generation_history:
+            self._pending_generation_history[-1] = {
+                **self._pending_generation_history[-1],
+                "content": prompt_text,
+            }
 
         chunks = []
         if self._rag_check.isChecked():
@@ -673,10 +732,10 @@ class WorkbenchWorkspace(QMainWindow):
             
             retrieved_metadata = []
             if self.state.rag.total_chunks > 0:
-                retrieved_metadata.extend(self.state.rag.retrieve_with_metadata(text, top_k=top_k))
+                retrieved_metadata.extend(self.state.rag.retrieve_with_metadata(prompt_text, top_k=top_k))
                 
             if hasattr(self.state, "codex_rag") and self.state.codex_rag.total_chunks > 0:
-                retrieved_metadata.extend(self.state.codex_rag.retrieve_with_metadata(text, top_k=top_k))
+                retrieved_metadata.extend(self.state.codex_rag.retrieve_with_metadata(prompt_text, top_k=top_k))
                 
             # Sort combined results by distance (lower distance = closer match)
             retrieved_metadata.sort(key=lambda x: x.get("distance", 999.0))
@@ -700,6 +759,105 @@ class WorkbenchWorkspace(QMainWindow):
         else:
             self._start_single(chunks)
 
+    def _clipboard_has_image(self) -> bool:
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        return mime.hasImage()
+
+    def _attach_clipboard_image(self):
+        clipboard = QApplication.clipboard()
+        image = clipboard.image()
+        if image.isNull():
+            self._chat_view.append_system_note("clipboard does not contain a readable image")
+            return
+        try:
+            record = self.state.image_store.save_qimage(image, source="clipboard")
+        except Exception as exc:
+            self._chat_view.append_system_note(f"image paste failed: {exc}")
+            return
+
+        attachment = {
+            "type": "image",
+            "id": record.id,
+            "path": record.original_path,
+            "thumbnail_path": record.thumbnail_path,
+            "label": f"{record.width}x{record.height} clipboard image",
+            "ocr_status": "queued",
+        }
+        self._pending_image_attachments.append(attachment)
+        self._chat_view.append_system_note(
+            f"image attached and saved: {record.id[:8]} ({record.width}x{record.height}). Ask a question to use it."
+        )
+        self._start_image_analysis(record.id)
+
+    def _start_image_analysis(self, image_id: str):
+        thread = ImageAnalysisThread(self.state.image_store, image_id)
+        thread.progress.connect(lambda msg, iid=image_id: self._on_image_analysis_progress(iid, msg))
+        thread.ocr_done.connect(self._on_image_ocr_done)
+        thread.done.connect(self._on_image_analysis_done)
+        thread.error.connect(lambda msg, iid=image_id: self._on_image_analysis_error(iid, msg))
+        self._image_threads.add(thread)
+        thread.finished.connect(lambda: self._image_threads.discard(thread))
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_image_analysis_progress(self, image_id: str, msg: str):
+        for attachment in self._pending_image_attachments:
+            if attachment.get("id") == image_id:
+                attachment["ocr_status"] = msg
+        self._chat_view.append_system_note(f"image {image_id[:8]}: {msg}")
+
+    def _on_image_ocr_done(self, image_id: str, ocr):
+        for attachment in self._pending_image_attachments:
+            if attachment.get("id") == image_id:
+                attachment["ocr_status"] = "ready"
+                attachment["ocr_chars"] = len(getattr(ocr, "text", "") or "")
+                attachment["ocr_confidence"] = getattr(ocr, "confidence", 0.0)
+        chars = len(getattr(ocr, "text", "") or "")
+        self._chat_view.append_system_note(
+            f"image {image_id[:8]}: OCR ready ({chars} chars, confidence {getattr(ocr, 'confidence', 0.0):.2f})"
+        )
+
+    def _on_image_analysis_done(self, image_id: str, _record):
+        for attachment in self._pending_image_attachments:
+            if attachment.get("id") == image_id:
+                attachment["analysis_status"] = "ready"
+
+    def _on_image_analysis_error(self, image_id: str, msg: str):
+        for attachment in self._pending_image_attachments:
+            if attachment.get("id") == image_id:
+                attachment["analysis_status"] = "error"
+                attachment["ocr_status"] = "error"
+        self._chat_view.append_system_note(f"image {image_id[:8]} analysis error: {msg}")
+
+    def _build_image_prompt_context(self, text: str, attachments: list[dict]) -> str:
+        blocks = []
+        for attachment in attachments:
+            if attachment.get("type") != "image":
+                continue
+            try:
+                record = self.state.image_store.get(attachment["id"])
+            except Exception:
+                continue
+            blocks.append(
+                "\n".join([
+                    "[Attached Image]",
+                    f"ID: {record.id}",
+                    f"Path: {record.original_path}",
+                    f"Size: {record.width}x{record.height}",
+                    f"Source: {record.source}",
+                    f"Kind: {record.kind}",
+                    f"OCR Status: {record.ocr.engine}",
+                    f"OCR Confidence: {record.ocr.confidence:.2f}",
+                    "OCR Text:",
+                    record.ocr.text.strip() or "(pending or unavailable)",
+                    "Vision Summary: pending",
+                ])
+            )
+        if not blocks:
+            return text
+        return "\n\n".join(blocks + ["[User Question]", text])
+
     def _current_workflow(self) -> str:
         return self._workflow_combo.currentData() or "general_chat"
 
@@ -714,9 +872,11 @@ class WorkbenchWorkspace(QMainWindow):
         self._chat_view.begin_stream()
         self._set_busy(True)
         self._reasoning_stats_lbl.setText("")
+        history = self._pending_generation_history or list(self.chat_history)
+        self._pending_generation_history = None
         t = LLMThread(
             system_prompt=self._system_prompt,
-            chat_history=list(self.chat_history),
+            chat_history=history,
             hyperparams=self._hyperparams,
             retrieved_chunks=chunks,
             workflow=self._current_workflow(),
@@ -741,9 +901,11 @@ class WorkbenchWorkspace(QMainWindow):
         self._set_busy(True)
         self._reasoning_stats_lbl.setText("")
         self._chat_view.append_system_note("— agentic loop started —")
+        history = self._pending_generation_history or list(self.chat_history)
+        self._pending_generation_history = None
         t = AgenticThread(
             system_prompt=self._system_prompt,
-            initial_history=list(self.chat_history),
+            initial_history=history,
             hyperparams=self._hyperparams,
             retrieved_chunks=chunks,
             workflow=self._current_workflow(),
@@ -932,6 +1094,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._save_current_session()
         self._current_session_file = None
         self.chat_history.clear()
+        self._pending_image_attachments = []
+        self._pending_generation_history = None
         self._update_expert_strip()
         self._populate_branches_tree()
 
@@ -1025,7 +1189,7 @@ class WorkbenchWorkspace(QMainWindow):
             # Refresh ChatView to ensure all messages have correct node_ids
             self._chat_view.clear_display()
             active_path = self.chat_history.get_active_path()
-            self._chat_view._messages = [(n.role, n.content, n.id) for n in active_path]
+            self._chat_view._messages = [(n.role, n.content, n.id, getattr(n, "attachments", [])) for n in active_path]
             self._chat_view._render_all()
             self._populate_branches_tree()
 
@@ -1144,7 +1308,7 @@ class WorkbenchWorkspace(QMainWindow):
 
         self._chat_view.clear_display()
         active_path = self.chat_history.get_active_path()
-        self._chat_view._messages = [(n.role, n.content, n.id) for n in active_path]
+        self._chat_view._messages = [(n.role, n.content, n.id, getattr(n, "attachments", [])) for n in active_path]
         self._chat_view._render_all()
         self._populate_branches_tree()
 
@@ -1230,7 +1394,7 @@ class WorkbenchWorkspace(QMainWindow):
             
         self._chat_view.clear_display()
         active_path = self.chat_history.get_active_path()
-        self._chat_view._messages = [(n.role, n.content, n.id) for n in active_path]
+        self._chat_view._messages = [(n.role, n.content, n.id, getattr(n, "attachments", [])) for n in active_path]
         self._chat_view._render_all()
         
         self._populate_branches_tree()
@@ -1521,4 +1685,3 @@ class WorkbenchWorkspace(QMainWindow):
             self._input.setPlainText(existing + "\n" + text)
         else:
             self._input.setPlainText(text)
-

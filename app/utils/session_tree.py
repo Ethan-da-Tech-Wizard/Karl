@@ -1,27 +1,40 @@
 import uuid
 
 class SessionNode:
-    def __init__(self, role: str, content: str, node_id: str = None, children: list = None, parent: 'SessionNode' = None, thought: str = None):
+    def __init__(
+        self,
+        role: str,
+        content: str,
+        node_id: str = None,
+        children: list = None,
+        parent: 'SessionNode' = None,
+        thought: str = None,
+        attachments: list | None = None,
+    ):
         self.role = role
         self.content = content
         self.id = node_id or str(uuid.uuid4())
         self.children = children or []
         self.parent = parent
         self.thought = thought
+        self.attachments = attachments or []
 
-    def add_child(self, role: str, content: str, node_id: str = None) -> 'SessionNode':
-        child = SessionNode(role, content, node_id=node_id, parent=self)
+    def add_child(self, role: str, content: str, node_id: str = None, attachments: list | None = None) -> 'SessionNode':
+        child = SessionNode(role, content, node_id=node_id, parent=self, attachments=attachments)
         self.children.append(child)
         return child
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "id": self.id,
             "role": self.role,
             "content": self.content,
             "thought": self.thought,
             "children": [c.to_dict() for c in self.children]
         }
+        if self.attachments:
+            data["attachments"] = self.attachments
+        return data
 
     @classmethod
     def from_dict(cls, data: dict, parent: 'SessionNode' = None) -> 'SessionNode':
@@ -30,6 +43,7 @@ class SessionNode:
             content=data.get("content", ""),
             node_id=data.get("id"),
             thought=data.get("thought"),
+            attachments=data.get("attachments", []),
             parent=parent
         )
         node.children = [cls.from_dict(c, parent=node) for c in data.get("children", [])]
@@ -67,9 +81,9 @@ class SessionTree:
             self._rebuild_maps()
         return self.nodes_map.get(self.current_id, self.root)
 
-    def add_message(self, role: str, content: str) -> SessionNode:
+    def add_message(self, role: str, content: str, attachments: list | None = None) -> SessionNode:
         parent = self.current_node
-        child = parent.add_child(role, content)
+        child = parent.add_child(role, content, attachments=attachments)
         self.nodes_map[child.id] = child
         self.current_id = child.id
         return child
@@ -85,7 +99,13 @@ class SessionTree:
         return path
 
     def get_active_path_dicts(self) -> list[dict]:
-        return [{"role": n.role, "content": n.content, "id": n.id} for n in self.get_active_path()]
+        items = []
+        for n in self.get_active_path():
+            item = {"role": n.role, "content": n.content, "id": n.id}
+            if n.attachments:
+                item["attachments"] = n.attachments
+            items.append(item)
+        return items
 
     def set_current_node(self, node_id: str):
         # Make sure node_id exists, rebuilding maps if needed
@@ -135,4 +155,4 @@ class SessionTree:
     def append(self, msg: dict):
         if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
             raise TypeError("Appended message must be a dict containing 'role' and 'content'")
-        self.add_message(msg["role"], msg["content"])
+        self.add_message(msg["role"], msg["content"], attachments=msg.get("attachments"))

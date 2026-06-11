@@ -6,6 +6,7 @@ from app.utils.rag_pipeline import RAGPipeline
 from app.utils.memory_manager import MemoryManager
 from app.utils.trace_logger import TraceLogger
 from app.utils.training_curator import TrainingCurator
+from app.vision.image_store import ImageStore
 
 
 class AppState:
@@ -15,6 +16,7 @@ class AppState:
         self.memory = MemoryManager()
         self.logger = TraceLogger()
         self.curator = TrainingCurator()
+        self.image_store = ImageStore()
 
         # Updated by WorkbenchWorkspace and read by status bar
         self.model_name: str = "none"
@@ -33,4 +35,3 @@ class AppState:
         self.glow_enabled: bool = True
         self.animation_intensity: float = 1.0
         self.glow_strength: float = 1.0
-

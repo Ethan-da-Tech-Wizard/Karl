@@ -29,6 +29,7 @@ class MemoryManager:
                 "role": node.role,
                 "content": content,
                 "thought": node.thought,
+                "attachments": getattr(node, "attachments", []),
                 "children": [_clean_node_dict(c) for c in node.children]
             }
 
@@ -82,7 +83,11 @@ class MemoryManager:
             # Convert list of dicts to a SessionTree
             history = SessionTree()
             for msg in raw_history:
-                history.add_message(msg.get("role", "user"), msg.get("content", ""))
+                history.add_message(
+                    msg.get("role", "user"),
+                    msg.get("content", ""),
+                    attachments=msg.get("attachments"),
+                )
                 
         return sys_prompt, history
 
