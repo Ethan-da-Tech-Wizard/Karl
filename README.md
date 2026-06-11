@@ -88,8 +88,9 @@ code-oss --install-extension karl-1.0.0.vsix
 ```
 
 ### 4. Publish to Open VSX Registry (for Code OSS Marketplace)
-To publish the extension to the Open VSX registry (open-vsx.org) so it is searchable and downloadable directly inside Code OSS's marketplace:
+To publish the extension under your own verified namespace on Open VSX (open-vsx.org):
 ```bash
+npx ovsx create-namespace your-github-username -p <your-open-vsx-access-token>
 npx ovsx publish karl-1.0.0.vsix -p <your-open-vsx-access-token>
 ```
 
