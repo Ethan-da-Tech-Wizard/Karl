@@ -504,6 +504,22 @@ class KarlSidebarProvider {
             height: 140px;
             overflow-y: auto;
         }
+        .prompt-pair-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .prompt-pair-actions {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .prompt-pair-actions button {
+            padding: 6px 8px;
+            font-size: 10px;
+        }
 
         /* Codex Library Styling */
         .codex-list {
@@ -725,6 +741,20 @@ class KarlSidebarProvider {
 
     <!-- Workspace 4: Prompt Lab Content -->
     <div class="tab-content" id="contentLab">
+        <div class="prompt-pair-row">
+            <select id="promptPairSelect" onchange="loadSelectedPromptPair()">
+                <option value="">Saved prompt pairs...</option>
+            </select>
+            <button onclick="loadPromptPairs()">Refresh</button>
+        </div>
+        <div class="form-group">
+            <input id="promptPairName" type="text" placeholder="Pair name for save/load...">
+        </div>
+        <div class="prompt-pair-actions">
+            <button onclick="savePromptPair()">Save</button>
+            <button onclick="loadSelectedPromptPair()">Load</button>
+            <button class="btn-danger" onclick="deletePromptPair()">Delete</button>
+        </div>
         <div class="form-group">
             <label for="labSysA">System Prompt A</label>
             <textarea id="labSysA" rows="2" placeholder="e.g. You are a succinct helper."></textarea>
@@ -749,6 +779,9 @@ class KarlSidebarProvider {
         </div>
         <div class="form-group">
             <label>Difference View (A vs B)</label>
+            <div class="actions-row" style="margin-top:0; margin-bottom:8px;">
+                <button onclick="computeLabDiff()">Recompute Diff</button>
+            </div>
             <div class="lab-diff-container" id="labDiff">Diff comparisons will render here after runs complete...</div>
         </div>
     </div>
@@ -830,6 +863,7 @@ class KarlSidebarProvider {
                 loadModels();
             } else if (wsId === 'lab') {
                 document.getElementById('contentLab').classList.add('active');
+                loadPromptPairs();
             } else if (wsId === 'codex') {
                 document.getElementById('contentCodex').classList.add('active');
                 loadCodexTopics();
@@ -901,6 +935,18 @@ class KarlSidebarProvider {
                         log('[Models] ' + data.result.message);
                         requestRuntimeStatus();
                         loadModels();
+                    } else if (data.id === 40) { // list prompt pairs
+                        renderPromptPairs(data.result.pairs || []);
+                    } else if (data.id === 41) { // get prompt pair
+                        applyPromptPair(data.result);
+                    } else if (data.id === 42) { // save prompt pair
+                        document.getElementById('promptPairName').value = data.result.name;
+                        log('[PromptLab] Saved pair: ' + data.result.name);
+                        loadPromptPairs();
+                    } else if (data.id === 43) { // delete prompt pair
+                        log('[PromptLab] Deleted pair: ' + data.result.name);
+                        document.getElementById('promptPairName').value = '';
+                        loadPromptPairs();
                     } else if (data.id === 20) { // list topics
                         renderCodexTopics(data.result.topics);
                     } else if (data.id === 21) { // get topic content
@@ -981,16 +1027,7 @@ class KarlSidebarProvider {
                             sendLabMessage('B', sysB, userMsg, temp, topp, maxtok, rag, loop);
                         } else if (currentLabTarget === 'B') {
                             // Column B complete, request A/B diff
-                            document.getElementById('labDiff').innerHTML = '<div style="color:var(--vscode-descriptionForeground)">Computing difference...</div>';
-                            socket.send(JSON.stringify({
-                                jsonrpc: '2.0',
-                                id: 12,
-                                method: 'compute_diff',
-                                params: {
-                                    text_a: labOutputA,
-                                    text_b: labOutputB
-                                }
-                            }));
+                            computeLabDiff();
                         }
                     } else {
                         chatFinished = true;
@@ -1354,6 +1391,119 @@ class KarlSidebarProvider {
                         system_prompt: systemPrompt
                     }
                 }
+            }));
+        }
+
+        function computeLabDiff() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+            if (!labOutputA || !labOutputB) {
+                document.getElementById('labDiff').innerHTML = '<div style="color:var(--vscode-descriptionForeground)">Run both prompts before computing a diff.</div>';
+                return;
+            }
+            document.getElementById('labDiff').innerHTML = '<div style="color:var(--vscode-descriptionForeground)">Computing difference...</div>';
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 12,
+                method: 'compute_diff',
+                params: {
+                    text_a: labOutputA,
+                    text_b: labOutputB
+                }
+            }));
+        }
+
+        function loadPromptPairs() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 40,
+                method: 'list_prompt_pairs'
+            }));
+        }
+
+        function renderPromptPairs(pairs) {
+            const select = document.getElementById('promptPairSelect');
+            const current = select.value;
+            select.innerHTML = '<option value="">Saved prompt pairs...</option>';
+            pairs.forEach(pair => {
+                const option = document.createElement('option');
+                option.value = pair.name;
+                option.innerText = pair.name;
+                select.appendChild(option);
+            });
+            if (current) {
+                select.value = current;
+            }
+        }
+
+        function loadSelectedPromptPair() {
+            const select = document.getElementById('promptPairSelect');
+            const name = select.value || document.getElementById('promptPairName').value.trim();
+            if (!name || !socket || socket.readyState !== WebSocket.OPEN) return;
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 41,
+                method: 'get_prompt_pair',
+                params: { name: name }
+            }));
+        }
+
+        function applyPromptPair(pair) {
+            document.getElementById('promptPairName').value = pair.name || '';
+            document.getElementById('promptPairSelect').value = pair.name || '';
+            document.getElementById('labSysA').value = pair.system_a || '';
+            document.getElementById('labSysB').value = pair.system_b || '';
+            document.getElementById('labUser').value = pair.user_a || pair.user_b || '';
+            labOutputA = pair.output_a_raw || '';
+            labOutputB = pair.output_b_raw || '';
+            document.getElementById('labOutputA').innerText = pair.output_a_display || labOutputA || 'Output A will stream here...';
+            document.getElementById('labOutputB').innerText = pair.output_b_display || labOutputB || 'Output B will stream here...';
+            if (labOutputA && labOutputB) {
+                computeLabDiff();
+            } else {
+                document.getElementById('labDiff').innerText = 'Loaded pair. Run both prompts to render a fresh diff.';
+            }
+        }
+
+        function savePromptPair() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+            const name = document.getElementById('promptPairName').value.trim();
+            if (!name) {
+                vscode.postMessage({ command: 'show_error', text: 'Prompt pair name is required.' });
+                return;
+            }
+            const userMsg = document.getElementById('labUser').value;
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 42,
+                method: 'save_prompt_pair',
+                params: {
+                    name: name,
+                    system_a: document.getElementById('labSysA').value,
+                    user_a: userMsg,
+                    system_b: document.getElementById('labSysB').value,
+                    user_b: userMsg,
+                    rag_a: document.getElementById('karl-rag').checked,
+                    rag_b: document.getElementById('karl-rag').checked,
+                    loop_a: document.getElementById('karl-loop').checked,
+                    loop_b: document.getElementById('karl-loop').checked,
+                    output_a_raw: labOutputA,
+                    output_b_raw: labOutputB,
+                    output_a_display: document.getElementById('labOutputA').innerText,
+                    output_b_display: document.getElementById('labOutputB').innerText
+                }
+            }));
+        }
+
+        function deletePromptPair() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+            const name = document.getElementById('promptPairSelect').value || document.getElementById('promptPairName').value.trim();
+            if (!name) return;
+            socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 43,
+                method: 'delete_prompt_pair',
+                params: { name: name }
             }));
         }
 

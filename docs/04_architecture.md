@@ -408,6 +408,10 @@ Current JSON-RPC methods:
 | `get_runtime_status` | `WebSocketServerManager._runtime_status()` | Return active model, adapter, context, RAM, bridge clients, and running state. |
 | `list_models` | `WebSocketServerManager._list_models()` | Return registered and locally installed GGUF models with active/install state. |
 | `set_active_model` | `WebSocketServerManager._set_active_model()` | Write `data/active_model.json` and reset `ModelLoader` for the next generation. |
+| `list_prompt_pairs` | `WebSocketServerManager._list_prompt_pairs()` | Read saved Prompt Lab pairs from `data/prompt_pairs/`. |
+| `get_prompt_pair` | `WebSocketServerManager._get_prompt_pair()` | Load one saved Prompt Lab pair. |
+| `save_prompt_pair` | `WebSocketServerManager._save_prompt_pair()` | Save a named A/B prompt pair using Karl's Prompt Lab schema. |
+| `delete_prompt_pair` | `WebSocketServerManager._delete_prompt_pair()` | Delete one saved Prompt Lab pair. |
 | `submit_task` | `SwarmOrchestratorThread` | Run the local Architect/Coder/Tester swarm against a workspace path. |
 | `submit_chat` | `LLMThread` or `AgenticThread` | Stream local chat or agentic-loop output to the editor. |
 | `stop_task` | active QThread | Stop the running swarm/chat task. |

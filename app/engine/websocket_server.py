@@ -9,6 +9,7 @@ import os
 import json
 import asyncio
 import threading
+import re
 import websockets
 from typing import Set, Optional, Any
 from PyQt6.QtCore import Qt
@@ -198,6 +199,85 @@ class WebSocketServerManager:
             "message": f"Active model set to {safe_filename}. It will load on the next generation.",
         }
 
+    def _prompt_pairs_dir(self) -> str:
+        path = os.path.join("data", "prompt_pairs")
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _safe_prompt_pair_name(self, name: str) -> str:
+        safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", (name or "").strip())
+        if not safe_name:
+            raise ValueError("Prompt pair name is required.")
+        return safe_name
+
+    def _prompt_pair_path(self, name: str) -> str:
+        return os.path.join(self._prompt_pairs_dir(), f"{self._safe_prompt_pair_name(name)}.json")
+
+    def _list_prompt_pairs(self) -> dict:
+        pairs = []
+        for filename in sorted(os.listdir(self._prompt_pairs_dir())):
+            if not filename.endswith(".json"):
+                continue
+            name = os.path.splitext(filename)[0]
+            path = os.path.join(self._prompt_pairs_dir(), filename)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+            pairs.append({
+                "name": name,
+                "system_a": data.get("system_a", ""),
+                "system_b": data.get("system_b", ""),
+                "user_a": data.get("user_a", ""),
+                "user_b": data.get("user_b", ""),
+                "model_a": data.get("model_a"),
+                "model_b": data.get("model_b"),
+            })
+        return {"pairs": pairs}
+
+    def _get_prompt_pair(self, name: str) -> dict:
+        safe_name = self._safe_prompt_pair_name(name)
+        path = self._prompt_pair_path(safe_name)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Prompt pair not found: {safe_name}")
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["name"] = safe_name
+        return data
+
+    def _save_prompt_pair(self, params: dict) -> dict:
+        name = self._safe_prompt_pair_name(params.get("name", ""))
+        data = {
+            "name": name,
+            "system_a": params.get("system_a", ""),
+            "user_a": params.get("user_a", ""),
+            "system_b": params.get("system_b", ""),
+            "user_b": params.get("user_b", ""),
+            "model_a": params.get("model_a"),
+            "adapter_a": params.get("adapter_a"),
+            "model_b": params.get("model_b"),
+            "adapter_b": params.get("adapter_b"),
+            "rag_a": bool(params.get("rag_a", False)),
+            "loop_a": bool(params.get("loop_a", False)),
+            "rag_b": bool(params.get("rag_b", False)),
+            "loop_b": bool(params.get("loop_b", False)),
+            "output_a_raw": params.get("output_a_raw", ""),
+            "output_b_raw": params.get("output_b_raw", ""),
+            "output_a_display": params.get("output_a_display", ""),
+            "output_b_display": params.get("output_b_display", ""),
+        }
+        with open(self._prompt_pair_path(name), "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        return {"name": name, "saved": True}
+
+    def _delete_prompt_pair(self, name: str) -> dict:
+        safe_name = self._safe_prompt_pair_name(name)
+        path = self._prompt_pair_path(safe_name)
+        if os.path.exists(path):
+            os.remove(path)
+        return {"name": safe_name, "deleted": True}
+
     def _runtime_status(self) -> dict:
         active_model = self._active_model_config()
         loaded = ModelLoader.is_loaded()
@@ -331,6 +411,34 @@ class WebSocketServerManager:
                             "jsonrpc": "2.0",
                             "id": req_id,
                             "result": self._set_active_model(filename, adapter)
+                        }))
+
+                    elif method == "list_prompt_pairs":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._list_prompt_pairs()
+                        }))
+
+                    elif method == "get_prompt_pair":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._get_prompt_pair(params.get("name", ""))
+                        }))
+
+                    elif method == "save_prompt_pair":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._save_prompt_pair(params)
+                        }))
+
+                    elif method == "delete_prompt_pair":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._delete_prompt_pair(params.get("name", ""))
                         }))
 
                     elif method == "submit_task":

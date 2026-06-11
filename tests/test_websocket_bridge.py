@@ -126,6 +126,74 @@ class TestWebSocketBridge(unittest.TestCase):
             except FileNotFoundError:
                 pass
 
+    def test_prompt_pair_rpc(self):
+        pair_dir = os.path.join("data", "prompt_pairs")
+        pair_name = "websocket_pair_test"
+        pair_path = os.path.join(pair_dir, f"{pair_name}.json")
+        os.makedirs(pair_dir, exist_ok=True)
+        try:
+            os.remove(pair_path)
+        except FileNotFoundError:
+            pass
+
+        async def run_client():
+            async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 42,
+                    "method": "save_prompt_pair",
+                    "params": {
+                        "name": pair_name,
+                        "system_a": "A system",
+                        "user_a": "same input",
+                        "system_b": "B system",
+                        "user_b": "same input",
+                        "output_a_raw": "alpha",
+                        "output_b_raw": "beta"
+                    }
+                }))
+                save_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                self.assertEqual(save_resp.get("id"), 42)
+                self.assertTrue(save_resp["result"]["saved"])
+
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 40,
+                    "method": "list_prompt_pairs"
+                }))
+                list_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                names = [p["name"] for p in list_resp["result"]["pairs"]]
+                self.assertIn(pair_name, names)
+
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 41,
+                    "method": "get_prompt_pair",
+                    "params": {"name": pair_name}
+                }))
+                get_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                self.assertEqual(get_resp["result"]["system_a"], "A system")
+                self.assertEqual(get_resp["result"]["system_b"], "B system")
+
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 43,
+                    "method": "delete_prompt_pair",
+                    "params": {"name": pair_name}
+                }))
+                delete_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                self.assertTrue(delete_resp["result"]["deleted"])
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(run_client())
+        finally:
+            loop.close()
+            try:
+                os.remove(pair_path)
+            except FileNotFoundError:
+                pass
+
     @patch("app.engine.model_loader.ModelLoader.get_instance")
     def test_websocket_bridge_flow(self, mock_get_llm):
         # Mock LLM to return simple JSON plan and script contents

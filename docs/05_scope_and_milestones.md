@@ -410,7 +410,7 @@ Priority order:
 |----------|------------|------------------|
 | 1 | Runtime status | ✅ Extension shows active model, adapter, RAM, bridge state, and generation state. |
 | 2 | Model registry | ✅ Extension can list installed GGUF files, show registry tiers, and set active model. |
-| 3 | Prompt Lab parity | Extension can save/load prompt pairs and run A/B comparisons with diff output. |
+| 3 | Prompt Lab parity | ✅ Extension can save/load prompt pairs and run A/B comparisons with diff output. |
 | 4 | Knowledge Base parity | Extension can ingest selected files/folders and test retrieval with top-k/threshold controls. |
 | 5 | Training Studio parity | Extension can browse curated examples, export SFT/DPO, start LoRA/QLoRA training, stream loss, and load adapters. |
 | 6 | Eval Suite parity | Extension can run local eval datasets and show grader results. |

@@ -49,6 +49,10 @@ The bridge methods currently handled by `app/engine/websocket_server.py` are:
 | `get_runtime_status` | Return active model, adapter, context, RAM, bridge clients, and running state. |
 | `list_models` | Return registered and locally installed GGUF models with active/install state. |
 | `set_active_model` | Write `data/active_model.json` and reset `ModelLoader` for the next generation. |
+| `list_prompt_pairs` | Read saved Prompt Lab pairs from `data/prompt_pairs/`. |
+| `get_prompt_pair` | Load one saved Prompt Lab pair. |
+| `save_prompt_pair` | Save a named A/B prompt pair using Karl's Prompt Lab schema. |
+| `delete_prompt_pair` | Delete one saved Prompt Lab pair. |
 | `submit_task` | Start the multi-agent coding swarm against a workspace path. |
 | `submit_chat` | Start a single chat generation or agentic loop generation. |
 | `stop_task` | Stop the active swarm or chat thread. |
@@ -85,13 +89,13 @@ Package and install the extension:
 cd ~/karl/vscode-extension
 npm install
 npx @vscode/vsce package
-code --install-extension karl-1.3.0.vsix
+code --install-extension karl-1.4.0.vsix
 ```
 
 For Code OSS on Arch:
 
 ```bash
-code-oss --install-extension karl-1.3.0.vsix
+code-oss --install-extension karl-1.4.0.vsix
 ```
 
 Open the Karl Activity Bar panel. The extension connects to
@@ -198,8 +202,6 @@ Recommended next bridge methods:
 | `run_eval` | Runs eval harness and streams progress/results. |
 | `ingest_path` | Adds a file/folder to the local knowledge base. |
 | `search_kb` | Returns retrieved chunks with scores and metadata. |
-| `list_prompt_pairs` | Reads saved Prompt Lab pairs. |
-| `save_prompt_pair` | Writes a named pair to `data/prompt_pairs/`. |
 
 For long-running methods, send an immediate JSON-RPC response:
 
