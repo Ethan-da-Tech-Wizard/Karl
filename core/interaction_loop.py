@@ -2,6 +2,8 @@
 # Modify this file to change how the application interacts with the LLM.
 # Hot-reloaded before every generation -- save and click Generate, no restart needed.
 
+import os
+import re
 from app.engine.model_loader import ModelLoader
 
 # System prompt used when the custom_greeting adapter (or any adapter) is active.
@@ -15,6 +17,119 @@ _BASE_SYSTEM_PROMPT = (
     "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
     "Double-check your derivations and arithmetic before writing the final answer."
 )
+
+_CODEX_KEYWORD_MAP = {
+    "python": "Python.html",
+    "c++": "C++.html",
+    "cpp": "C++.html",
+    "sql": "SQL.html",
+    "rust": "Rust.html",
+    "react": "React.html",
+    "node": "Nodejs.html",
+    "nodejs": "Nodejs.html",
+    "node.js": "Nodejs.html",
+    "go": "Go.html",
+    "golang": "Go.html",
+    "agile": "Agile.html",
+    "xcode": "Xcode.html",
+    "swift": "Swift.html",
+    "fortran": "Fortran.html",
+    "c#": "C#.html",
+    "csharp": "C#.html",
+    "c": "C.html",
+    "docker": "Docker.html",
+    "kubernetes": "Kubernetes.html",
+    "k8s": "Kubernetes.html",
+    "css": "CSS.html",
+    "html": "HTML.html",
+    "typescript": "TypeScript.html",
+    "ts": "TypeScript.html",
+    "java": "Java.html",
+    "javascript": "JavaScript.html",
+    "js": "JavaScript.html",
+    "api": "APIs.html",
+    "apis": "APIs.html",
+    "uvicorn": "Uvicorn.html",
+    "fastapi": "FastAPI.html"
+}
+
+def strip_html_tags(html: str) -> str:
+    # Remove script and style elements first
+    text = re.sub(r'<(script|style)\b[^>]*>([\s\S]*?)</\1>', '', html)
+    # Replace block-level element tags with newlines or spaces to preserve spacing
+    text = re.sub(r'</?(div|p|h[1-6]|li|ul|ol|table|tr|td|thead|tbody|br|pre|code)\b[^>]*>', '\n', text)
+    # Remove any other tags
+    text = re.sub(r'<[^>]+>', '', text)
+    # Decode HTML entities (optional, but good for common ones like &lt;, &gt;, &amp;, &quot;)
+    text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'")
+    # Clean up excess whitespace/newlines
+    lines = [line.strip() for line in text.split('\n')]
+    cleaned = []
+    last_empty = False
+    for line in lines:
+        if line:
+            cleaned.append(line)
+            last_empty = False
+        elif not last_empty:
+            cleaned.append("")
+            last_empty = True
+    return '\n'.join(cleaned).strip()
+
+def matches_keyword(text: str, keyword: str) -> bool:
+    if keyword == "c":
+        # Match 'c' but not 'c++' or 'c#'
+        pattern = r'\bc\b(?![+#])'
+        return bool(re.search(pattern, text, re.IGNORECASE))
+    
+    # Escape regex special chars in the keyword
+    pattern = re.escape(keyword)
+    # Check if keyword starts with a word character to apply word boundary
+    start_boundary = r'\b' if keyword[0].isalnum() or keyword[0] == '_' else ''
+    # Check if keyword ends with a word character to apply word boundary
+    end_boundary = r'\b' if keyword[-1].isalnum() or keyword[-1] == '_' else ''
+    
+    full_pattern = start_boundary + pattern + end_boundary
+    return bool(re.search(full_pattern, text, re.IGNORECASE))
+
+def _get_codex_context(chat_history):
+    last_user_msg = ""
+    for msg in reversed(chat_history):
+        if msg.get("role") == "user":
+            last_user_msg = msg.get("content", "")
+            break
+
+    if not last_user_msg:
+        return ""
+
+    matched_filenames = []
+    for kw, filename in _CODEX_KEYWORD_MAP.items():
+        if matches_keyword(last_user_msg, kw):
+            if filename not in matched_filenames:
+                matched_filenames.append(filename)
+            if len(matched_filenames) >= 2:
+                break
+
+    if not matched_filenames:
+        return ""
+
+    context_parts = []
+    library_dir = "data/codex_library"
+    for filename in matched_filenames:
+        filepath = os.path.join(library_dir, filename)
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                stripped = strip_html_tags(content)
+                topic = os.path.splitext(filename)[0]
+                context_parts.append(f"[{topic}]\n{stripped}")
+            except Exception as e:
+                print(f"[Codex Injector] Error reading {filename}: {e}")
+
+    if not context_parts:
+        return ""
+
+    return "\n\nCodex Reference Context:\n" + "\n\n".join(context_parts)
 
 
 def build_prompt(system_prompt, chat_history):
@@ -60,16 +175,19 @@ def build_prompt(system_prompt, chat_history):
         for p in default_sys_prompts
     )
 
+    # Get dynamic Codex reference context based on keyword matching
+    codex_context = _get_codex_context(chat_history)
+
     if adapter_active:
         if is_default:
-            effective_system = _ADAPTER_SYSTEM_PROMPT + rag_context
+            effective_system = _ADAPTER_SYSTEM_PROMPT + rag_context + codex_context
         else:
-            effective_system = clean_sys + rag_context
+            effective_system = clean_sys + rag_context + codex_context
     else:
         if is_default:
-            effective_system = _BASE_SYSTEM_PROMPT + rag_context
+            effective_system = _BASE_SYSTEM_PROMPT + rag_context + codex_context
         else:
-            effective_system = clean_sys + rag_context
+            effective_system = clean_sys + rag_context + codex_context
 
     # Determine if we should pre-seed `<think>\n`
     last_user_msg = ""
