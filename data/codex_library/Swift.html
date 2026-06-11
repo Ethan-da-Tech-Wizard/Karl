@@ -1,46 +1,16 @@
 
         <h2 style='color:#00C2FF; margin-top:0;'>🦅 Swift & SwiftUI Architecture Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Swift is Apple's type-safe, compiled language. This manual defines SwiftUI views rendering, ARC memory retention, and actor concurrency.</p>
+        <p style='color:#9090A8; line-height:1.4;'>Swift is Apple's safe, fast systems language. This manual defines SwiftUI, ARC ownership lifecycles, and modern Swift concurrency systems.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. SwiftUI State Management & Properties</h3>
-        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
-          <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Wrapper</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Target Scope & Lifecycles</th>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>@State</td>
-            <td style='padding:4px;'>Local view properties. Instantiated and managed in storage by the framework.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>@Binding</td>
-            <td style='padding:4px;'>Shared reference to State variables owned by parent views. Bypasses duplication.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>@StateObject</td>
-            <td style='padding:4px;'>Owns instance of ObservableObject. Managed across view update redraws.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>@ObservedObject</td>
-            <td style='padding:4px;'>Observes externally instantiated objects. Does not manage reference lifecycles.</td>
-          </tr>
-        </table>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Swift Concurrency: Actors & Structured Tasks</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Automatic Reference Counting (ARC)</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Swift uses ARC to manage heap memory allocations. Circular reference loops require using `weak` or `unowned` properties to prevent VRAM memory leaks.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-// Actors serialize access to state to prevent data races
-actor BankAccount {
-    private var balance: Double = 0.0
+class DeviceManager {
+    let name: String
+    // weak prevents cyclic ownership of resources
+    weak var activeDelegate: UserDelegate?
     
-    func deposit(amount: Double) {
-        balance += amount
-    }
-}
-
-// MainActor limits execution to the main UI thread
-@MainActor
-class ViewModel: ObservableObject {
-    @Published var displayBalance: String = "$0.00"
+    init(name: String) { self.name = name }
 }
         </pre>
     

@@ -1,28 +1,26 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>🛠 Xcode Developer & Diagnostics Reference</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Xcode is Apple's native environment. This guide specifies LLDB console routines, memory instrumentation, and target compilation settings.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>🛠 Xcode Developer Guide</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Xcode is Apple's primary IDE. This manual covers LLDB commands, instruments profiling, and target builds.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. LLDB Diagnostic Commands</h3>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-# Print description of an object
-po userProfile
-
-# Inject/change variables dynamically during execution
-expr userProfile.accessLevel = "admin"
-
-# Print thread backtrace to identify deadlock origins
-bt
-
-# Set symbolic breakpoint matching a namespace/class method
-breakpoint set --name "-[UIViewController viewDidLoad]"
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Instruments Profiling Suite</h3>
-        <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Time Profiler:</b> Records CPU thread samples every millisecond. Highlights hot paths and call stack delays.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Allocations & Leaks:</b> Tracks object instantiations and identifies memory zones lacking strong pointers cleanup.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Core Data:</b> Visualizes fetch operations, database transactions, and memory cache faults.</li>
-        </ul>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. LLDB Debugging Reference</h3>
+        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
+          <tr style='border-bottom:1px solid #252535;'>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Command</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Execution Action</th>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>po objectName</td>
+            <td style='padding:4px;'>Print Object description. Evaluates object descriptions at console.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>expr expression</td>
+            <td style='padding:4px;'>Evaluate expression dynamically at runtime. Alter variables during freeze.</td>
+          </tr>
+          <tr style='border-bottom:1px solid #14141F;'>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>bt</td>
+            <td style='padding:4px;'>Prints the current stack trace backtrace of the active thread.</td>
+          </tr>
+        </table>
     
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Custom Xcode xcconfig & Build Configurations</h3>
         <p style='color:#9090A8; line-height:1.4;'>Build settings can be customized using <code>.xcconfig</code> files, decoupling targets variables from project binaries.</p>

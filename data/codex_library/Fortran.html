@@ -1,39 +1,14 @@
 
         <h2 style='color:#00C2FF; margin-top:0;'>⚙ Fortran Scientific Computing Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Fortran is optimized for numeric operations. This reference defines column-major array mechanics, procedures, and OpenMP parallel integration.</p>
+        <p style='color:#9090A8; line-height:1.4;'>Modern Fortran reference for high-performance computing, array slicing, modules, and OpenMP integration.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Column-Major Arrays & Slicing</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Fortran stores arrays in column-major order (memory addresses increment down columns, then across rows). Access patterns must match columns to utilize cache lines.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. OpenMP Directives</h3>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-program array_opt
-    implicit none
-    integer :: i, j
-    real :: matrix(1000, 1000)
-    
-    ! Cache-Efficient loop order (outer loops handle columns, inner loops rows)
-    do j = 1, 1000
-        do i = 1, 1000
-            matrix(i, j) = real(i + j)
-        end do
-    end do
-end program array_opt
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. OpenMP Parallel Directives</h3>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-subroutine run_parallel(inputs, outputs, size)
-    implicit none
-    integer, intent(in) :: size
-    real, dimension(size), intent(in) :: inputs
-    real, dimension(size), intent(out) :: outputs
-    integer :: i
-    
-    !$OMP PARALLEL DO PRIVATE(i) SHARED(inputs, outputs)
-    do i = 1, size
-        outputs(i) = sqrt(inputs(i)) * 3.14159
-    end do
-    !$OMP END PARALLEL DO
-end subroutine run_parallel
+!$OMP PARALLEL DO
+do i = 1, N
+    results(i) = sqrt(inputs(i)) * 3.14159
+end do
+!$OMP END PARALLEL DO
         </pre>
     
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Coarray Parallelism (PGAS)</h3>

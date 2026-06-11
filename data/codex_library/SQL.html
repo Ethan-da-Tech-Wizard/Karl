@@ -1,100 +1,62 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>🖧 SQL Engine & Indexing Reference Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Relational database engines parse, rewrite, plan, and execute SQL statements. This guide explains parser pipelines, window frames, join algorithms, indexing, and transactions isolation.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>🖧 SQL Optimization, Indexing & MVCC Overhaul Guide</h2>
+        <p style='color:#9090A8; line-height:1.4;'>SQL engines execute queries declarative. This guide focuses on logical parse pipelines, B+ Tree indexing layout, join execution mechanisms, and transaction concurrency isolation.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. SQL Query Parser Execution Steps</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Syntactic order differs from logical processing order. Select aliases are invalid in WHERE or JOIN constraints since calculations run in subsequent phases:</p>
-        <ol style='color:#9090A8; line-height:1.3;'>
-          <li><b>FROM / JOIN:</b> Resolves datasets and compiles product tables.</li>
-          <li><b>WHERE:</b> Filters records before groupings.</li>
-          <li><b>GROUP BY:</b> Collapses matched rows into distinct grouping keys.</li>
-          <li><b>HAVING:</b> Filters records based on aggregate fields.</li>
-          <li><b>SELECT / WINDOW:</b> Projects columns and evaluates window metrics.</li>
-          <li><b>DISTINCT:</b> Eliminates redundant duplicates.</li>
-          <li><b>ORDER BY:</b> Sorts records based on defined fields.</li>
-          <li><b>OFFSET / LIMIT:</b> Limits output rows.</li>
-        </ol>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Window Framing & Partition Blocks</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Window clauses compute parameters across segments. Specifying boundaries prevents parsing the entire dataset partitions on each row iteration.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-SELECT employee_id, dept_id, salary,
-       -- Cumulative running sum limited to the current partition
-       SUM(salary) OVER (
-           PARTITION BY dept_id 
-           ORDER BY salary DESC
-           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-       ) as running_sum,
-       -- Moving average over 5 records
-       AVG(salary) OVER (
-           PARTITION BY dept_id
-           ORDER BY salary DESC
-           ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING
-       ) as moving_avg
-FROM employees;
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. SQL Query Parsing Pipeline & Optimizer</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Queries parse into an AST, rewritten by rules, and analyzed by the Cost-Based Optimizer (CBO). Execution executes in a strict order different from syntactical layout:</p>
+        <pre style='color:#E4E4F0; background:#0F0F1A; padding:8px; border-radius:4px; font-family:monospace; font-size:9pt;'>
+FROM/JOIN ➔ WHERE ➔ GROUP BY ➔ HAVING ➔ SELECT ➔ DISTINCT ➔ ORDER BY ➔ OFFSET/LIMIT
         </pre>
+        <p style='color:#9090A8; line-height:1.4;'>SELECT column aliases are unavailable in WHERE because filters run before projection.</p>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Recursive CTE Hierarchies</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. B+ Tree Indexing Internals & Covered Indexes</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Indices are structured as balanced trees. Clustered index leaf nodes hold actual row values. Non-clustered index leaf nodes store pointers to primary values. Under a <b>Covered Index Scan</b>, all selected attributes exist within index keys, bypassing table heap reads entirely.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-WITH RECURSIVE assembly_tree AS (
-    -- Anchor Member (Root part item)
-    SELECT part_id, parent_id, name, 1 as level
-    FROM parts WHERE parent_id IS NULL
-    UNION ALL
-    -- Recursive Member (Join next level child components)
-    SELECT p.part_id, p.parent_id, p.name, at.level + 1
-    FROM parts p
-    JOIN assembly_tree at ON p.parent_id = at.part_id
-)
-SELECT * FROM assembly_tree ORDER BY level;
-        </pre>
+-- Create composite index covering select fields
+CREATE INDEX idx_user_status_created ON users(status, created_at) INCLUDE (username);
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Index Scans, Joins & ACID Isolation Levels</h3>
-        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
-          <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Concept</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Mechanism & Behavior</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Tuning Strategy</th>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Index Seek vs Scan</td>
-            <td style='padding:4px;'>Seek: traverses B-tree nodes straight to leaf keys. Scan: traverses the entire index list sequentially.</td>
-            <td style='padding:4px;'>Index seeking requires specific predicates. Covered indexes prevent table read steps.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Join Algorithms</td>
-            <td style='padding:4px;'>Hash Join: builds hash maps on smaller inputs. Merge Join: merges pre-sorted keys. Nested Loop: evaluates inputs row-by-row.</td>
-            <td style='padding:4px;'>Enable index sorting to force Merge joins over heavy nested loops.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Serializable MVCC</td>
-            <td style='padding:4px;'>Highest isolation tier. Implements range locks and snapshot serialization to prevent write-skew anomalies.</td>
-            <td style='padding:4px;'>Postgres/MySQL use Multi-Version Concurrency control; read transactions do not block write locks.</td>
-          </tr>
-        </table>
-    
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Execution Plan Tuning & Covered Indexes</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Query tuning requires inspecting execution pipelines via <code>EXPLAIN ANALYZE</code>. An index covers a query if the B-Tree holds all requested columns, bypassing secondary heap lookup steps.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
--- Composite Index covering filter and selection attributes
-CREATE INDEX idx_user_status_email ON users(status) INCLUDE (email);
-
--- Query execution plan check
+-- Covers query: Index Seek reads data directly from index leaf nodes
 EXPLAIN ANALYZE
-SELECT email FROM users 
+SELECT username FROM users 
 WHERE status = 'active' AND created_at > '2026-01-01';
         </pre>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>6. Isolation Anomalies & Lock Granularity</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Join Execution Mechanics</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Engines select join algorithms based on sizes, indexes, and sorting states:</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Nested Loop Join:</b> For each outer row, scans inner tables. High performance on small inputs with inner index keys: <code>O(M * log N)</code>.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Hash Join:</b> Loads smaller tables into memory hash tables, scanning larger tables to find key matches: <code>O(M + N)</code>.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Merge Join:</b> Merges two sorted input buffers. High performance on sorted records: <code>O(M + N)</code>.</li>
+        </ul>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Window Functions & Framing</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Window functions evaluate parameters across partition groups without collapsing records. Framing limits evaluated boundaries dynamically.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+SELECT txn_id, user_id, amount,
+       -- Cumulative running total
+       SUM(amount) OVER (
+           PARTITION BY user_id 
+           ORDER BY txn_date 
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+       ) as running_total,
+       -- Compare against prior record within partition
+       LAG(amount, 1) OVER (PARTITION BY user_id ORDER BY txn_date) as prev_amount
+FROM transactions;
+        </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Transactions, Anomalies & Multi-Version Concurrency (MVCC)</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Relational engines isolate transactions. MVCC avoids blocking reads during write locks by maintaining version tuples (<code>xmin</code>, <code>xmax</code>).</p>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
             <th style='text-align:left; color:#E4E4F0; padding:4px;'>Isolation Level</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Dirty Reads</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Non-Repeatable Reads</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Phantom Reads</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Dirty Read</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Non-Repeatable Read</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Phantom Read</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Write Skew</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace;'>Read Uncommitted</td>
+            <td style='padding:4px; color:#FF5555;'>Possible</td>
             <td style='padding:4px; color:#FF5555;'>Possible</td>
             <td style='padding:4px; color:#FF5555;'>Possible</td>
             <td style='padding:4px; color:#FF5555;'>Possible</td>
@@ -104,17 +66,21 @@ WHERE status = 'active' AND created_at > '2026-01-01';
             <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
             <td style='padding:4px; color:#FF5555;'>Possible</td>
             <td style='padding:4px; color:#FF5555;'>Possible</td>
+            <td style='padding:4px; color:#FF5555;'>Possible</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace;'>Repeatable Read</td>
             <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
             <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
-            <td style='padding:4px; color:#FF5555;'>Possible (depends on DB)</td>
+            <td style='padding:4px; color:#FF5555;'>Possible (DB dependent)</td>
+            <td style='padding:4px; color:#FF5555;'>Possible</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
             <td style='padding:4px; font-family:monospace;'>Serializable</td>
             <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
             <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
             <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
+            <td style='padding:4px; color:#2DD4A0;'>Prevented</td>
           </tr>
         </table>
+    

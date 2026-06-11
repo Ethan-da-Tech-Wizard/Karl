@@ -1,29 +1,6 @@
 
         <h2 style='color:#00C2FF; margin-top:0;'>🌐 HTML Document Structures & Semantics</h2>
-        <p style='color:#9090A8; line-height:1.4;'>HTML structure defines pages natively. This manual covers accessibility guidelines, script loading lifecycles, and form validation attributes.</p>
-        
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Semantic Layout outlines</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Elements like <code>&lt;header&gt;</code>, <code>&lt;nav&gt;</code>, <code>&lt;main&gt;</code>, <code>&lt;article&gt;</code>, <code>&lt;section&gt;</code>, and <code>&lt;footer&gt;</code> describe content types natively to search spiders and screen readers.</p>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Script Loading Lifecycles</h3>
-        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
-          <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Load Strategy</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Execution Behavior & Timing</th>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>&lt;script&gt;</td>
-            <td style='padding:4px;'>Blocks HTML parsing. Fetches and executes immediately.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>&lt;script async&gt;</td>
-            <td style='padding:4px;'>Fetches in background. Pauses HTML parsing to execute immediately once loaded.</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>&lt;script defer&gt;</td>
-            <td style='padding:4px;'>Fetches in background. Executes only after HTML parser finishes document structure.</td>
-          </tr>
-        </table>
+        <p style='color:#9090A8; line-height:1.4;'>HTML structure manual, semantic tags, forms validation, and ARIA roles specifications.</p>
     
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Form Constraints & Accessibility ARIA Roles</h3>
         <p style='color:#9090A8; line-height:1.4;'>Browser native validations use regular expressions constraint attributes. ARIA roles allow accessibility features to align with DOM structures.</p>

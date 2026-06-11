@@ -1,46 +1,22 @@
 
         <h2 style='color:#00C2FF; margin-top:0;'>⚙ C Low-Level Memory Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>C provides low-level abstractions and direct hardware mapping. This reference details pointer arithmetic, memory safety, and preprocessor metaprogramming.</p>
+        <p style='color:#9090A8; line-height:1.4;'>C provides low-level abstractions and direct memory management. This reference details pointer arithmetic, allocations, and struct padding.</p>
         
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Pointer Arithmetic & Allocation Safety</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Pointer arithmetic scales dynamically based on type width boundaries. Manual memory management requires guarding bounds explicitly.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 #include <stdlib.h>
-#include <stdio.h>
 
 void allocate_buffer() {
-    // malloc: raw byte allocation; calloc: zeroed allocation
-    int *buffer = (int*) calloc(10, sizeof(int));
+    // Allocate buffer of 10 integers
+    int *buffer = (int*) malloc(10 * sizeof(int));
     if (buffer == NULL) return; // Guard allocation failure
     
-    // Pointer Arithmetic moves address by: 2 * sizeof(int) bytes
-    int *ptr = buffer + 2; 
-    *ptr = 42;
-    
-    // realloc: resizes buffer; safety requires temp checks
-    int *temp = (int*) realloc(buffer, 20 * sizeof(int));
-    if (temp != NULL) {
-        buffer = temp;
-    } else {
-        free(buffer); // Clean up if resize fails
-        return;
-    }
+    // Pointer Arithmetic
+    int *third_elem = buffer + 2; // Moves pointer by 2 * sizeof(int) bytes
+    *third_elem = 42;
     
     free(buffer); // Prevent memory leaks
 }
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Preprocessor Macros & Bit Fields</h3>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-// Token pasting macro
-#define DEFINE_STATE(state_name) int STATE_##state_name = 0
-
-// Bit fields optimization
-struct ControlRegister {
-    unsigned int enable : 1;  // Uses 1 bit
-    unsigned int mode   : 3;  // Uses 3 bits
-    unsigned int flag   : 1;  // Uses 1 bit
-}; // Packaged into single word allocation
         </pre>
     
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Unions, Struct alignment & Bit Packing</h3>

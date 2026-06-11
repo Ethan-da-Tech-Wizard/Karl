@@ -1,50 +1,66 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>☕ Java JVM & Collections Reference</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Java coordinates execution via the JVM. This manual defines JVM layout segments, garbage collection designs, and stream optimizations.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>☕ Java JVM, Concurrency & Collections Overhaul Manual</h2>
+        <p style='color:#9090A8; line-height:1.4;'>Java executes bytecode on the Java Virtual Machine. This reference defines JVM memory sectors, JIT profiling pipelines, garbage collection algorithms, and concurrent virtual threading systems.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. JVM Memory Allocation Architecture</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. JVM Runtime Memory Layout</h3>
         <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Heap Memory:</b> Shared zone housing objects. Subdivided into Young Generation (Eden, Survivor spaces) and Old Generation (Tenured space).</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>JVM Stack:</b> Private thread memory storing stack frames, local variables, and primitive call references.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Metaspace:</b> Native off-heap memory storing class definitions and metadata structures.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Heap Memory:</b> Shared memory sector storing instantiated objects. Divided into Young Gen (Eden, S0, S1) and Old Gen (Tenured).</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>JVM Thread Stacks:</b> Stores frame allocations containing local variable tables, operand stacks, and method return address indicators.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Metaspace:</b> Native memory sector storing metadata, runtime constant pools, and method bytecodes (replaced PermGen).</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Off-Heap (Direct Buffer):</b> Bypasses garbage collector scanning allocations. Allocated via <code>ByteBuffer.allocateDirect()</code>.</li>
         </ul>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Streams Pipeline Processing</h3>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-import java.util.List;
-import java.util.stream.Collectors;
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Garbage Collection (GC) Topologies</h3>
+        <p style='color:#9090A8; line-height:1.4;'>JVM tracks object life phases using GC threads. Select algorithms based on latency requirements:</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>G1 Collector:</b> Splits heap into 2048 region cells. Performs concurrent mark sweeps to minimize pause limits.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>ZGC (Z Garbage Collector):</b> Scalable low-latency GC processing terabyte heaps with sub-millisecond pauses. Performs compaction concurrently using load barriers.</li>
+        </ul>
 
-public class StreamProcessor {
-    public List<String> getActiveUsers(List<User> users) {
-        return users.parallelStream() // Runs on ForkJoinPool concurrently
-            .filter(User::isActive)
-            .map(User::getUsername)
-            .collect(Collectors.toList()); // Terminal evaluation
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Java Memory Model & Locks Concurrency</h3>
+        <p style='color:#9090A8; line-height:1.4;'>The Java Memory Model (JMM) defines thread visibility rules. <code>volatile</code> guarantees memory visibility and blocks instruction reorderings. Lock structures inflate from Biased locks to Lightweight spinlocks, then to Heavyweight OS monitors.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+import java.util.concurrent.locks.ReentrantLock;
+
+public class ThreadSafeCache {
+    private final ReentrantLock lock = new ReentrantLock(true); // Fair lock
+    private int counter = 0;
+    
+    public void increment() {
+        lock.lock(); // Implements AQS queue thread blocking
+        try {
+            counter++;
+        } finally {
+            lock.unlock();
+        }
     }
 }
         </pre>
-    
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. JVM Garbage Collectors & Virtual Threads</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Garbage Collection (GC) tracks object generation boundaries. Java 21+ Virtual Threads offload concurrency blockages from OS thread limits.</p>
-        <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>G1 Collector:</b> Segments heap memory into regional slices. Collects regions concurrently to minimize execution pause times.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>ZGC (Z Garbage Collector):</b> Ultra low-latency collector. Performs compaction concurrently with application execution, reducing pause times to sub-milliseconds.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Virtual Threads (Project Loom):</b> Lightweight, M:N multiplexed threads. Bypasses OS thread count constraints.</li>
-        </ul>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Virtual Threads (Project Loom)</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Virtual threads are lightweight threads multiplexed on carrier OS threads. Yielding operations park virtual threads off carrier threads to prevent blockages.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 import java.util.concurrent.Executors;
 
-public class ConcurrencySystem {
-    public void startVirtualWorkers() {
-        // Spawns tasks on virtual thread pools
+public class LoomServer {
+    public void start() {
+        // Spawns tasks on a virtual thread executor
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (int i = 0; i < 1000; i++) {
-                final int taskId = i;
+            for (int i = 0; i < 10000; i++) {
                 executor.submit(() -> {
-                    System.out.println("Processing task " + taskId);
+                    // Performing blocking network socket calls
+                    Thread.sleep(100); // Parks virtual thread; carrier thread remains free
+                    return "payload";
                 });
             }
-        } // Executor auto-closes on completion
+        }
     }
 }
         </pre>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. HashMap and ConcurrentHashMap internals</h3>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>HashMap:</b> Hash array indexing buckets. Collisions segment nodes into linked lists. Reaching <code>TREEIFY_THRESHOLD = 8</code> converts lists to Red-Black trees to preserve <code>O(log N)</code> lookups.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>ConcurrentHashMap:</b> Implements bucket lock stripping using CAS (Compare-And-Swap) operations and synchronized hooks on head nodes, removing segment locks to support concurrent writes.</li>
+        </ul>
+    

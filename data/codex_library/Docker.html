@@ -1,33 +1,21 @@
 
         <h2 style='color:#00C2FF; margin-top:0;'>🐳 Docker Engine & Containers Manual</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Docker isolates apps using cgroups and namespaces. This guide maps out multi-stage builds, layering caches, and security isolation.</p>
+        <p style='color:#9090A8; line-height:1.4;'>Docker isolates applications inside containers. This manual provides optimized multi-stage build templates and network maps.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Layer Cache Optimization</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Docker cache invalidates downstream if target layer elements change. Copy dependencies first before modifying source files.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Multi-Stage Dockerfile Template</h3>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 # Stage 1: Build compilation
-FROM node:18-alpine AS builder
+FROM golang:1.20-alpine AS builder
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci # Install dependencies first to cache this layer
 COPY . .
-RUN npm run build
+RUN go build -o main_bin .
 
-# Stage 2: Clean runtime environment
+# Stage 2: Minimal runtime deployment
 FROM alpine:latest
-RUN apk add --no-cache nodejs
 WORKDIR /root/
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-EXPOSE 3000
-CMD ["node", "dist/index.js"]
+COPY --from=builder /app/main_bin .
+CMD ["./main_bin"]
         </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Container Security Isolation</h3>
-        <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Non-root execution:</b> Enforce <code>USER node</code> or custom system users in Dockerfiles to prevent container escapes.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Read-Only Root File System:</b> Add <code>--read-only</code> flags at runtime to block malicious file modifications.</li>
-        </ul>
     
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Network Topologies & Port Mappings</h3>
         <p style='color:#9090A8; line-height:1.4;'>Containers run isolated network stacks. Custom bridge networks resolve container names to IP addresses dynamically.</p>

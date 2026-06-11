@@ -1,100 +1,37 @@
 
         <h2 style='color:#00C2FF; margin-top:0;'>🐹 Go Runtime & Concurrency Guide</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Go runs on a runtime compiler that targets native hardware. This document details scheduling loops, channels CSP model, array/slice bounds, and panic recovery.</p>
+        <p style='color:#9090A8; line-height:1.4;'>Go is a compiled systems language featuring high concurrency. This manual covers goroutines scheduling, CSP channels, maps/slices allocations, and error propagation patterns.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. The GMP Scheduler</h3>
-        <p style='color:#9090A8; line-height:1.4;'>The Go runtime handles concurrent execution multiplexing three structures:</p>
-        <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>G (Goroutine):</b> Holds call stack, instruction pointer, and scheduling details. Allocation overhead is extremely low (starts at 2KB).</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>M (Machine):</b> Represents OS threads. Managed directly by the kernel scheduler.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>P (Processor):</b> Represents logical context resource limits. Handles queues of runnable goroutines, stealing workloads from other processors if queues empty out.</li>
-        </ul>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Channels CSP State Lookup Matrix</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Channels coordinate Goroutine data sharing. Select blocks multiplex execution across active channel operations.</p>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Go Concurrency: Goroutines & Channels</h3>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
 package main
 
 import (
-	"context"
 	"fmt"
 	"time"
 )
 
-func worker(ctx context.Context, jobs <-chan int, results chan<- int) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case job, ok := <-jobs:
-			if !ok { return } // Channel closed
-			results <- job * job
-		}
+func fetchStats(ch chan<- string) {
+	time.Sleep(100 * time.Millisecond)
+	ch <- "Stats retrieved"
+}
+
+func main() {
+	ch := make(chan string, 1) // Buffered channel
+	go fetchStats(ch)
+
+	select {
+	case res := <-ch:
+		fmt.Println("Result:", res)
+	case <-time.After(200 * time.Millisecond):
+		fmt.Println("Operation timed out")
 	}
 }
         </pre>
-        <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
-          <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Channel State</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Writing</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Reading</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Closing</th>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Nil</td>
-            <td style='padding:4px;'>Blocks forever</td>
-            <td style='padding:4px;'>Blocks forever</td>
-            <td style='padding:4px;'>Panics</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Open</td>
-            <td style='padding:4px;'>Blocks if full</td>
-            <td style='padding:4px;'>Blocks if empty</td>
-            <td style='padding:4px;'>Succeeds</td>
-          </tr>
-          <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>Closed</td>
-            <td style='padding:4px;'>Panics</td>
-            <td style='padding:4px;'>Returns default, ok=false</td>
-            <td style='padding:4px;'>Panics</td>
-          </tr>
-        </table>
+
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Go Slice & Map Allocation Internals</h3>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Slices:</b> Header structure contains: pointer to underlying array, length (<code>len</code>), and capacity (<code>cap</code>). Reallocating beyond capacity doubles memory footprint.</li>
+          <li style='color:#9090A8; margin-bottom:4px;'><b>Maps:</b> Implemented as hash tables. Buckets hold key-value items. Reaches 80% load factor triggers map grow operations (rehashing elements into twice the bucket array size).</li>
+        </ul>
     
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. Go Slice & Map Mechanics</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Go slices reference array structures. Reaching slice capacities triggers reallocation, doubling array sizes (or increasing by 1.25x for elements > 256). Maps allocate key-value buckets inside memory cells.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-package main
-
-import "fmt"
-
-func sliceGrowth() {
-    // Make slice with len=0, cap=3. Prevents allocation overhead up to index 3
-    s := make([]int, 0, 3)
-    s = append(s, 1, 2, 3)
-    
-    // This append exceeds cap=3, triggering reallocation:
-    // A new array of cap=6 is allocated, data is copied, and s is updated.
-    s = append(s, 4)
-    fmt.Printf("len: %d, cap: %d", len(s), cap(s)) // len: 4, cap: 6
-}
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>5. Defer Stack, Panics & Recoveries</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Defer statements evaluate arguments immediately but execute in LIFO order when surrounding scopes return. Recover catches panic exceptions only if evaluated within deferred routines.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-package main
-
-import "fmt"
-
-func handleTransaction() {
-    defer func() {
-        if r := recover(); r != NULL {
-            fmt.Println("Transaction recovered from error:", r)
-        }
-    }()
-    
-    fmt.Println("Running database steps...")
-    panic("Database connection lost") // Triggers unwinding stack
-    fmt.Println("This line is bypassed")
-}
-        </pre>

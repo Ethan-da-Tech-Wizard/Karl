@@ -1,32 +1,6 @@
 
         <h2 style='color:#00C2FF; margin-top:0;'>🕮 JavaScript Complete Reference</h2>
-        <p style='color:#9090A8; line-height:1.4;'>JavaScript handles non-blocking events via single-threaded runtime loops. This guide covers engines scoping, prototypes, and asynchronous execution loops.</p>
-        
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Scope Closures & Prototype Inheritance</h3>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-// Scope Closures: function retains enclosing variable access
-function makeCounter() {
-    let count = 0;
-    return () => ++count;
-}
-
-// Prototype Inheritance chain
-const animal = { eats: true };
-const rabbit = Object.create(animal); // rabbit.__proto__ references animal
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Microtasks vs Macrotasks</h3>
-        <p style='color:#9090A8; line-height:1.4;'>Promise callbacks route to the Microtask Queue. Timers and I/O route to the Macrotask Queue. Microtasks drain completely before yielding to subsequent macrotasks.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-console.log('1'); // Runs synchronously
-
-setTimeout(() => console.log('2'), 0); // Macrotask Queue
-
-Promise.resolve().then(() => console.log('3')); // Microtask Queue
-
-console.log('4'); // Runs synchronously
-// Output order: 1, 4, 3, 2
-        </pre>
+        <p style='color:#9090A8; line-height:1.4;'>JavaScript engine reference, closures, prototype inheritance, event loop phases, and DOM execution.</p>
     
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. ES6+ Proxies & Reflection</h3>
         <p style='color:#9090A8; line-height:1.4;'>Proxies intercept and redefine standard object operations. Reflect provides access to target object descriptors.</p>

@@ -28,7 +28,7 @@ class DocsWorkspace(QWidget):
         os.makedirs(self._library_dir, exist_ok=True)
         
         version_filepath = os.path.join(self._library_dir, ".version")
-        current_version = "4.0"
+        current_version = "5.0"
         
         # Determine if we need to seed or upgrade
         needs_upgrade = True

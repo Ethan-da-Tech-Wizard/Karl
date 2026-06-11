@@ -1,82 +1,74 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>⚛ React Architecture & Lifecycle Guide</h2>
-        <p style='color:#9090A8; line-height:1.4;'>React organizes interfaces using a declarative, component-based paradigm. This manual covers rendering lifecycles, hooks optimization, and React Server Components.</p>
+        <h2 style='color:#00C2FF; margin-top:0;'>⚛ React Architecture, Fiber & Reconciliation Overhaul</h2>
+        <p style='color:#9090A8; line-height:1.4;'>React is a declarative UI library. This manual covers Virtual DOM reconciliation parameters, hooks runtime structures, concurrent scheduler priorities, and server components.</p>
         
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Fiber Reconciler & Concurrent Execution</h3>
-        <p style='color:#9090A8; line-height:1.4;'>React leverages Fiber nodes (virtual DOM) to pause and prioritize rendering workloads. In concurrent mode, updates execute on parallel threads without locking main threads.</p>
-        <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Render Phase:</b> Asynchronous traversal compiling the virtual tree. Can be interrupted by user inputs.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>Commit Phase:</b> Synchronous operations writing mutations directly to DOM. Runs side-effects once complete.</li>
-        </ul>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Fiber Node Architecture & Double-Buffering</h3>
+        <p style='color:#9090A8; line-height:1.4;'>The Fiber Reconciler represents elements as nodes holding state, update queues, and links forming a singly linked list tree structure: <code>child</code>, <code>sibling</code>, and <code>return</code> (parent).</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+// Simulated Fiber Node layout
+interface FiberNode {
+    type: any;              // Component type (string, class, function)
+    key: string | null;     // Diff identifier
+    child: FiberNode | null;
+    sibling: FiberNode | null;
+    return: FiberNode | null;
+    memoizedState: any;     // Linked list of hooks state
+    updateQueue: any;       // Scheduled state changes queue
+    lanes: number;          // Priority lanes bitmask (React 18+)
+    alternate: FiberNode;   // Link to mirroring double-buffer node (workInProgress vs current)
+}
+        </pre>
+        <p style='color:#9090A8; line-height:1.4;'>React performs operations on a <code>workInProgress</code> tree. Once the render phase finishes compiling changes without blocking threads, it swaps the pointer reference, committing changes instantly to the active viewport layout (Double Buffering).</p>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Advanced Hooks API Reference</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. React Hooks Runtime Architecture</h3>
+        <p style='color:#9090A8; line-height:1.4;'>Hooks store values inside a singly linked list attached to the host Fiber's <code>memoizedState</code>. The order of hook calls must remain identical across renders to keep index linkages valid.</p>
+        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
+// Hook Node structure inside Fiber's memoizedState
+interface Hook {
+    memoizedState: any;  // The actual state value (e.g. for useState/useReducer)
+    baseState: any;
+    baseQueue: Update | null;
+    queue: UpdateQueue | null;
+    next: Hook | null;   // Points to the next Hook in the call sequence
+}
+        </pre>
         <table style='width:100%; border-collapse:collapse; color:#9090A8; margin-bottom:10px;'>
           <tr style='border-bottom:1px solid #252535;'>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Hook</th>
-            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Lifecycle Mechanism & Targets</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Hook API</th>
+            <th style='text-align:left; color:#E4E4F0; padding:4px;'>Internal Runtime Behavior</th>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useRef(init)</td>
-            <td style='padding:4px;'>Allocates mutable objects persisting across renders. Does not trigger redraws on change. Holds DOM nodes.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useState</td>
+            <td style='padding:4px;'>Dispatches updates to the hook queue. Schedules fiber updates matching priority lanes.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useReducer(reducer, state)</td>
-            <td style='padding:4px;'>State engine variant. Decouples state mutations into action dispatch blocks.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useEffect</td>
+            <td style='padding:4px;'>Schedules side-effects (passive effects) to run asynchronously *after* layout paint.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useMemo(()=>val, deps)</td>
-            <td style='padding:4px;'>Caches complex data operations. Bypasses execution until dependencies mutate.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useLayoutEffect</td>
+            <td style='padding:4px;'>Runs synchronously *after* DOM mutations but *before* browser layout paint blocks.</td>
           </tr>
           <tr style='border-bottom:1px solid #14141F;'>
-            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useCallback(fn, deps)</td>
-            <td style='padding:4px;'>Caches function instances to prevent children from re-rendering due to changing property references.</td>
+            <td style='padding:4px; font-family:monospace; color:#2DD4A0;'>useTransition</td>
+            <td style='padding:4px;'>Marks state updates as low-priority lanes. Prevents high-priority updates (e.g. typing) from blocking.</td>
           </tr>
         </table>
 
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. Performance Tuning: Virtualization & Custom Hooks</h3>
+        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. React Server Components (RSC) & Hydration</h3>
+        <p style='color:#9090A8; line-height:1.4;'>RSC separates computing layers. Server components render to a serialized JSON-like string format (RSC payload) containing markup and client component bundles references. Hydration validates layout trees. Mismatches trigger rendering fallbacks.</p>
         <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-import { useState, useEffect, useRef } from 'react';
-
-// Custom Hook tracking window intersections
-export function useLazyLoad(options) {
-    const targetRef = useRef(null);
-    const [isIntersecting, setIsIntersecting] = useState(false);
-
-    useEffect(() => {
-        const observer = new IntersectionObserver(([entry]) => {
-            if (entry.isIntersecting) {
-                setIsIntersecting(true);
-                observer.unobserve(entry.target); // Unsubscribe once visible
-            }
-        }, options);
-
-        if (targetRef.current) observer.observe(targetRef.current);
-        return () => observer.disconnect();
-    }, [options]);
-
-    return [targetRef, isIntersecting];
-}
-        </pre>
-    
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>4. React Server Components & Hydration Pipelines</h3>
-        <p style='color:#9090A8; line-height:1.4;'>React Server Components (RSC) evaluate on server runtimes, compiling markup output as a JSON-serialized stream payload. Client components form boundary slots initialized via client hydration.</p>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-// Server Component (Default in Next.js App Router)
-import DatabaseConnection from '@/lib/db';
-import ClientCard from './ClientCard'; // Client Component boundary
-
-export default async function ProductCatalog() {
-    // Runs directly on server, bypassing client bundle steps
-    const products = await DatabaseConnection.query("SELECT * FROM products");
-    
+// Next.js Server Component fetching data directly
+export default async function Dashboard() {
+    const data = await fetch("https://api.internal/stats").then(r => r.json());
     return (
-        <div>
-            <h2>Server Product Catalog</h2>
-            {products.map(p => (
-                // Client boundary slots. Data is serialized down
-                <ClientCard key={p.id} initialLikes={p.likes} details={p} />
-            ))}
-        </div>
+        <main>
+            <h1>Server Statistics</h1>
+            <p>Cached Value: {data.value}</p>
+            {/* Client Component boundary. Props must be JSON-serializable */}
+            <InteractiveChart data={data.chartPoints} />
+        </main>
     );
 }
         </pre>
+    

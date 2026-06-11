@@ -1,33 +1,6 @@
 
         <h2 style='color:#00C2FF; margin-top:0;'>🚀 Uvicorn Production Deployment Guide</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Uvicorn processes ASGI signals asynchronously using <code>uvloop</code> and <code>httptools</code>. This guide templates production launch commands and Nginx routing configs.</p>
-        
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>1. Production Launch Configurations</h3>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-# Run Uvicorn via Gunicorn wrapper to manage process lifecycles
-gunicorn main:app \
-    --workers 4 \
-    --worker-class uvicorn.workers.UvicornWorker \
-    --bind 0.0.0.0:8000 \
-    --keep-alive 65 \
-    --access-logfile access.log
-        </pre>
-
-        <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>2. Nginx Reverse Proxy block</h3>
-        <pre style='color:#2DD4A0; background:#07070D; padding:8px; border-radius:4px; font-size:9.5pt; font-family:monospace;'>
-server {
-    listen 80;
-    server_name app.domain.internal;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-        </pre>
+        <p style='color:#9090A8; line-height:1.4;'>Uvicorn ASGI server deployment config, concurrency tuning, and systemd daemons.</p>
     
         <h3 style='color:#E4E4F0; margin-bottom:4px; border-bottom:1px solid #252535; padding-bottom:4px;'>3. ASGI Lifecycle & Connection States</h3>
         <p style='color:#9090A8; line-height:1.4;'>Uvicorn maps incoming HTTP requests to ASGI applications, coordinating connection lifecycles via lifespan events.</p>
