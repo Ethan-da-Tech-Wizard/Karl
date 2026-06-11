@@ -132,6 +132,7 @@ class MainWindow(QMainWindow):
         theme_name = "Karl Obsidian"
         custom_accent = None
         bg_tone = "Default"
+        reduced_motion = False
         
         if os.path.exists(config_path):
             try:
@@ -140,6 +141,7 @@ class MainWindow(QMainWindow):
                     theme_name = config.get("theme_name", "Karl Obsidian")
                     custom_accent = config.get("custom_accent")
                     bg_tone = config.get("bg_tone", "Default")
+                    reduced_motion = config.get("reduced_motion", False)
             except Exception:
                 pass
                 
@@ -151,6 +153,7 @@ class MainWindow(QMainWindow):
         self._state.theme_name = theme_name
         self._state.custom_accent = custom_accent
         self._state.bg_tone = bg_tone
+        self._state.reduced_motion = reduced_motion
         
         # Apply theme colors to the chat bubbles
         theme_colors = get_theme_colors(theme_name, custom_accent, bg_tone)

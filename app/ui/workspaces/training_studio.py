@@ -19,9 +19,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QLabel, QListWidget,
     QListWidgetItem, QFrame, QFileDialog, QMessageBox,
     QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit,
-    QProgressBar, QCheckBox, QInputDialog,
+    QProgressBar, QCheckBox, QInputDialog, QGridLayout,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from app.ui.widgets.glow_panel import GlowPanel
 
 
 def _section(text: str) -> QLabel:
@@ -304,8 +305,7 @@ class TrainingStudioWorkspace(QWidget):
         cards_layout.setSpacing(16)
 
         # SFT Panel
-        sft_box = QWidget()
-        sft_box.setObjectName("panel")
+        sft_box = GlowPanel(self.state)
         sft_l = QVBoxLayout(sft_box)
         sft_l.setContentsMargins(16, 16, 16, 16)
         sft_l.setSpacing(12)
@@ -326,8 +326,7 @@ class TrainingStudioWorkspace(QWidget):
         cards_layout.addWidget(sft_box, 1)
 
         # DPO Panel
-        dpo_box = QWidget()
-        dpo_box.setObjectName("panel")
+        dpo_box = GlowPanel(self.state)
         dpo_l = QVBoxLayout(dpo_box)
         dpo_l.setContentsMargins(16, 16, 16, 16)
         dpo_l.setSpacing(12)
@@ -359,118 +358,144 @@ class TrainingStudioWorkspace(QWidget):
 
     def _build_train_tab(self) -> QWidget:
         w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout = QHBoxLayout(w)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
 
-        # dependency check
-        self._deps_lbl = QLabel("")
-        self._deps_lbl.setObjectName("lbl-muted")
-        self._deps_lbl.setWordWrap(True)
-        layout.addWidget(self._deps_lbl)
+        # Left Column: Configuration
+        left_col = GlowPanel(self.state)
+        left_layout = QVBoxLayout(left_col)
+        left_layout.setContentsMargins(12, 12, 12, 12)
+        left_layout.setSpacing(8)
 
-        layout.addWidget(_hline())
-        layout.addWidget(_section("LORA CONFIG"))
+        left_layout.addWidget(_section("LORA CONFIGURATION"))
 
-        # config grid
-        cfg = QWidget()
-        cfg_l = QHBoxLayout(cfg)
-        cfg_l.setContentsMargins(0, 0, 0, 0)
-        cfg_l.setSpacing(20)
+        # We'll use a QGridLayout for hyperparams
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        grid.setContentsMargins(0, 4, 0, 4)
 
-        def _row(label_text: str, widget: QWidget) -> QWidget:
-            row = QWidget()
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 2, 0, 2)
-            rl.setSpacing(12)
-            lbl = QLabel(label_text)
-            lbl.setFixedWidth(80)
-            rl.addWidget(lbl)
-            rl.addWidget(widget)
-            rl.addStretch()
-            return row
-
+        # Base model row: we can use a QHBoxLayout inside the grid
+        bm_row = QWidget()
+        bm_lay = QHBoxLayout(bm_row)
+        bm_lay.setContentsMargins(0, 0, 0, 0)
+        bm_lay.setSpacing(6)
+        
         self._base_model_combo = QComboBox()
-        self._base_model_combo.setMinimumWidth(260)
         self._base_model_combo.setToolTip("Select the local HuggingFace base model weights to train")
         self._base_model_combo.currentIndexChanged.connect(self._check_deps)
+        bm_lay.addWidget(self._base_model_combo, 1)
 
+        browse_btn = QPushButton("browse...")
+        browse_btn.setToolTip("Select a local HuggingFace weights directory")
+        browse_btn.clicked.connect(self._browse_hf_model)
+        bm_lay.addWidget(browse_btn)
+
+        add_repo_btn = QPushButton("add repo...")
+        add_repo_btn.setToolTip("Enter a HuggingFace repository ID to train (e.g. Qwen/Qwen2.5-Coder-1.5B)")
+        add_repo_btn.clicked.connect(self._add_hf_repo)
+        bm_lay.addWidget(add_repo_btn)
+
+        grid.addWidget(QLabel("Base Model:"), 0, 0)
+        grid.addWidget(bm_row, 0, 1, 1, 3)
+
+        # Rank (SpinBox)
         self._rank_spin = QSpinBox()
         self._rank_spin.setRange(1, 256)
         self._rank_spin.setValue(16)
-        self._rank_spin.setFixedWidth(80)
         self._rank_spin.setToolTip("LoRA factorization rank. Higher increases model capacity but uses more VRAM.")
+        grid.addWidget(QLabel("Rank:"), 1, 0)
+        grid.addWidget(self._rank_spin, 1, 1)
 
+        # Alpha (SpinBox)
         self._alpha_spin = QSpinBox()
         self._alpha_spin.setRange(1, 512)
         self._alpha_spin.setValue(32)
-        self._alpha_spin.setFixedWidth(80)
         self._alpha_spin.setToolTip("LoRA scaling parameter. Controls scaling of adapter weight updates.")
+        grid.addWidget(QLabel("Alpha:"), 1, 2)
+        grid.addWidget(self._alpha_spin, 1, 3)
 
+        # Dropout
         self._dropout_spin = QDoubleSpinBox()
         self._dropout_spin.setRange(0.0, 0.5)
         self._dropout_spin.setSingleStep(0.05)
         self._dropout_spin.setValue(0.05)
-        self._dropout_spin.setFixedWidth(80)
         self._dropout_spin.setToolTip("LoRA dropout probability. Helps prevent overfitting.")
+        grid.addWidget(QLabel("Dropout:"), 2, 0)
+        grid.addWidget(self._dropout_spin, 2, 1)
 
+        # Epochs
+        self._epochs_spin = QSpinBox()
+        self._epochs_spin.setRange(1, 20)
+        self._epochs_spin.setValue(3)
+        self._epochs_spin.setToolTip("Number of full passes over the training dataset.")
+        grid.addWidget(QLabel("Epochs:"), 2, 2)
+        grid.addWidget(self._epochs_spin, 2, 3)
+
+        # LR
         self._lr_spin = QDoubleSpinBox()
         self._lr_spin.setDecimals(6)
         self._lr_spin.setRange(1e-6, 1e-2)
         self._lr_spin.setSingleStep(1e-5)
         self._lr_spin.setValue(2e-4)
-        self._lr_spin.setFixedWidth(100)
-        self._lr_spin.setToolTip("Training step step size (optimizer learning rate).")
+        self._lr_spin.setToolTip("Training step size (optimizer learning rate).")
+        grid.addWidget(QLabel("Learning Rate:"), 3, 0)
+        grid.addWidget(self._lr_spin, 3, 1)
 
-        self._epochs_spin = QSpinBox()
-        self._epochs_spin.setRange(1, 20)
-        self._epochs_spin.setValue(3)
-        self._epochs_spin.setFixedWidth(80)
-        self._epochs_spin.setToolTip("Number of full passes over the training dataset.")
-
-        self._qlora_check = QCheckBox("4-bit QLoRA  (requires bitsandbytes)")
+        # QLoRA Checkbox
+        self._qlora_check = QCheckBox("4-bit QLoRA")
         self._qlora_check.setChecked(True)
         self._qlora_check.setToolTip("Enable 4-bit quantized QLoRA training to reduce VRAM requirements")
+        grid.addWidget(self._qlora_check, 3, 2, 1, 2)
 
-        # Base model row with Browse and Add buttons
-        base_model_row = QWidget()
-        bm_layout = QHBoxLayout(base_model_row)
-        bm_layout.setContentsMargins(0, 2, 0, 2)
-        bm_layout.setSpacing(12)
-        lbl = QLabel("base model")
-        lbl.setFixedWidth(80)
-        bm_layout.addWidget(lbl)
-        bm_layout.addWidget(self._base_model_combo)
-        
-        browse_btn = QPushButton("browse...")
-        browse_btn.setToolTip("Select a local HuggingFace weights directory")
-        browse_btn.clicked.connect(self._browse_hf_model)
-        bm_layout.addWidget(browse_btn)
-        
-        add_repo_btn = QPushButton("add repo...")
-        add_repo_btn.setToolTip("Enter a HuggingFace repository ID to train (e.g. Qwen/Qwen2.5-Coder-1.5B)")
-        add_repo_btn.clicked.connect(self._add_hf_repo)
-        bm_layout.addWidget(add_repo_btn)
-        bm_layout.addStretch()
-        
-        layout.addWidget(base_model_row)
+        left_layout.addLayout(grid)
+        left_layout.addWidget(_hline())
 
-        for row in (
-            _row("rank",    self._rank_spin),
-            _row("alpha",   self._alpha_spin),
-            _row("dropout", self._dropout_spin),
-            _row("lr",      self._lr_spin),
-            _row("epochs",  self._epochs_spin),
-        ):
-            layout.addWidget(row)
+        # Adapter Name Input
+        left_layout.addWidget(QLabel("Adapter Save Name:"))
+        self._adapter_name_input = QLineEdit()
+        self._adapter_name_input.setPlaceholderText("e.g., my_coder_lora")
+        self._adapter_name_input.setToolTip("Enter folder name where the compiled model adapter will be saved")
+        left_layout.addWidget(self._adapter_name_input)
 
-        layout.addWidget(self._qlora_check)
-        layout.addWidget(_hline())
+        # Train Button
+        self._train_btn = QPushButton("▶ begin training")
+        self._train_btn.setObjectName("btn-primary")
+        self._train_btn.setFixedHeight(36)
+        self._train_btn.setToolTip("Start adapter SFT training thread on the local GPU")
+        self._train_btn.clicked.connect(self._begin_training)
+        left_layout.addWidget(self._train_btn)
+
+        # Progress bar
+        self._train_progress = QProgressBar()
+        self._train_progress.setVisible(False)
+        left_layout.addWidget(self._train_progress)
+
+        left_layout.addStretch()
+        layout.addWidget(left_col, 1)
+
+        # Right Column: Guide & Output Logs
+        right_col = QWidget()
+        right_layout = QVBoxLayout(right_col)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+
+        # dependency check card
+        dep_box = GlowPanel(self.state)
+        dep_lay = QVBoxLayout(dep_box)
+        dep_lay.setContentsMargins(12, 10, 12, 10)
+        dep_lay.setSpacing(4)
+        dep_lay.addWidget(_section("DEPENDENCIES & MODEL STATUS"))
+        self._deps_lbl = QLabel("")
+        self._deps_lbl.setObjectName("lbl-muted")
+        self._deps_lbl.setWordWrap(True)
+        self._deps_lbl.setStyleSheet("font-size: 9pt; line-height: 1.3;")
+        dep_lay.addWidget(self._deps_lbl)
+        right_layout.addWidget(dep_box)
 
         # VRAM warning info panel
-        vram_info = QWidget()
-        vram_info.setObjectName("panel")
-        vram_info.setStyleSheet("background: rgba(240, 176, 48, 0.05); border: 1px solid rgba(240, 176, 48, 0.2); border-radius: 4px;")
+        vram_info = GlowPanel(self.state)
+        vram_info.setStyleSheet("background: rgba(240, 176, 48, 0.03); border: 1px solid rgba(240, 176, 48, 0.15); border-radius: 4px;")
         vil = QVBoxLayout(vram_info)
         vil.setContentsMargins(12, 10, 12, 10)
         
@@ -484,32 +509,24 @@ class TrainingStudioWorkspace(QWidget):
         warn_lbl.setWordWrap(True)
         warn_lbl.setStyleSheet("font-size: 8.5pt; color: #F0B030; line-height: 1.4;")
         vil.addWidget(warn_lbl)
-        layout.addWidget(vram_info)
-        layout.addWidget(_hline())
+        right_layout.addWidget(vram_info)
 
-        self._adapter_name_input = QLineEdit()
-        self._adapter_name_input.setPlaceholderText("adapter name (saved to data/adapters/)")
-        self._adapter_name_input.setToolTip("Enter folder name where the compiled model adapter will be saved")
-        layout.addWidget(self._adapter_name_input)
-
-        self._train_btn = QPushButton("▶ begin training")
-        self._train_btn.setObjectName("btn-primary")
-        self._train_btn.setToolTip("Start adapter SFT training thread on the local GPU")
-        self._train_btn.clicked.connect(self._begin_training)
-        layout.addWidget(self._train_btn)
-        self._check_deps()
-
-        self._train_progress = QProgressBar()
-        self._train_progress.setVisible(False)
-        layout.addWidget(self._train_progress)
-
+        # Training log
+        log_box = QWidget()
+        log_lay = QVBoxLayout(log_box)
+        log_lay.setContentsMargins(0, 0, 0, 0)
+        log_lay.setSpacing(4)
+        log_lay.addWidget(_section("TRAINING SYSTEM LOGS"))
         self._train_log = QTextBrowser()
         self._train_log.setObjectName("reasoning-view")
-        self._train_log.setFixedHeight(120)
-        self._train_log.setPlaceholderText("training log...")
-        layout.addWidget(self._train_log)
+        self._train_log.setPlaceholderText("Logs will stream here when training begins...")
+        self._train_log.setStyleSheet("font-family: monospace; font-size: 9pt;")
+        log_lay.addWidget(self._train_log)
+        
+        right_layout.addWidget(log_box, 1)
 
-        layout.addStretch()
+        layout.addWidget(right_col, 1)
+        self._check_deps()
         return w
 
     # ── logic ─────────────────────────────────────────────────────────────────

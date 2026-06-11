@@ -24,3 +24,6 @@ class AppState:
         self.rag_threshold: float = 0.0
         self.rag_top_k: int = 3
 
+        # Global UI visual adjustments
+        self.reduced_motion: bool = False
+

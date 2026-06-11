@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QLabel, QLineEdit,
     QFrame, QDoubleSpinBox, QSpinBox, QFileDialog,
     QMessageBox, QGroupBox, QScrollArea, QProgressBar,
-    QComboBox, QColorDialog,
+    QComboBox, QColorDialog, QCheckBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QColor
@@ -602,6 +602,11 @@ class SystemConfigWorkspace(QWidget):
         ):
             pp_layout.addWidget(_row(label, widget))
 
+        self._reduced_motion_check = QCheckBox("Disable active glowing animations")
+        self._reduced_motion_check.setChecked(getattr(self.state, "reduced_motion", False))
+        self._reduced_motion_check.stateChanged.connect(self._on_reduced_motion_changed)
+        pp_layout.addWidget(_row("Accessibility", self._reduced_motion_check))
+
         apply_btn = QPushButton("apply defaults")
         apply_btn.setObjectName("btn-primary")
         apply_btn.setToolTip("Save and apply default generation limits")
@@ -611,6 +616,27 @@ class SystemConfigWorkspace(QWidget):
         layout.addWidget(params_panel)
         layout.addStretch()
         return w
+
+    def _on_reduced_motion_changed(self, state):
+        is_checked = (state == 2 or state == Qt.CheckState.Checked.value or state == True)
+        self.state.reduced_motion = is_checked
+        
+        # Save to theme_config.json
+        config_path = "data/theme_config.json"
+        config = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            except Exception:
+                pass
+        config["reduced_motion"] = is_checked
+        os.makedirs("data", exist_ok=True)
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            print(f"[SystemConfig] Error saving reduced motion: {e}")
 
     # ── identity tab ──────────────────────────────────────────────────────────
 
@@ -1117,7 +1143,8 @@ class SystemConfigWorkspace(QWidget):
         config = {
             "theme_name": theme_name,
             "custom_accent": custom_accent,
-            "bg_tone": bg_tone
+            "bg_tone": bg_tone,
+            "reduced_motion": getattr(self.state, "reduced_motion", False)
         }
         os.makedirs("data", exist_ok=True)
         try:

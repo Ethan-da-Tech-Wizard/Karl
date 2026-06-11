@@ -1,5 +1,10 @@
 import os
 import sys
+
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+
 from PyQt6.QtWidgets import QApplication
 
 # Set offscreen platform plugin to run PyQt tests headlessly in all environments

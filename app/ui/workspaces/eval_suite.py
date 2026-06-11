@@ -361,7 +361,15 @@ class EvalSuiteWorkspace(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        layout.addWidget(_section("RESULTS"))
+        self._right_tabs = QTabWidget()
+        self._right_tabs.setObjectName("right-tabs")
+
+        # Tab 1: Results List
+        res_tab = QWidget()
+        res_layout = QVBoxLayout(res_tab)
+        res_layout.setContentsMargins(8, 8, 8, 8)
+        res_layout.setSpacing(6)
+        res_layout.addWidget(_section("RESULTS LIST"))
 
         self._results_tree = QTreeWidget()
         self._results_tree.setHeaderLabels(["case", "grader", "pass", "response"])
@@ -369,14 +377,24 @@ class EvalSuiteWorkspace(QWidget):
         self._results_tree.setColumnWidth(1, 100)
         self._results_tree.setColumnWidth(2, 60)
         self._results_tree.currentItemChanged.connect(self._on_result_selected)
-        layout.addWidget(self._results_tree, 1)
+        res_layout.addWidget(self._results_tree, 1)
 
-        layout.addWidget(_section("DETAIL"))
+        self._right_tabs.addTab(res_tab, "Results List")
+
+        # Tab 2: Detail Inspector
+        detail_tab = QWidget()
+        det_layout = QVBoxLayout(detail_tab)
+        det_layout.setContentsMargins(8, 8, 8, 8)
+        det_layout.setSpacing(6)
+        det_layout.addWidget(_section("RESULT DETAILS"))
 
         self._detail_view = QTextBrowser()
-        self._detail_view.setPlaceholderText("select a result to inspect")
-        layout.addWidget(self._detail_view, 1)
+        self._detail_view.setPlaceholderText("Select a result from the Results List tab to inspect details here...")
+        det_layout.addWidget(self._detail_view, 1)
 
+        self._right_tabs.addTab(detail_tab, "Detail Inspector")
+
+        layout.addWidget(self._right_tabs, 1)
         return w
 
     # ── logic ─────────────────────────────────────────────────────────────────
@@ -486,6 +504,7 @@ class EvalSuiteWorkspace(QWidget):
             return
         case = item.data(0, Qt.ItemDataRole.UserRole)
         if case:
+            self._right_tabs.setCurrentIndex(1)
             case_passed = case.grade.get("passed", False) if case.grade else False
             status_text = "PASSED" if case_passed else "FAILED"
             status_color = "#2DD4A0" if case_passed else "#F05050"

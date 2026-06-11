@@ -7,25 +7,25 @@ ACCENT_DEFAULT = "#00C2FF"
 
 THEMES = {
     "Karl Obsidian": {
-        "bg_deep":     "#07070D",
-        "bg_base":     "#0D0D16",
-        "bg_surface":  "#14141F",
-        "bg_raised":   "#1C1C2A",
-        "bg_input":    "#111119",
-        "border":      "#252535",
-        "border_hi":   "#383850",
-        "accent":      ACCENT_DEFAULT,
-        "accent_dark": "#008CB8",
-        "text_hi":     "#E4E4F0",
-        "text_mid":    "#9090A8",
-        "text_lo":     "#505068",
-        "think_bg":    "#0A0A14",
-        "think_text":  "#505080",
-        "green":       "#2DD4A0",
-        "red":         "#F05050",
-        "yellow":      "#F0B030",
-        "sidebar_bg":  "#08080F",
-        "sidebar_sel": "#161625",
+        "bg_deep":     "#020205",
+        "bg_base":     "#07070F",
+        "bg_surface":  "#0D0D1B",
+        "bg_raised":   "#14142D",
+        "bg_input":    "#05050D",
+        "border":      "#1F1F3D",
+        "border_hi":   "#35356E",
+        "accent":      "#00E5FF",
+        "accent_dark": "#0099AA",
+        "text_hi":     "#F0F5FF",
+        "text_mid":    "#A0AEC0",
+        "text_lo":     "#6A7B95",
+        "think_bg":    "#04040A",
+        "think_text":  "#7F95B5",
+        "green":       "#00FFAA",
+        "red":         "#FF3366",
+        "yellow":      "#FFCC00",
+        "sidebar_bg":  "#030308",
+        "sidebar_sel": "#111129",
     },
     "USMC Tactical": {
         "bg_deep":     "#0E100D",
@@ -1046,6 +1046,7 @@ QTabBar::tab:selected {{
     background: {bg_surface};
     color: {text_hi};
     border-color: {border_hi};
+    border-bottom: 2px solid {accent};
 }}
 
 QTabBar::tab:hover:!selected {{

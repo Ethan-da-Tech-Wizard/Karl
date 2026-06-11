@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 import tests.qt_test_helper  # noqa: F401
 
@@ -92,6 +93,41 @@ class TestUIImprovements(unittest.TestCase):
         self.assertTrue(hasattr(workbench, "_reasoning_dock"))
         self.assertTrue(isinstance(workbench._sessions_dock, QDockWidget))
         self.assertTrue(isinstance(workbench._reasoning_dock, QDockWidget))
+
+    def test_agentic_loop_persists_only_final_assistant_answer(self):
+        from app.state import AppState
+        from app.ui.workspaces.workbench import WorkbenchWorkspace
+        from app.utils.memory_manager import MemoryManager
+
+        class FakeThread:
+            def __init__(self, history):
+                self.chat_history = history
+
+        state = AppState()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state.memory = MemoryManager(sessions_dir=tmpdir)
+            workbench = WorkbenchWorkspace(state)
+
+            user_node = workbench.chat_history.add_message("user", "how many sides does a hexagon have?")
+            workbench._chat_view.push_user("how many sides does a hexagon have?", user_node.id)
+            workbench._thread = FakeThread([
+                {"role": "user", "content": "how many sides does a hexagon have?"},
+                {"role": "assistant", "content": "A hexagon has 6 sides."},
+                {"role": "user", "content": "[Iteration 2] Continue."},
+                {"role": "assistant", "content": "FINAL ANSWER: A hexagon has 6 sides."},
+            ])
+
+            workbench._on_loop_done(2)
+            active = list(workbench.chat_history)
+
+            self.assertEqual(
+                active,
+                [
+                    {"role": "user", "content": "how many sides does a hexagon have?", "id": active[0]["id"]},
+                    {"role": "assistant", "content": "FINAL ANSWER: A hexagon has 6 sides.", "id": active[1]["id"]},
+                ],
+            )
+            self.assertNotIn("Iteration", "\n".join(msg["content"] for msg in active))
 
 if __name__ == "__main__":
     unittest.main()

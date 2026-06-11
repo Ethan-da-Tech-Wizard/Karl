@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLabel, QSizePolicy, QFrame, QCheckBox,
     QDoubleSpinBox, QSpinBox, QListWidget,
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
+    QTabWidget,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
@@ -27,6 +28,8 @@ from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
 from core.workflows import list_workflows
 from app.utils.session_tree import SessionTree
+from app.ui.widgets.tracing_panel import TracingPanel
+from app.ui.themes import get_theme_colors
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -168,6 +171,39 @@ class ChatView(QTextBrowser):
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertHtml(html)
+        self.ensureCursorVisible()
+
+    def append_diagnostics(self, model: str, n_ctx: int, diag: dict):
+        self._finalize_stream()
+        bg_raised = self.theme_colors.get("bg_raised", "#1C1C2A")
+        border = self.theme_colors.get("border", "#252535")
+        text_hi = self.theme_colors.get("text_hi", "#E4E4F0")
+        text_lo = self.theme_colors.get("text_lo", "#505068")
+        accent = self.theme_colors.get("accent", "#00C2FF")
+        yellow = self.theme_colors.get("yellow", "#F0B030")
+
+        html_str = (
+            f'<div style="margin: 8px 80px 8px 0px; padding: 10px 14px; '
+            f'background: {bg_raised}; border: 1px solid {border}; border-radius: 4px; '
+            f'font-family: \'JetBrains Mono\', monospace; font-size: 8.5pt;">'
+            f'<div style="color: {accent}; font-weight: bold; margin-bottom: 6px; letter-spacing: 1.5px;">📊 GENERATION DIAGNOSTICS</div>'
+            f'<div style="color: {text_hi}; margin-bottom: 4px;"><b>Model:</b> {model} (n_ctx={n_ctx})</div>'
+            f'<div style="color: {text_hi}; margin-bottom: 4px;">'
+            f'<b>Prompt:</b> {diag.get("prompt_tokens", 0)} tokens '
+            f'<span style="color: {text_lo};">(prefill: {diag.get("prefill_time", 0):.2f}s @ {diag.get("prefill_tps", 0):.1f} t/s)</span>'
+            f'</div>'
+            f'<div style="color: {text_hi}; margin-bottom: 4px;">'
+            f'<b>Generation:</b> {diag.get("generation_tokens", 0)} tokens '
+            f'<span style="color: {text_lo};">(generated: {diag.get("generation_time", 0):.2f}s @ {diag.get("generation_tps", 0):.1f} t/s)</span>'
+            f'</div>'
+            f'<div style="color: {yellow}; font-weight: bold; margin-top: 6px; letter-spacing: 0.5px;">'
+            f'Total Time: {diag.get("total_time", 0):.2f}s @ {diag.get("total_tps", 0):.1f} t/s'
+            f'</div>'
+            f'</div>'
+        )
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(html_str)
         self.ensureCursorVisible()
 
     def append_rag_sources(self, results: list[dict]):
@@ -313,39 +349,40 @@ class WorkbenchWorkspace(QMainWindow):
         self.resizeDocks([self._sessions_dock, self._reasoning_dock], [200, 280], Qt.Orientation.Horizontal)
 
     def _build_sessions_panel(self) -> QWidget:
-        w = QWidget()
-        w.setObjectName("panel")
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
+        tabs = QTabWidget()
+        tabs.setObjectName("left-tabs")
+        tabs.setTabPosition(QTabWidget.TabPosition.North)
+        
+        # Tab 1: Sessions
+        sessions_tab = QWidget()
+        sl = QVBoxLayout(sessions_tab)
+        sl.setContentsMargins(4, 4, 4, 4)
+        sl.setSpacing(4)
         self._sessions_list = QListWidget()
         self._sessions_list.currentItemChanged.connect(self._on_session_clicked)
-        layout.addWidget(self._sessions_list, 1)
-
-        # separator
-        layout.addWidget(_hline())
-
-        # branches header
-        hdr_branches = QWidget()
-        hdr_branches.setObjectName("panel-header")
-        hdr_branches_layout = QHBoxLayout(hdr_branches)
-        hdr_branches_layout.setContentsMargins(12, 5, 8, 5)
-        hdr_branches.setFixedHeight(30)
-        hdr_branches_layout.addWidget(_label("BRANCHES", "section-header"))
-        layout.addWidget(hdr_branches)
-
+        sl.addWidget(self._sessions_list, 1)
+        tabs.addTab(sessions_tab, "Sessions")
+        
+        # Tab 2: Branches
+        branches_tab = QWidget()
+        bl = QVBoxLayout(branches_tab)
+        bl.setContentsMargins(4, 4, 4, 4)
+        bl.setSpacing(4)
         self._branches_tree = QTreeWidget()
         self._branches_tree.setHeaderHidden(True)
         self._branches_tree.itemClicked.connect(self._on_branch_clicked)
-        layout.addWidget(self._branches_tree, 1)
-
-        return w
+        bl.addWidget(self._branches_tree, 1)
+        tabs.addTab(branches_tab, "Branches")
+        
+        return tabs
 
     def _build_reasoning_panel(self) -> QWidget:
-        w = QWidget()
-        w.setObjectName("panel")
-        layout = QVBoxLayout(w)
+        self._reasoning_panel_container = TracingPanel(self.state, self)
+        self._reasoning_panel_container.setObjectName("panel")
+        accent = get_theme_colors(getattr(self.state, "theme_name", "Karl Obsidian"), getattr(self.state, "custom_accent", None)).get("accent", "#00C2FF")
+        self._reasoning_panel_container.set_accent_color(accent)
+        
+        layout = QVBoxLayout(self._reasoning_panel_container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
@@ -361,7 +398,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._reasoning_view.setPlaceholderText("reasoning tokens will appear here...")
         layout.addWidget(self._reasoning_view, 1)
 
-        return w
+        return self._reasoning_panel_container
 
     def _build_chat_panel(self) -> QWidget:
         w = QWidget()
@@ -898,6 +935,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._reasoning_view.ensureCursorVisible()
 
     def _on_chat(self, token: str):
+        if not self._chat_view._streaming:
+            self._chat_view.begin_stream()
         self._chat_view.append_token(token)
 
     def _on_live_stats(self, count: int, speed: float):
@@ -918,14 +957,7 @@ class WorkbenchWorkspace(QMainWindow):
             from app.engine.model_loader import ModelLoader
             model_name = ModelLoader.model_name()
             n_ctx = ModelLoader.n_ctx()
-            diag_text = (
-                f"— Generation Diagnostics —\n"
-                f"Model: {model_name} (n_ctx={n_ctx})\n"
-                f"Prompt: {diagnostics.get('prompt_tokens', 0)} tokens (prefill in {diagnostics.get('prefill_time', 0):.2f}s @ {diagnostics.get('prefill_tps', 0):.1f} t/s)\n"
-                f"Generation: {diagnostics.get('generation_tokens', 0)} tokens (generated in {diagnostics.get('generation_time', 0):.2f}s @ {diagnostics.get('generation_tps', 0):.1f} t/s)\n"
-                f"Total Time: {diagnostics.get('total_time', 0):.2f}s @ {diagnostics.get('total_tps', 0):.1f} t/s"
-            )
-            self._chat_view.append_system_note(diag_text)
+            self._chat_view.append_diagnostics(model_name, n_ctx, diagnostics)
 
         self._set_busy(False)
         self._is_correcting = False
@@ -946,7 +978,6 @@ class WorkbenchWorkspace(QMainWindow):
         if diagnostics:
             diag_suffix = f" ({diagnostics.get('generation_tokens', 0)} tokens in {diagnostics.get('total_time', 0):.2f}s @ {diagnostics.get('total_tps', 0):.1f} t/s)"
         self._chat_view.append_system_note(f"— iteration {index + 1} complete{diag_suffix} —")
-        self._chat_view.begin_stream()
         self._last_response = response
 
     def _on_loop_done(self, total: int):
@@ -956,8 +987,15 @@ class WorkbenchWorkspace(QMainWindow):
             thread_history = self._thread.chat_history
             original_len = len(self.chat_history)
             new_msgs = thread_history[original_len:]
-            for msg in new_msgs:
-                self.chat_history.add_message(msg["role"], msg["content"])
+            assistant_msgs = [
+                msg for msg in new_msgs
+                if msg.get("role") == "assistant" and msg.get("content", "").strip()
+            ]
+            if assistant_msgs:
+                final_msg = assistant_msgs[-1]
+                self.chat_history.add_message("assistant", final_msg["content"])
+                self._last_response = final_msg["content"]
+                self._last_thought = getattr(self, "_last_thought", "")
             
             # Refresh ChatView to ensure all messages have correct node_ids
             self._chat_view.clear_display()
@@ -1092,6 +1130,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._input.setEnabled(not busy)
         state_text = "generating..." if busy else "idle"
         self.status_changed.emit(state_text, busy)
+        if hasattr(self, "_reasoning_panel_container"):
+            self._reasoning_panel_container.set_active(busy)
 
     def _on_chat_link_clicked(self, url):
         link = url.toString()

@@ -12,13 +12,53 @@
     "Machine Learning",
     "Programming Languages"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:karl.sidebarView",
+    "onCommand:karl.openSidebar",
+    "onCommand:karl.fixSelection",
+    "onCommand:karl.explainSelection",
+    "onCommand:karl.generateTests",
+    "onCommand:karl.reviewActiveFile",
+    "onCommand:karl.askWorkspace",
+    "onCommand:karl.ingestActiveFile",
+    "onCommand:karl.ingestWorkspaceFolder"
+  ],
   "main": "./extension.js",
   "contributes": {
     "commands": [
       {
         "command": "karl.fixSelection",
         "title": "Ask Karl to Refactor Selection",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.explainSelection",
+        "title": "Explain Selection",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.generateTests",
+        "title": "Generate Tests for Active File",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.reviewActiveFile",
+        "title": "Review Active File",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.askWorkspace",
+        "title": "Ask About Workspace",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.ingestActiveFile",
+        "title": "Ingest Active File into Knowledge Base",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.ingestWorkspaceFolder",
+        "title": "Ingest Workspace Folder into Knowledge Base",
         "category": "Karl"
       },
       {
@@ -33,6 +73,38 @@
           "command": "karl.fixSelection",
           "when": "editorHasSelection",
           "group": "karl@1"
+        },
+        {
+          "command": "karl.explainSelection",
+          "when": "editorHasSelection",
+          "group": "karl@2"
+        },
+        {
+          "command": "karl.generateTests",
+          "when": "editorTextFocus",
+          "group": "karl@3"
+        },
+        {
+          "command": "karl.reviewActiveFile",
+          "when": "editorTextFocus",
+          "group": "karl@4"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "karl.ingestActiveFile",
+          "when": "resourceScheme == file",
+          "group": "karl@1"
+        },
+        {
+          "command": "karl.ingestWorkspaceFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "karl@2"
+        },
+        {
+          "command": "karl.askWorkspace",
+          "when": "workspaceFolderCount > 0",
+          "group": "karl@3"
         }
       ]
     },

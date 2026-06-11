@@ -559,6 +559,15 @@ class PromptLabWorkspace(QWidget):
         desc.setStyleSheet("font-size: 8.5pt; margin-bottom: 6px; padding-left: 2px;")
         right_layout.addWidget(desc)
 
+        self._main_tabs = QTabWidget()
+        self._main_tabs.setObjectName("main-tabs")
+
+        # 1. Side-by-side playground
+        playground_tab = QWidget()
+        pt_layout = QVBoxLayout(playground_tab)
+        pt_layout.setContentsMargins(0, 8, 0, 0)
+        pt_layout.setSpacing(8)
+
         # Splitter columns
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(1)
@@ -581,67 +590,63 @@ class PromptLabWorkspace(QWidget):
         splitter.addWidget(self._col_b)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
-        right_layout.addWidget(splitter, 1)
+        pt_layout.addWidget(splitter, 1)
 
-        # Bottom tab widget (Diff and Tokenizer)
-        self._bottom_tabs = QTabWidget()
-        self._bottom_tabs.setObjectName("bottom-tabs")
-        
-        # 1. Diff tab
+        self._main_tabs.addTab(playground_tab, "A/B Playground")
+
+        # 2. Diff tab
         diff_tab = QWidget()
         dt_layout = QVBoxLayout(diff_tab)
         dt_layout.setContentsMargins(12, 12, 12, 12)
         dt_layout.setSpacing(6)
         dt_layout.addWidget(_section("DIFFERENCE VIEW (A vs B)"))
-        
+
         self._diff_view = QTextBrowser()
         self._diff_view.setPlaceholderText("Difference view will render here after both outputs complete...")
-        self._diff_view.setFixedHeight(140)
         self._diff_view.setToolTip("Inline comparison highlighting additions (green) and deletions (red) between Column A and B outputs")
-        dt_layout.addWidget(self._diff_view)
-        self._bottom_tabs.addTab(diff_tab, "Difference View")
-        
-        # 2. Tokenizer tab
+        dt_layout.addWidget(self._diff_view, 1)
+        self._main_tabs.addTab(diff_tab, "Difference View")
+
+        # 3. Tokenizer tab
         tokenizer_tab = QWidget()
         tok_layout = QVBoxLayout(tokenizer_tab)
         tok_layout.setContentsMargins(12, 12, 12, 12)
         tok_layout.setSpacing(8)
-        
+
         # Input row
         input_row = QWidget()
         ir_layout = QHBoxLayout(input_row)
         ir_layout.setContentsMargins(0, 0, 0, 0)
         ir_layout.setSpacing(10)
-        
+
         self._tok_input = QTextEdit()
         self._tok_input.setPlaceholderText("Type or paste text to tokenize...")
-        self._tok_input.setFixedHeight(50)
+        self._tok_input.setFixedHeight(80)
         self._tok_input.setToolTip("Enter text to visualize Byte-Pair Encoding (BPE) tokens")
         self._tok_input.textChanged.connect(self._on_tokenize_text_changed)
         ir_layout.addWidget(self._tok_input, 1)
-        
+
         btn_load_a = QPushButton("Load Output A")
         btn_load_a.setToolTip("Load Column A prompt output directly into tokenizer visualizer")
         btn_load_a.clicked.connect(self._load_output_a_to_tokenizer)
         ir_layout.addWidget(btn_load_a)
-        
+
         btn_load_b = QPushButton("Load Output B")
         btn_load_b.setToolTip("Load Column B prompt output directly into tokenizer visualizer")
         btn_load_b.clicked.connect(self._load_output_b_to_tokenizer)
         ir_layout.addWidget(btn_load_b)
-        
+
         tok_layout.addWidget(input_row)
-        
+
         # Output browser
         self._tok_output = QTextBrowser()
         self._tok_output.setPlaceholderText("Tokens will be visualized here...")
-        self._tok_output.setFixedHeight(120)
         self._tok_output.setToolTip("Tokens colored by type (special: red, punctuation: blue, word-start: purple, continuation: orange) with token IDs on hover")
-        tok_layout.addWidget(self._tok_output)
-        
-        self._bottom_tabs.addTab(tokenizer_tab, "Tokenizer Visualizer")
-        
-        right_layout.addWidget(self._bottom_tabs)
+        tok_layout.addWidget(self._tok_output, 1)
+
+        self._main_tabs.addTab(tokenizer_tab, "Tokenizer Visualizer")
+
+        right_layout.addWidget(self._main_tabs, 1)
 
         root.addWidget(right_widget, 1)
 

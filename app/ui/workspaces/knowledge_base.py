@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QLineEdit, QLabel,
     QListWidget, QListWidgetItem, QFileDialog,
     QSpinBox, QDoubleSpinBox, QFrame, QProgressBar,
-    QMessageBox,
+    QMessageBox, QTabWidget,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
@@ -64,188 +64,206 @@ class KnowledgeBaseWorkspace(QWidget):
         self._refresh_sources()
 
     def _build_ui(self):
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(12)
+        root.setSpacing(10)
+
+        # Title
+        title_row = QWidget()
+        tr = QHBoxLayout(title_row)
+        tr.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel("Knowledge Base")
+        lbl.setObjectName("lbl-accent")
+        lbl.setStyleSheet("font-size: 14pt; font-weight: bold; padding-bottom: 4px;")
+        tr.addWidget(lbl)
+        tr.addStretch()
+        
+        self._stats_lbl = QLabel("0 sources · 0 chunks")
+        self._stats_lbl.setObjectName("lbl-muted")
+        tr.addWidget(self._stats_lbl)
+        root.addWidget(title_row)
+
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_explorer_tab(), "Index Explorer")
+        self._tabs.addTab(self._build_ingest_tab(), "Ingestion Hub")
+        self._tabs.addTab(self._build_search_tab(), "Semantic Search")
+        root.addWidget(self._tabs, 1)
+
+    def _build_explorer_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QHBoxLayout(w)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(1)
-        splitter.addWidget(self._build_left())
-        splitter.addWidget(self._build_right())
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
 
-        root.addWidget(splitter)
+        # Left panel: list of sources + clear database
+        left = QWidget()
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(8)
+        ll.addWidget(_section("SOURCES"))
 
-    # ── left panel ────────────────────────────────────────────────────────────
+        self._source_list = QListWidget()
+        self._source_list.currentTextChanged.connect(self._on_source_selected)
+        self._source_list.setToolTip("Select a source document to inspect its ingested chunks")
+        ll.addWidget(self._source_list, 1)
 
-    def _build_left(self) -> QWidget:
+        clear_btn = QPushButton("clear database")
+        clear_btn.setObjectName("btn-danger")
+        clear_btn.setToolTip("Wipe the vector database index and all ingested document text")
+        clear_btn.clicked.connect(self._clear_index)
+        ll.addWidget(clear_btn)
+
+        splitter.addWidget(left)
+
+        # Right panel: chunk inspector
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(8)
+        rl.addWidget(_section("CHUNK INSPECTOR"))
+
+        self._source_inspector = QTextBrowser()
+        self._source_inspector.setPlaceholderText("Select a source document to inspect its chunks here...")
+        rl.addWidget(self._source_inspector, 1)
+
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+
+        layout.addWidget(splitter)
+        return w
+
+    def _build_ingest_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(16)
 
-        layout.addWidget(_section("KNOWLEDGE BASE"))
-
+        layout.addWidget(_section("DOCUMENT INGESTION"))
+        
         desc = QLabel(
-            "Manage documents and search indexes. Files are ingested, chunked, "
-            "embedded, and stored in a local vector database for Retrieval-Augmented Generation (RAG)."
+            "Extract text from local files (PDF, DOCX, TXT, MD, PY, CSV), split into overlapping "
+            "semantic chunks, compute sentence embeddings, and store them in the local vector DB."
         )
         desc.setObjectName("lbl-muted")
         desc.setWordWrap(True)
-        desc.setStyleSheet("font-size: 8.5pt; margin-bottom: 6px;")
         layout.addWidget(desc)
-
-        # stats row
-        self._stats_lbl = QLabel("0 sources · 0 chunks")
-        self._stats_lbl.setObjectName("lbl-muted")
-        layout.addWidget(self._stats_lbl)
-
-        # source list
-        self._source_list = QListWidget()
-        self._source_list.currentTextChanged.connect(self._on_source_selected)
-        layout.addWidget(self._source_list, 1)
-
-        # Ingest container
-        layout.addWidget(_hline())
-        layout.addWidget(_section("INGEST"))
 
         ingest_box = QWidget()
         ingest_box.setObjectName("panel")
         ib_layout = QVBoxLayout(ingest_box)
-        ib_layout.setContentsMargins(10, 10, 10, 10)
-        ib_layout.setSpacing(10)
+        ib_layout.setContentsMargins(16, 16, 16, 16)
+        ib_layout.setSpacing(14)
 
-        # Chunk size & overlap row
-        chunk_row = QWidget()
-        chunk_layout = QHBoxLayout(chunk_row)
-        chunk_layout.setContentsMargins(0, 0, 0, 0)
-        chunk_layout.setSpacing(6)
+        # Chunk parameters grid
+        chunk_grid = QHBoxLayout()
+        chunk_grid.setContentsMargins(0, 0, 0, 0)
+        chunk_grid.setSpacing(12)
 
-        chunk_layout.addWidget(QLabel("size"))
+        chunk_grid.addWidget(QLabel("Chunk Size (words):"))
         self._chunk_size_spin = QSpinBox()
         self._chunk_size_spin.setRange(50, 2000)
         self._chunk_size_spin.setSingleStep(50)
         self._chunk_size_spin.setValue(200)
-        self._chunk_size_spin.setFixedWidth(65)
-        self._chunk_size_spin.setToolTip("Size of text chunks in words")
-        chunk_layout.addWidget(self._chunk_size_spin)
+        self._chunk_size_spin.setFixedWidth(100)
+        self._chunk_size_spin.setToolTip("Target size of each text chunk in words")
+        chunk_grid.addWidget(self._chunk_size_spin)
 
-        chunk_layout.addSpacing(5)
-
-        chunk_layout.addWidget(QLabel("overlap"))
+        chunk_grid.addWidget(QLabel("Overlap (words):"))
         self._overlap_spin = QSpinBox()
         self._overlap_spin.setRange(0, 1000)
         self._overlap_spin.setSingleStep(10)
         self._overlap_spin.setValue(50)
-        self._overlap_spin.setFixedWidth(60)
-        self._overlap_spin.setToolTip("Number of overlapping words between consecutive chunks")
-        chunk_layout.addWidget(self._overlap_spin)
-        chunk_layout.addStretch()
-        ib_layout.addWidget(chunk_row)
+        self._overlap_spin.setFixedWidth(100)
+        self._overlap_spin.setToolTip("Overlapping words between consecutive text segments")
+        chunk_grid.addWidget(self._overlap_spin)
+        chunk_grid.addStretch()
 
-        # Add file button
-        ingest_btn = QPushButton("+ add file")
+        ib_layout.addLayout(chunk_grid)
+
+        # Ingest Action button
+        ingest_btn = QPushButton("+ Select and Ingest Document")
         ingest_btn.setObjectName("btn-primary")
-        ingest_btn.setToolTip("Extract text and split it into vector chunks to load into knowledge base")
+        ingest_btn.setFixedHeight(36)
+        ingest_btn.setToolTip("Browse and choose a file to ingest into the Knowledge Base")
         ingest_btn.clicked.connect(self._ingest_file)
         ib_layout.addWidget(ingest_btn)
 
-        # Progress indicator
+        # Progress bar
         self._progress = QProgressBar()
         self._progress.setVisible(False)
         self._progress.setRange(0, 0)  # indeterminate
         ib_layout.addWidget(self._progress)
 
-        # Status text
+        # Ingest Status Label
         self._ingest_status = QLabel("")
-        self._ingest_status.setObjectName("lbl-muted")
+        self._ingest_status.setObjectName("lbl-mid")
         self._ingest_status.setWordWrap(True)
         ib_layout.addWidget(self._ingest_status)
 
         layout.addWidget(ingest_box)
-        layout.addWidget(_hline())
+        layout.addStretch()
+        return w
 
-        # Retrieval container
-        layout.addWidget(_section("RETRIEVAL"))
+    def _build_search_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
 
-        ret_box = QWidget()
-        ret_box.setObjectName("panel")
-        ret_box_layout = QVBoxLayout(ret_box)
-        ret_box_layout.setContentsMargins(10, 10, 10, 10)
-        ret_box_layout.setSpacing(10)
+        layout.addWidget(_section("SEMANTIC RETRIEVAL TESTER"))
 
-        ret_row = QWidget()
-        ret_layout = QHBoxLayout(ret_row)
-        ret_layout.setContentsMargins(0, 0, 0, 0)
-        ret_layout.setSpacing(6)
+        # Parameters row
+        params_row = QWidget()
+        pl = QHBoxLayout(params_row)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(16)
 
-        ret_layout.addWidget(QLabel("threshold"))
+        pl.addWidget(QLabel("Distance Threshold:"))
         self._threshold_spin = QDoubleSpinBox()
         self._threshold_spin.setRange(0.0, 2.0)
         self._threshold_spin.setSingleStep(0.05)
         self._threshold_spin.setValue(self.state.rag_threshold)
-        self._threshold_spin.setToolTip(
-            "Maximum L2 distance score for retrieved chunks. Lower is more relevant."
-        )
-        self._threshold_spin.setFixedWidth(65)
+        self._threshold_spin.setFixedWidth(80)
+        self._threshold_spin.setToolTip("Max L2 distance allowed for search results (lower is tighter/more relevant)")
         self._threshold_spin.valueChanged.connect(self._on_threshold_changed)
-        ret_layout.addWidget(self._threshold_spin)
+        pl.addWidget(self._threshold_spin)
 
-        ret_layout.addSpacing(5)
-
-        ret_layout.addWidget(QLabel("top-k"))
+        pl.addWidget(QLabel("Retrieve Top-K Chunks:"))
         self._topk_spin = QSpinBox()
         self._topk_spin.setRange(1, 20)
         self._topk_spin.setValue(self.state.rag_top_k)
-        self._topk_spin.setToolTip("Number of relevant context chunks to retrieve")
-        self._topk_spin.setFixedWidth(50)
+        self._topk_spin.setFixedWidth(70)
+        self._topk_spin.setToolTip("Maximum number of relevant chunks to retrieve")
         self._topk_spin.valueChanged.connect(self._on_topk_changed)
-        ret_layout.addWidget(self._topk_spin)
+        pl.addWidget(self._topk_spin)
+        pl.addStretch()
+        layout.addWidget(params_row)
 
-        ret_layout.addStretch()
-        ret_box_layout.addWidget(ret_row)
-        layout.addWidget(ret_box)
-
-        # danger zone
-        layout.addStretch()
-        layout.addWidget(_hline())
-        clear_btn = QPushButton("clear index")
-        clear_btn.setObjectName("btn-danger")
-        clear_btn.setToolTip("Wipe the vector database index and documents metadata")
-        clear_btn.clicked.connect(self._clear_index)
-        layout.addWidget(clear_btn)
-        return w
-
-    # ── right panel ───────────────────────────────────────────────────────────
-
-    def _build_right(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        layout.addWidget(_section("SEARCH TEST"))
-
+        # Search Bar
         search_row = QWidget()
-        sr_layout = QHBoxLayout(search_row)
-        sr_layout.setContentsMargins(0, 0, 0, 0)
-        sr_layout.setSpacing(8)
+        sr = QHBoxLayout(search_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.setSpacing(8)
+
         self._search_input = QLineEdit()
-        self._search_input.setPlaceholderText("Enter query to test retrieval...")
-        self._search_input.setToolTip("Enter a search query to test retrieval relevance")
+        self._search_input.setPlaceholderText("Type a query and press enter to test vector search...")
         self._search_input.returnPressed.connect(self._run_search)
-        sr_layout.addWidget(self._search_input, 1)
-        search_btn = QPushButton("search")
-        search_btn.setToolTip("Query the vector database for matching chunks")
+        sr.addWidget(self._search_input, 1)
+
+        search_btn = QPushButton("Search Index")
+        search_btn.setObjectName("btn-primary")
         search_btn.clicked.connect(self._run_search)
-        sr_layout.addWidget(search_btn)
+        sr.addWidget(search_btn)
+
         layout.addWidget(search_row)
 
+        # Search results view
         self._search_results = QTextBrowser()
-        self._search_results.setPlaceholderText(
-            "Search results and chunk inspector will appear here."
-        )
+        self._search_results.setPlaceholderText("Search query results will be rendered here with distances and file references...")
         layout.addWidget(self._search_results, 1)
 
         return w
@@ -281,7 +299,7 @@ class KnowledgeBaseWorkspace(QWidget):
         if len(docs) > 20:
             lines.append(f"<div style='font-size:9pt;color:#505068;text-align:center;margin-top:8px;'>...and {len(docs) - 20} more chunks.</div>")
             
-        self._search_results.setHtml("".join(lines))
+        self._source_inspector.setHtml("".join(lines))
 
     def _ingest_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -366,6 +384,7 @@ class KnowledgeBaseWorkspace(QWidget):
             self.state.rag.clear_index()
             self._refresh_sources()
             self._search_results.clear()
+            self._source_inspector.clear()
             self._ingest_status.setText("index cleared")
 
     def _on_threshold_changed(self, val):

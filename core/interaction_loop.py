@@ -9,10 +9,15 @@ from app.engine.model_loader import ModelLoader
 # System prompt used when the custom_greeting adapter (or any adapter) is active.
 # This matches the training data, so the adapter fires correctly.
 _ADAPTER_SYSTEM_PROMPT = "Always respond in English."
+_RECENCY_INSTRUCTION = (
+    "Treat the latest user message as the active request; "
+    "use earlier turns only as context when relevant."
+)
 
 _BASE_SYSTEM_PROMPT = (
     "You are Karl, a precise and thoughtful AI assistant. "
     "Always respond in English. "
+    f"{_RECENCY_INSTRUCTION} "
     "Analyze and break down problems step-by-step. "
     "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
     "Double-check your derivations and arithmetic before writing the final answer."
@@ -166,6 +171,7 @@ def build_prompt(system_prompt, chat_history):
     default_sys_prompts = {
         "",
         "You are Karl, a precise and thoughtful AI assistant. Always respond in English. Analyze and break down problems step-by-step. Write down your detailed thoughts and calculations inside <think>...</think> blocks. Double-check your derivations and arithmetic before writing the final answer.",
+        "You are Karl, a precise and thoughtful AI assistant. Always respond in English. Treat the latest user message as the active request; use earlier turns only as context when relevant. Analyze and break down problems step-by-step. Write down your detailed thoughts and calculations inside <think>...</think> blocks. Double-check your derivations and arithmetic before writing the final answer.",
         "Always respond in English."
     }
     
@@ -188,6 +194,9 @@ def build_prompt(system_prompt, chat_history):
             effective_system = _BASE_SYSTEM_PROMPT + rag_context + codex_context
         else:
             effective_system = clean_sys + rag_context + codex_context
+
+    if _RECENCY_INSTRUCTION not in effective_system:
+        effective_system = (effective_system + "\n" if effective_system else "") + _RECENCY_INSTRUCTION
 
     # Determine if we should pre-seed `<think>\n`
     last_user_msg = ""
@@ -263,4 +272,3 @@ def build_prompt(system_prompt, chat_history):
             prompt += "<｜Assistant｜>"
 
     return prompt
-
