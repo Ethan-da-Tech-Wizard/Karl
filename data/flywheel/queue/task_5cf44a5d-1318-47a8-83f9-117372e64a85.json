@@ -1,0 +1,8 @@
+{
+  "id": "5cf44a5d-1318-47a8-83f9-117372e64a85",
+  "category": "coding_extended",
+  "problem_statement": "Write a python function `solve(strs: list[str]) -> list[list[str]]` that groups anagrams together. Two words are anagrams if they contain the same characters in different orders. The order of the groups and the words within the groups does not matter.\nReturn ONLY the python code for the function, enclosed in a python code block.",
+  "ground_truth_answer": "Function implementation of group_anagrams",
+  "verification_type": "unit_test",
+  "verification_script": "\ndef verify(response):\n    import re\n    code_match = re.search(r\"```python\\n([\\s\\S]*?)```\", response)\n    if not code_match:\n        code_match = re.search(r\"```\\n([\\s\\S]*?)```\", response)\n    if not code_match:\n        code = response\n    else:\n        code = code_match.group(1)\n        \n    sandbox = {}\n    try:\n        exec(code, sandbox)\n        if 'solve' not in sandbox:\n            return False\n        fn = sandbox['solve']\n        \n        # Custom checker for group anagrams\n        try:\n            res = fn([\"eat\", \"tea\", \"tan\", \"ate\", \"nat\", \"bat\"])\n            res_sorted = sorted([sorted(group) for group in res])\n            expected = sorted([sorted(group) for group in [[\"bat\"], [\"nat\", \"tan\"], [\"ate\", \"eat\", \"tea\"]]])\n            return res_sorted == expected\n        except Exception:\n            return False\n            \n    except Exception as e:\n        return False\n"
+}

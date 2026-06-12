@@ -1,0 +1,8 @@
+{
+  "id": "e1b88877-a641-480c-9caf-77d499699226",
+  "category": "arithmetic_3var",
+  "problem_statement": "Solve the following system of 3 linear equations to find the price of one apple, one banana, and one cherry. Show your work step-by-step.\n1) 2 apples, 3 bananas, and 3 cherrys cost a total of $65.\n2) 1 apples, 3 bananas, and 4 cherrys cost a total of $63.\n3) 4 apples, 4 bananas, and 2 cherrys cost a total of $84.\nState the final answer clearly in the format: price of apple = X, price of banana = Y, price of cherry = Z.",
+  "ground_truth_answer": "price of apple = 10, price of banana = 7, price of cherry = 8",
+  "verification_type": "exact_match",
+  "verification_script": "\ndef verify(response):\n    import re\n    resp_clean = response.replace(\" \", \"\").lower()\n    # Check if target values are present\n    if str(10) in resp_clean and str(7) in resp_clean and str(8) in resp_clean:\n        return True\n    return False\n"
+}

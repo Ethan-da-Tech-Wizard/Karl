@@ -1,0 +1,8 @@
+{
+  "id": "05688ba5-95d2-4207-a6fd-d26efc3380e0",
+  "category": "arithmetic",
+  "problem_statement": "Solve the following system of equations to find the price of one book and one pen. Show your work.\n1) 5 books and 5 pens cost a total of $145.\n2) 2 books and 4 pens cost a total of $86.\nState the final answer clearly in the format: price of book = X, price of pen = Y.",
+  "ground_truth_answer": "price of book = 15, price of pen = 14",
+  "verification_type": "exact_match",
+  "verification_script": "\ndef verify(response):\n    import re\n    # Look for integers matching the target prices\n    pat1 = r\"15\"\n    pat2 = r\"14\"\n    # Simple regex search in response\n    resp_clean = response.replace(\" \", \"\").lower()\n    val1 = f\"book=\" + pat1\n    val1_alt = f\"bookis\" + pat1\n    val2 = f\"pen=\" + pat2\n    val2_alt = f\"penis\" + pat2\n    \n    # Check if correct numbers are present in response text\n    if str(15) in resp_clean and str(14) in resp_clean:\n        return True\n    return False\n"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "3793ccf3-3351-4cb3-844c-c64e37d80e29",
+  "category": "symbolic_reasoning",
+  "problem_statement": "A complete undirected graph (K_10) has 10 vertices. Calculate the total number of edges in this graph. Explain your reasoning and state the final count of edges clearly as a single integer.",
+  "ground_truth_answer": "45",
+  "verification_type": "symbolic_match",
+  "verification_script": "\ndef verify(response):\n    import re\n    # Find any numbers in the response\n    numbers = re.findall(r\"\\b\\d+\\b\", response)\n    # Check if the target number is in the numbers list\n    if str(45) in numbers:\n        return True\n    return False\n"
+}

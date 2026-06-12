@@ -1,0 +1,8 @@
+{
+  "id": "8a153309-94c8-4db5-a0d9-086fe1e3aa4b",
+  "category": "arithmetic",
+  "problem_statement": "Solve the following system of equations to find the price of one apple and one banana. Show your work.\n1) 3 apples and 5 bananas cost a total of $67.\n2) 5 apples and 3 bananas cost a total of $69.\nState the final answer clearly in the format: price of apple = X, price of banana = Y.",
+  "ground_truth_answer": "price of apple = 9, price of banana = 8",
+  "verification_type": "exact_match",
+  "verification_script": "\ndef verify(response):\n    import re\n    # Look for integers matching the target prices\n    pat1 = r\"9\"\n    pat2 = r\"8\"\n    # Simple regex search in response\n    resp_clean = response.replace(\" \", \"\").lower()\n    val1 = f\"apple=\" + pat1\n    val1_alt = f\"appleis\" + pat1\n    val2 = f\"banana=\" + pat2\n    val2_alt = f\"bananais\" + pat2\n    \n    # Check if correct numbers are present in response text\n    if str(9) in resp_clean and str(8) in resp_clean:\n        return True\n    return False\n"
+}

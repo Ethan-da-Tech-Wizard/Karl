@@ -1,0 +1,8 @@
+{
+  "id": "3fbc7998-40ad-46a1-ae3d-1e81edcb760e",
+  "category": "coding_extended",
+  "problem_statement": "Write a python function `solve(s: str) -> bool` that returns True if the input string `s` has balanced parentheses (including '()', '[]', and '{}'), and False otherwise.\nReturn ONLY the python code for the function, enclosed in a python code block.",
+  "ground_truth_answer": "Function implementation of is_balanced_parentheses",
+  "verification_type": "unit_test",
+  "verification_script": "\ndef verify(response):\n    import re\n    code_match = re.search(r\"```python\\n([\\s\\S]*?)```\", response)\n    if not code_match:\n        code_match = re.search(r\"```\\n([\\s\\S]*?)```\", response)\n    if not code_match:\n        code = response\n    else:\n        code = code_match.group(1)\n        \n    sandbox = {}\n    try:\n        exec(code, sandbox)\n        if 'solve' not in sandbox:\n            return False\n        fn = sandbox['solve']\n        test_cases = [('()', True), ('()[]{}', True), ('(]', False), ('([)]', False), ('{[]}', True), ('', True)]\n        for inp, expected in test_cases:\n            if fn(inp) != expected:\n                return False\n        return True\n    except Exception as e:\n        return False\n"
+}

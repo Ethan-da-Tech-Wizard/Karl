@@ -1,0 +1,8 @@
+{
+  "id": "3a262337-289c-4633-877a-d1b5bcafe643",
+  "category": "symbolic_reasoning",
+  "problem_statement": "A complete undirected graph (K_4) has 4 vertices. Calculate the total number of edges in this graph. Explain your reasoning and state the final count of edges clearly as a single integer.",
+  "ground_truth_answer": "6",
+  "verification_type": "symbolic_match",
+  "verification_script": "\ndef verify(response):\n    import re\n    # Find any numbers in the response\n    numbers = re.findall(r\"\\b\\d+\\b\", response)\n    # Check if the target number is in the numbers list\n    if str(6) in numbers:\n        return True\n    return False\n"
+}
