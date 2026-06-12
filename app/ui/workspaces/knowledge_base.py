@@ -324,6 +324,8 @@ class KnowledgeBaseWorkspace(QWidget):
         # Search results view
         self._search_results = QTextBrowser()
         self._search_results.setPlaceholderText("Search query results will be rendered here with distances and file references...")
+        self._search_results.setOpenLinks(False)
+        self._search_results.anchorClicked.connect(self._handle_search_result_link)
         layout.addWidget(self._search_results, 1)
 
         return w
@@ -540,20 +542,52 @@ class KnowledgeBaseWorkspace(QWidget):
             f"<div style='font-size:11pt;color:#00C2FF;font-weight:bold;margin-bottom:4px;'>Search Results for: <i>{html.escape(query)}</i></div>"
             f"<div style='font-size:9pt;color:#9090A8;margin-bottom:12px;'>Found {len(results)} chunks:</div>"
         ]
-        for r in results:
+        for idx, r in enumerate(results):
             dist = r["distance"]
-            dist_color = "#2DD4A0" if dist < 0.4 else ("#F0B030" if dist < 0.8 else "#F05050")
+            rank = r.get("rank", idx + 1)
+            dist_color = "#2DD4A0" if dist < 0.3 else ("#F0B030" if dist <= 0.7 else "#F05050")
+            
+            # Calculate distance bar percentage (dist / threshold)
+            bar_threshold = threshold if threshold > 0.0 else 1.0
+            pct = min(100.0, max(0.0, (dist / bar_threshold) * 100.0))
+            
+            bar_html = (
+                f"<div style='margin-top:8px;background:#1e1e30;border-radius:3px;height:6px;width:100%;overflow:hidden;'>"
+                f"<div style='background:{dist_color};height:100%;width:{pct:.1f}%;border-radius:3px;'></div>"
+                f"</div>"
+                f"<div style='font-size:7.5pt;color:#9090A8;margin-top:2px;'>Distance score relative to threshold: {pct:.1f}%</div>"
+            )
+
             lines.append(
                 f"<div style='background:#141424;border:1px solid #28283f;border-radius:6px;padding:12px;margin-bottom:12px;'>"
                 f"<div style='font-size:8.5pt;color:#9090A8;margin-bottom:6px;font-weight:bold;'>"
                 f"<span style='color:#00C2FF;'>📄 {html.escape(r['source_file'])}</span>"
                 f" &nbsp;&middot;&nbsp; <span>Chunk {r['chunk_id']}</span>"
                 f" &nbsp;&middot;&nbsp; <span style='background:rgba(240,176,48,0.06); border:1px solid {dist_color}; border-radius:3px; padding:1px 5px; color:{dist_color};'>dist: {dist:.4f}</span>"
+                f" &nbsp;&middot;&nbsp; <span style='background:rgba(0,194,255,0.06); border:1px solid #00C2FF; border-radius:3px; padding:1px 5px; color:#00C2FF;'>Rank: {rank}</span>"
+                f" <a href='copy:{r['chunk_id']}' style='color:#00C2FF;text-decoration:none;font-weight:bold;float:right;background:#1A1A2F;border:1px solid #00C2FF;border-radius:3px;padding:1px 6px;font-size:7.5pt;'>Copy chunk</a>"
                 f"</div>"
                 f"<div style='font-size:9.5pt;color:#ECECF5;white-space:pre-wrap;line-height:1.5;'>{html.escape(r['text'])}</div>"
+                f"{bar_html}"
                 f"</div>"
             )
         self._search_results.setHtml("".join(lines))
+
+    def _handle_search_result_link(self, url):
+        link = url.toString()
+        if link.startswith("copy:"):
+            try:
+                chunk_id = int(link.split(":")[1])
+                for doc in self.state.rag.documents:
+                    if doc.get("chunk_id") == chunk_id:
+                        from PyQt6.QtGui import QGuiApplication
+                        clipboard = QGuiApplication.clipboard()
+                        clipboard.setText(doc["text"])
+                        self._ingest_status.setText(f"Copied chunk {chunk_id} to clipboard")
+                        break
+            except Exception as e:
+                import logging
+                logging.getLogger("karl.kb").warning(f"Failed to copy chunk: {e}")
 
     def _clear_index(self):
         reply = QMessageBox.question(

@@ -247,21 +247,15 @@ class RAGPipeline:
     def retrieve(
         self,
         query: str,
-        top_k: int = 3,
+        top_k: int = 5,
         source_filter: str | None = None,
-        threshold: float = 0.0,
-    ) -> list[str]:
+        threshold: float = 1.0,
+        with_attribution: bool = False,
+    ) -> list[str] | list[dict]:
         """
-        Retrieve top-k chunks relevant to `query`.
-
-        Args:
-            query:         User query string.
-            top_k:         Number of chunks to return.
-            source_filter: If set, restrict results to chunks from this filename.
-            threshold:     Max L2 distance. 0.0 = no filtering.
-
-        Returns:
-            List of text strings (with optional contextual headers prepended).
+        Retrieve relevant chunks. 
+        with_attribution=True returns List[dict] with full metadata.
+        with_attribution=False (default) returns List[str] for backward compatibility.
         """
         results = self.retrieve_with_metadata(
             query,
@@ -271,13 +265,33 @@ class RAGPipeline:
         )
 
         formatted = []
-        for r in results:
+        for i, r in enumerate(results):
             text = r["text"]
             if self.contextual_headers:
                 header = f"[Source: {r['source_file']} | Chunk {r['chunk_id']}]\n"
                 text = header + text
-            formatted.append(text)
-        return formatted
+            formatted.append({
+                "text":        text,
+                "source_file": r.get("source_file", ""),
+                "chunk_id":    r.get("chunk_id", i),
+                "distance":    float(r.get("distance", 0.0)),
+                "rank":        i + 1,
+                "ingested_at": r.get("ingested_at", ""),
+            })
+
+        if with_attribution:
+            return formatted
+        return [r["text"] for r in formatted]
+
+    def retrieve_with_attribution(
+        self,
+        query: str,
+        top_k: int = 5,
+        source_filter: str | None = None,
+        threshold: float = 1.0,
+    ) -> list[dict]:
+        """Always returns List[dict] with full attribution metadata."""
+        return self.retrieve(query, top_k, source_filter, threshold, with_attribution=True)
 
 
     def retrieve_with_metadata(

@@ -137,8 +137,40 @@ def test_rag_pipeline_retrieve_with_metadata_threshold():
         shutil.rmtree(temp_dir)
 
 
+def test_rag_pipeline_attribution():
+    """Test retrieve with attribution parameter and retrieve_with_attribution wrapper."""
+    import pytest
+    from tests.conftest import embedding_model_available
+    if not embedding_model_available():
+        pytest.skip("sentence-transformers embedding model is unavailable")
+
+    temp_dir = tempfile.mkdtemp()
+    try:
+        pipeline = RAGPipeline(index_path=temp_dir)
+        pipeline.ingest_text("Deep learning models are neural networks.", source_name="doc1.txt")
+        
+        # Test retrieve with with_attribution=True
+        res = pipeline.retrieve("neural networks", top_k=5, with_attribution=True)
+        assert len(res) > 0
+        assert isinstance(res[0], dict)
+        assert "text" in res[0]
+        assert "source_file" in res[0]
+        assert "distance" in res[0]
+        assert "rank" in res[0]
+        assert res[0]["source_file"] == "doc1.txt"
+
+        # Test retrieve_with_attribution wrapper
+        res2 = pipeline.retrieve_with_attribution("neural networks", top_k=5)
+        assert len(res2) > 0
+        assert isinstance(res2[0], dict)
+        assert res2[0]["text"] == res[0]["text"]
+    finally:
+        shutil.rmtree(temp_dir)
+
+
 if __name__ == "__main__":
     test_rag_pipeline_chunking()
     test_rag_pipeline_ingestion_and_retrieval()
     test_rag_pipeline_retrieve_with_metadata_threshold()
+    test_rag_pipeline_attribution()
     print("All RAG pipeline unit tests PASSED!")
