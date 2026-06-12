@@ -31,11 +31,13 @@ from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
 from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
 from app.engine.image_analysis_thread import ImageAnalysisThread
+from app.engine import hot_reload
 from core.workflows import list_workflows
 from app.utils.session_tree import SessionTree
 from app.ui.widgets.tracing_panel import TracingPanel
 from app.ui.themes import get_theme_colors
 from app.ui.widgets.symbolic_icon import IconBtn, GearIcon, HamburgerIcon, BrainIcon
+from app.ui.widgets.toast import ToastOverlay
 
 from app.ui.workspaces.workbench.chat_view import ChatView
 from app.ui.workspaces.workbench.profiles import AGENT_PROFILES
@@ -108,6 +110,10 @@ class WorkbenchWorkspace(QMainWindow):
         self._refresh_model_combo()
         self._update_expert_strip()
         self._update_token_budget()
+
+        # Hot-reload global signals
+        hot_reload.signals.reload_success.connect(self._on_reload_success)
+        hot_reload.signals.reload_failed.connect(self._on_reload_failed)
 
 
     # ── build ─────────────────────────────────────────────────────────────────
@@ -851,6 +857,36 @@ class WorkbenchWorkspace(QMainWindow):
             color = "#FF3366"  # red
             
         self._token_bar.setStyleSheet(f"QProgressBar#token-budget-bar::chunk {{ background-color: {color}; }}")
+
+    def _on_reload_success(self, label: str):
+        toast = ToastOverlay(self, f"⟳ {label} reloaded successfully")
+        toast.show_toast()
+
+    def _on_reload_failed(self, label: str, tb_str: str):
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Critical)
+        msg.setWindowTitle("Hot-Reload Failed")
+        msg.setText(f"Failed to reload <b>{label}</b> due to an error.")
+        msg.setInformativeText("Karl will keep using the last stable version of the script.")
+        msg.setDetailedText(tb_str)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        
+        # Style the dialog to match Karl's theme
+        colors = get_theme_colors(self.state)
+        msg.setStyleSheet(f"""
+            QMessageBox {{ background-color: {colors.get('bg_base', '#0D0D16')}; color: {colors.get('text_hi', '#E4E4F0')}; }}
+            QLabel {{ color: {colors.get('text_hi', '#E4E4F0')}; }}
+            QPushButton {{ 
+                background-color: {colors.get('bg_raised', '#1C1C2A')}; 
+                color: {colors.get('text_hi', '#E4E4F0')}; 
+                border: 1px solid {colors.get('border', '#252535')};
+                padding: 4px 12px;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{ background-color: {colors.get('bg_surface', '#14141F')}; }}
+            QTextEdit {{ background-color: {colors.get('bg_deep', '#07070D')}; color: {colors.get('think_text', '#505080')}; font-family: 'JetBrains Mono', monospace; }}
+        """)
+        msg.exec()
 
     def _show_reload_notice(self, module_name: str):
         self._reload_notice.setText(f"⟳ {module_name} reloaded")

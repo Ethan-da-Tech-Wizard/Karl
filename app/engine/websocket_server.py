@@ -12,6 +12,7 @@ import asyncio
 import threading
 import re
 import uuid
+from datetime import datetime, timezone
 import websockets
 from typing import Set, Optional, Any
 from PyQt6.QtCore import Qt
@@ -50,6 +51,7 @@ class WebSocketServerManager:
     def __init__(self, port: int = 8080):
         self.port = port
         self.clients: Set[Any] = set()
+        self.client_metadata = {} # client -> {id, ip, latency}
         self.client_histories = {}
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.loop_thread: Optional[threading.Thread] = None
@@ -537,9 +539,21 @@ class WebSocketServerManager:
             logger.info("Server stopped.")
 
     async def _handler(self, websocket, path=None):
+        client_id = str(uuid.uuid4())[:8]
+        ip = "unknown"
+        try:
+            ip = websocket.remote_address[0]
+        except Exception:
+            pass
+        
         self.clients.add(websocket)
+        self.client_metadata[websocket] = {
+            "id": client_id,
+            "ip": ip,
+            "connected_at": datetime.now(timezone.utc).isoformat()
+        }
         self.client_histories[websocket] = []
-        logger.info(f"Client connected: {websocket.remote_address}")
+        logger.info(f"Client connected: {websocket.remote_address} (ID: {client_id})")
         try:
             async for message in websocket:
                 try:
@@ -898,8 +912,28 @@ class WebSocketServerManager:
             pass
         finally:
             self.clients.discard(websocket)
+            self.client_metadata.pop(websocket, None)
             self.client_histories.pop(websocket, None)
             logger.info(f"Client disconnected: {websocket.remote_address}")
+
+    def get_client_info(self) -> list[dict]:
+        """Returns metadata for all connected clients. Thread-safe."""
+        info = []
+        for ws, meta in list(self.client_metadata.items()):
+            latency = -1.0
+            try:
+                # websockets.connection.latency is in seconds
+                latency = ws.latency * 1000.0 # ms
+            except Exception:
+                pass
+            
+            info.append({
+                "id": meta.get("id"),
+                "ip": meta.get("ip"),
+                "latency_ms": latency,
+                "connected_at": meta.get("connected_at")
+            })
+        return info
 
     def _send_notification(self, method: str, params: dict):
         """Dispatches notification thread-safely into the background event loop."""

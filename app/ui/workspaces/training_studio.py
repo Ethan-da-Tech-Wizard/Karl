@@ -168,6 +168,15 @@ class TrainingThread(QThread):
 
             trainer.train()
 
+            # Save training history
+            try:
+                history_path = os.path.join(adapter_path, "train_history.json")
+                with open(history_path, "w", encoding="utf-8") as fh:
+                    json.dump(trainer.state.log_history, fh, indent=2)
+                self.log.emit(f"Saved training history to {history_path}")
+            except Exception as he:
+                self.log.emit(f"Failed to save training history: {he}")
+
             self.log.emit("Saving PyTorch adapter model weights...")
             trainer.model.save_pretrained(adapter_path)
             tokenizer.save_pretrained(adapter_path)

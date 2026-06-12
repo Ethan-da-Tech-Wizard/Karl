@@ -12,6 +12,7 @@ _ITEMS = [
     ("☄", "Swarm",      6),
     ("≡", "System",     7),
     ("▤", "Codex",      8),
+    ("⟳", "Flywheel",    9),
 ]
 
 
@@ -60,6 +61,7 @@ class Sidebar(QWidget):
             6: "Swarm Studio (dependency layers, task states, verification, and tracebacks)",
             7: "System Config (Hardware readout & model loader settings)",
             8: "Codex (Prompt taxonomy & information guide)",
+            9: "Flywheel Studio (Telemetry & fine-tuning loop metrics)",
         }
         self._buttons: list[_SidebarButton] = []
         for icon, label, idx in _ITEMS:

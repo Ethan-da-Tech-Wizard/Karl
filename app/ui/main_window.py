@@ -26,6 +26,7 @@ from app.ui.workspaces.eval_suite import EvalSuiteWorkspace
 from app.ui.workspaces.system_config import SystemConfigWorkspace
 from app.ui.workspaces.docs import DocsWorkspace
 from app.ui.workspaces.swarm_studio import SwarmStudioWorkspace
+from app.ui.workspaces.flywheel_studio import FlywheelStudioWorkspace
 
 
 logger = logging.getLogger("karl.main_window")
@@ -78,10 +79,11 @@ class MainWindow(QMainWindow):
         self._palette_shortcut_p = QShortcut(QKeySequence("Ctrl+P"), self)
         self._palette_shortcut_p.activated.connect(self._open_command_palette)
         
-        # Workspace switching (Ctrl+1 to Ctrl+8)
+        # Workspace switching (Ctrl+1 to Ctrl+0)
         self._workspace_shortcuts = []
-        for idx in range(8):
-            shortcut = QShortcut(QKeySequence(f"Ctrl+{idx+1}"), self)
+        for idx in range(10):
+            key = f"Ctrl+{idx+1}" if idx < 9 else "Ctrl+0"
+            shortcut = QShortcut(QKeySequence(key), self)
             # Use a helper slot to avoid lambda cell capture issues
             shortcut.activated.connect(self._make_workspace_switcher(idx))
             self._workspace_shortcuts.append(shortcut)
@@ -142,9 +144,10 @@ class MainWindow(QMainWindow):
         self._eval           = EvalSuiteWorkspace(self._state)
         self._swarm          = SwarmStudioWorkspace(self._state)
         self._system         = SystemConfigWorkspace(self._state)
-        self._system.set_workbench(self._workbench)
         self._docs           = DocsWorkspace(self._state)
         self._docs.set_workbench(self._workbench)
+        self._flywheel       = FlywheelStudioWorkspace(self._state)
+        self._system.set_workbench(self._workbench) # system config knows about workbench
 
         for ws in (
             self._workbench,
@@ -156,6 +159,7 @@ class MainWindow(QMainWindow):
             self._swarm,
             self._system,
             self._docs,
+            self._flywheel,
         ):
             self._stack.addWidget(ws)
 
