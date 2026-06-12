@@ -38,6 +38,11 @@ def test_rag_pipeline_chunking():
 
 def test_rag_pipeline_ingestion_and_retrieval():
     """Test full file ingestion, vector index save/load, metadata filters, and thresholding."""
+    import pytest
+    from tests.conftest import embedding_model_available
+    if not embedding_model_available():
+        pytest.skip("sentence-transformers embedding model is unavailable (offline and not cached)")
+
     temp_dir = tempfile.mkdtemp()
     try:
         pipeline = RAGPipeline(index_path=temp_dir)

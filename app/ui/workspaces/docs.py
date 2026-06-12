@@ -87,10 +87,17 @@ class DocsWorkspace(QWidget):
                 except Exception as e:
                     print(f"[Codex] Error reading {f}: {e}")
 
-        # Auto-ingest Codex files into codex_rag index if it is empty
+        # Auto-ingest Codex files into codex_rag index if it is empty.
+        # Ingestion needs the embedding model; if it is unavailable (offline
+        # machine without a cached model) Codex search degrades gracefully
+        # instead of crashing the app at startup.
         if hasattr(self.state, "codex_rag") and self.state.codex_rag.total_chunks == 0:
             for topic_name, item in self._cache.items():
-                self.state.codex_rag.ingest_file(item["filepath"])
+                try:
+                    self.state.codex_rag.ingest_file(item["filepath"])
+                except Exception as e:
+                    print(f"[Codex] Could not ingest {topic_name} into codex RAG index: {e}")
+                    break
 
     def _build_ui(self):
         root = QHBoxLayout(self)

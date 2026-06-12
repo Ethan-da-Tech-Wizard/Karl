@@ -38,6 +38,10 @@ class TestUIImprovements(unittest.TestCase):
         self.assertNotEqual(warm_colors["bg_deep"], base_colors["bg_deep"])
 
     def test_codex_library_loading_and_search(self):
+        from tests.conftest import embedding_model_available
+        if not embedding_model_available():
+            self.skipTest("sentence-transformers embedding model is unavailable (offline and not cached)")
+
         from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
         from app.ui.workspaces.docs import DocsWorkspace
         from app.state import AppState
@@ -163,6 +167,10 @@ class TestUIImprovements(unittest.TestCase):
         self.assertIsNotNone(workspace._cached_adapters_list)
 
     def test_codex_rag_features(self):
+        from tests.conftest import embedding_model_available
+        if not embedding_model_available():
+            self.skipTest("sentence-transformers embedding model is unavailable (offline and not cached)")
+
         from app.state import AppState
         from app.ui.workspaces.docs import DocsWorkspace
         from app.ui.workspaces.workbench import WorkbenchWorkspace

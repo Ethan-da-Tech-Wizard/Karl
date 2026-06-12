@@ -5,6 +5,7 @@ import unittest.mock as mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.hardware_scout import get_hardware_profile
+from tests.conftest import requires_gputil
 
 
 def test_hardware_profile_structure():
@@ -25,6 +26,7 @@ def test_hardware_profile_structure():
     assert profile["storage_gb"] >= 0.0
 
 
+@requires_gputil
 def test_hardware_profile_gpu_mocking():
     """Verify VRAM scanning behavior when GPUtil returns mock GPU specs."""
     class DummyGPU:
@@ -39,6 +41,7 @@ def test_hardware_profile_gpu_mocking():
         assert profile["vram_gb"] == 8.0
 
 
+@requires_gputil
 def test_hardware_profile_gpu_exception_fallback():
     """Verify clean fallback to 0.0 GB VRAM when GPUtil throws an error."""
     with mock.patch("GPUtil.getGPUs") as mock_get_gpus:
