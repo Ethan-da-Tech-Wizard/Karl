@@ -261,5 +261,8 @@
   },
   "devDependencies": {
     "eslint": "^8.57.0"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
   }
 }

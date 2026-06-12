@@ -1,6 +1,8 @@
+// @ts-check
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const WebSocket = require('ws');
 const { writeTempFileAndDiff } = require('./fileOps');
 const { getGitBranch } = require('./gitOps');
 const {
@@ -9,6 +11,18 @@ const {
     runWorkflowById,
     sendActiveFileToKb
 } = require('./commands');
+
+/**
+ * @typedef {Object} PendingEdit
+ * @property {string} filepath
+ * @property {string} content
+ * @property {string} summary
+ * @property {string} filename
+ * @property {number} oldLines
+ * @property {number} newLines
+ * @property {string} status
+ * @property {string} [backupPath]
+ */
 
 function getDiagnosticsStats() {
     const severityName = ['error', 'warning', 'info', 'hint'];
@@ -24,6 +38,10 @@ function getDiagnosticsStats() {
 
 let sendStateTimeout = null;
 
+/**
+ * Sends current active editor state, git branch, diagnostics, and edits count.
+ * @param {KarlSidebarProvider} sidebarProvider
+ */
 function sendActiveStateToWebview(sidebarProvider) {
     if (sendStateTimeout) {
         clearTimeout(sendStateTimeout);
@@ -33,7 +51,12 @@ function sendActiveStateToWebview(sidebarProvider) {
         try {
             const workspacePath = currentWorkspacePath('');
             const activeFile = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.document.uri.fsPath : '';
-            const gitBranch = await getGitBranch(workspacePath);
+            
+            if (!sidebarProvider._cachedBranch && workspacePath) {
+                sidebarProvider._cachedBranch = await getGitBranch(workspacePath);
+            }
+            const gitBranch = sidebarProvider._cachedBranch;
+            
             const diagnostics = getDiagnosticsStats();
             const diagnosticsDetails = groupedDiagnostics(false);
             const pendingEditsCount = sidebarProvider.pendingEdits ? sidebarProvider.pendingEdits.size : 0;
@@ -64,17 +87,268 @@ function sendActiveStateToWebview(sidebarProvider) {
 }
 
 class KarlSidebarProvider {
+    /**
+     * @param {vscode.ExtensionContext} context
+     */
     constructor(context) {
+        /** @type {vscode.ExtensionContext} */
         this.context = context;
+        /** @type {vscode.Uri} */
         this.extensionUri = context.extensionUri;
+        /** @type {vscode.WebviewView | null} */
         this.webviewView = null;
-        this.pendingEdits = new Map();
+        
+        /** @type {Map<string, PendingEdit>} */
+        const savedEdits = context.workspaceState.get('karl.pendingEdits', []);
+        this.pendingEdits = new Map(savedEdits);
+        
+        /** @type {(() => void) | null} */
         this._resolveWebview = null;
+        /** @type {boolean} */
         this.isReady = false;
+        /** @type {any[]} */
         this.messageQueue = [];
+
+        // WebSocket properties
+        /** @type {WebSocket | null} */
+        this.socket = null;
+        /** @type {NodeJS.Timeout | null} */
+        this.reconnectTimer = null;
+        /** @type {NodeJS.Timeout | null} */
+        this.heartbeatTimer = null;
+        /** @type {boolean} */
+        this.manualDisconnect = false;
+        /** @type {string} */
+        this.connectionState = 'offline';
+        /** @type {Date | null} */
+        this.lastHeartbeatAt = null;
+        /** @type {Date | null} */
+        this.lastConnectedAt = null;
+        /** @type {string} */
+        this.lastBridgeError = '';
+
+        // Git branch caching properties
+        /** @type {string} */
+        this._cachedBranch = '';
+        /** @type {vscode.FileSystemWatcher | null} */
+        this._gitWatcher = null;
+
+        this._initGitWatcher();
+        vscode.workspace.onDidChangeWorkspaceFolders(() => {
+            this._cachedBranch = '';
+            this._initGitWatcher();
+            sendActiveStateToWebview(this);
+        });
+    }
+
+    /**
+     * Persists pending edits to workspaceState.
+     * @private
+     */
+    _savePendingEdits() {
+        this.context.workspaceState.update('karl.pendingEdits', Array.from(this.pendingEdits.entries()));
+    }
+
+    /**
+     * Initializes the git branch watcher.
+     * @private
+     */
+    _initGitWatcher() {
+        if (this._gitWatcher) {
+            this._gitWatcher.dispose();
+        }
+        const workspacePath = currentWorkspacePath('');
+        if (!workspacePath) return;
+
+        const pattern = new vscode.RelativePattern(workspacePath, '.git/HEAD');
+        this._gitWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+        const clearCache = () => {
+            this._cachedBranch = '';
+            sendActiveStateToWebview(this);
+        };
+
+        this._gitWatcher.onDidChange(clearCache);
+        this._gitWatcher.onDidCreate(clearCache);
+        this._gitWatcher.onDidDelete(clearCache);
+    }
+
+    /**
+     * Connects to the Karl WebSocket server.
+     * @param {number} [port]
+     */
+    connectToBridge(port) {
+        if (this.socket) {
+            this.teardownSocket();
+        }
+
+        const config = vscode.workspace.getConfiguration('karl');
+        const activePort = port !== undefined ? port : config.get('port', 8080);
+
+        this.lastBridgeError = '';
+        this._setConnectionState('connecting', 'Connecting');
+
+        try {
+            this.socket = new WebSocket(`ws://localhost:${activePort}`);
+        } catch (err) {
+            this.lastBridgeError = err.message || 'Connection failed';
+            this._handleDisconnect(true);
+            return;
+        }
+
+        this.socket.on('open', () => {
+            this.lastConnectedAt = new Date();
+            this._setConnectionState('connected', 'Connected');
+            if (this.reconnectTimer) {
+                clearInterval(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
+            this._startHeartbeat();
+        });
+
+        this.socket.on('message', (rawData) => {
+            try {
+                const data = JSON.parse(rawData.toString());
+                
+                // Intercept status update response (heartbeat result)
+                if (data && data.id === 30 && data.result) {
+                    this.lastHeartbeatAt = new Date();
+                }
+
+                // Forward message to webview
+                this.postMessageToWebview({
+                    command: 'socket_message',
+                    data
+                });
+            } catch (err) {
+                console.error('[Host Bridge Error] Malformed JSON:', err);
+            }
+        });
+
+        this.socket.on('error', (err) => {
+            this.lastBridgeError = err.message || 'Connection failed';
+            this._handleDisconnect(true);
+        });
+
+        this.socket.on('close', () => {
+            this._handleDisconnect(false);
+        });
+    }
+
+    /**
+     * Closes the active WebSocket socket.
+     */
+    teardownSocket() {
+        this._stopHeartbeat();
+        if (this.socket) {
+            this.socket.removeAllListeners('open');
+            this.socket.removeAllListeners('message');
+            this.socket.removeAllListeners('error');
+            this.socket.removeAllListeners('close');
+            try {
+                if (this.socket.readyState === WebSocket.CONNECTING || this.socket.readyState === WebSocket.OPEN) {
+                    this.socket.close();
+                }
+            } catch {}
+            this.socket = null;
+        }
+        if (this.reconnectTimer) {
+            clearInterval(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+    }
+
+    /**
+     * Handles connection disconnect and auto-reconnection.
+     * @param {boolean} [isError]
+     * @private
+     */
+    _handleDisconnect(isError = false) {
+        this.teardownSocket();
+        this._setConnectionState('offline', isError ? 'Error' : 'Offline');
+
+        const config = vscode.workspace.getConfiguration('karl');
+        const autoConnect = config.get('autoConnect', true);
+
+        if (autoConnect && !this.manualDisconnect && !this.reconnectTimer) {
+            let nextReconnectSec = 5;
+            this._setConnectionState('offline', `Reconnecting in ${nextReconnectSec}s`);
+            this.reconnectTimer = setInterval(() => {
+                nextReconnectSec--;
+                if (nextReconnectSec <= 0) {
+                    clearInterval(this.reconnectTimer);
+                    this.reconnectTimer = null;
+                    const port = config.get('port', 8080);
+                    this.connectToBridge(port);
+                } else {
+                    this._setConnectionState('offline', `Reconnecting in ${nextReconnectSec}s`);
+                }
+            }, 1000);
+        }
+    }
+
+    /**
+     * Starts the heartbeat loop.
+     * @private
+     */
+    _startHeartbeat() {
+        this._stopHeartbeat();
+        this._sendHeartbeatRpc();
+        this.heartbeatTimer = setInterval(() => {
+            this._sendHeartbeatRpc();
+        }, 4000);
+    }
+
+    /**
+     * Stops the heartbeat loop.
+     * @private
+     */
+    _stopHeartbeat() {
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+    }
+
+    /**
+     * Sends a status check RPC.
+     * @private
+     */
+    _sendHeartbeatRpc() {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({
+                jsonrpc: '2.0',
+                id: 30,
+                method: 'get_runtime_status'
+            }));
+        }
+    }
+
+    /**
+     * Updates and propagates the current connection state.
+     * @param {string} state
+     * @param {string} label
+     * @private
+     */
+    _setConnectionState(state, label) {
+        this.connectionState = state;
+        this.postMessageToWebview({
+            command: 'connection_state',
+            state,
+            label,
+            lastConnected: this.lastConnectedAt ? this.lastConnectedAt.toLocaleTimeString() : 'never',
+            lastHeartbeat: this.lastHeartbeatAt ? this.lastHeartbeatAt.toLocaleTimeString() : 'never',
+            lastError: this.lastBridgeError || ''
+        });
+        sendActiveStateToWebview(this);
     }
 
     dispose() {
+        this.teardownSocket();
+        if (this._gitWatcher) {
+            this._gitWatcher.dispose();
+            this._gitWatcher = null;
+        }
         this.webviewView = null;
         this.pendingEdits.clear();
         this._resolveWebview = null;
@@ -89,6 +363,10 @@ class KarlSidebarProvider {
         });
     }
 
+    /**
+     * Resolves the Webview panel instance.
+     * @param {vscode.WebviewView} webviewView
+     */
     resolveWebviewView(webviewView) {
         this.webviewView = webviewView;
         this.isReady = false;
@@ -116,6 +394,28 @@ class KarlSidebarProvider {
             switch (message.command) {
                 case 'ready':
                     this.isReady = true;
+                    
+                    // Sync current connection status
+                    this._setConnectionState(this.connectionState, this.connectionState.toUpperCase());
+                    
+                    // Sync loaded pending edits to webview
+                    for (const [editId, edit] of this.pendingEdits.entries()) {
+                        this.postMessageToWebview({
+                            command: 'pending_file_edit',
+                            edit: {
+                                id: editId,
+                                filepath: edit.filepath,
+                                filename: edit.filename,
+                                summary: edit.summary,
+                                bytes: Buffer.byteLength(edit.content, 'utf8'),
+                                oldLines: edit.oldLines,
+                                newLines: edit.newLines,
+                                lineDelta: edit.newLines - edit.oldLines,
+                                status: edit.status
+                            }
+                        });
+                    }
+
                     while (this.messageQueue.length > 0) {
                         const msg = this.messageQueue.shift();
                         if (this.webviewView) {
@@ -193,10 +493,28 @@ class KarlSidebarProvider {
                 case 'open_diagnostic_line':
                     await this.openDiagnosticLine(message.filepath, message.line, message.character);
                     break;
+                case 'connect':
+                    this.manualDisconnect = false;
+                    this.connectToBridge(message.port);
+                    break;
+                case 'disconnect':
+                    this.manualDisconnect = true;
+                    this.teardownSocket();
+                    this._setConnectionState('offline', 'Offline');
+                    break;
+                case 'rpc':
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.socket.send(JSON.stringify(message.payload));
+                    }
+                    break;
                 default:
                     break;
             }
         });
+
+        if (autoConnect && !this.socket) {
+            this.connectToBridge(port);
+        }
 
         // Trigger cockpit refresh immediately
         sendActiveStateToWebview(this);
@@ -227,6 +545,8 @@ class KarlSidebarProvider {
         const oldLines = previous ? previous.split(/\r?\n/).length : 0;
         const newLines = content ? content.split(/\r?\n/).length : 0;
         this.pendingEdits.set(editId, { filepath, content, summary, filename, oldLines, newLines, status: 'proposed' });
+        this._savePendingEdits();
+
         this.postMessageToWebview({
             command: 'pending_file_edit',
             edit: {
@@ -253,6 +573,7 @@ class KarlSidebarProvider {
         try {
             await writeTempFileAndDiff(edit.filename, edit.filepath, edit.content, `Karl Preview: ${edit.filename}`);
             edit.status = 'previewed';
+            this._savePendingEdits();
             this.postMessageToWebview({ command: 'file_edit_previewed', editId });
             sendActiveStateToWebview(this);
         } catch (err) {
@@ -294,6 +615,7 @@ class KarlSidebarProvider {
             edit.status = 'applied';
             edit.backupPath = backupPath;
             this.pendingEdits.set(editId, edit);
+            this._savePendingEdits();
             const backupExistsAfter = await fs.promises.access(backupPath).then(() => true).catch(() => false);
             this.postMessageToWebview({ command: 'file_edit_applied', editId, backupExists: backupExistsAfter });
             vscode.window.showInformationMessage(`Karl applied changes to ${edit.filename}.`);
@@ -311,6 +633,7 @@ class KarlSidebarProvider {
             return;
         }
         this.pendingEdits.delete(editId);
+        this._savePendingEdits();
         this.postMessageToWebview({ command: 'file_edit_rejected', editId });
         if (edit) {
             vscode.window.showInformationMessage(`Rejected Karl edit for ${edit.filename}.`);
@@ -325,6 +648,7 @@ class KarlSidebarProvider {
                 this.postMessageToWebview({ command: 'file_edit_rejected', editId });
             }
         }
+        this._savePendingEdits();
         sendActiveStateToWebview(this);
     }
 
@@ -359,6 +683,7 @@ class KarlSidebarProvider {
         await fs.promises.unlink(backupPath);
         edit.status = 'rolled_back';
         this.pendingEdits.set(editId, edit);
+        this._savePendingEdits();
         this.postMessageToWebview({ command: 'file_edit_rolled_back', editId });
         vscode.window.showInformationMessage(`Rolled back ${edit.filename}.`);
         sendActiveStateToWebview(this);

@@ -1,3 +1,4 @@
+// @ts-check
 const vscode = require('vscode');
 const { KarlSidebarProvider, sendActiveStateToWebview } = require('./src/sidebarProvider');
 const {

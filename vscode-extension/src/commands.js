@@ -1,3 +1,4 @@
+// @ts-check
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
@@ -141,6 +142,11 @@ const WORKFLOW_REGISTRY = {
     }
 };
 
+/**
+ * Returns the current workspace path or fallback folder.
+ * @param {string} [fallbackFile]
+ * @returns {string}
+ */
 function currentWorkspacePath(fallbackFile) {
     if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
         return vscode.workspace.workspaceFolders[0].uri.fsPath;
@@ -148,6 +154,11 @@ function currentWorkspacePath(fallbackFile) {
     return fallbackFile ? path.dirname(fallbackFile) : '';
 }
 
+/**
+ * Aggregates diagnostic counts and files details.
+ * @param {boolean} [currentFileOnly]
+ * @returns {{counts: {error: number, warning: number, info: number, hint: number}, files: Object<string, any[]>}}
+ */
 function groupedDiagnostics(currentFileOnly = false) {
     const activeFile = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.document.uri.fsPath : '';
     const groups = new Map();
@@ -171,11 +182,23 @@ function groupedDiagnostics(currentFileOnly = false) {
     return { counts, files: Object.fromEntries(groups) };
 }
 
+/**
+ * Focuses the Karl panel and waits for ready status.
+ * @param {any} sidebarProvider
+ * @returns {Promise<void>}
+ */
 async function revealKarlPanel(sidebarProvider) {
     await vscode.commands.executeCommand('workbench.view.extension.karl-swarm');
     await sidebarProvider.waitForWebview();
 }
 
+/**
+ * Runs a specified workflow structure.
+ * @param {any} sidebarProvider
+ * @param {any} workflow
+ * @param {vscode.Uri | null} [customUri]
+ * @returns {Promise<void>}
+ */
 async function runWorkflow(sidebarProvider, workflow, customUri = null) {
     const context = await buildWorkflowContext(workflow, sidebarProvider, customUri);
     if (!context) return;
@@ -238,6 +261,13 @@ async function runWorkflow(sidebarProvider, workflow, customUri = null) {
     });
 }
 
+/**
+ * Runs workflow command by registered ID.
+ * @param {any} sidebarProvider
+ * @param {string} workflowId
+ * @param {any} [_payload]
+ * @returns {Promise<void>}
+ */
 async function runWorkflowById(sidebarProvider, workflowId, _payload = {}) {
     const workflow = WORKFLOW_REGISTRY[workflowId];
     if (workflow) {
@@ -245,6 +275,13 @@ async function runWorkflowById(sidebarProvider, workflowId, _payload = {}) {
     }
 }
 
+/**
+ * Assembles and prompts the context payload for workflows.
+ * @param {any} workflow
+ * @param {any} sidebarProvider
+ * @param {vscode.Uri | null} [customUri]
+ * @returns {Promise<{code: string, filepath: string, objective: string} | null>}
+ */
 async function buildWorkflowContext(workflow, sidebarProvider, customUri = null) {
     let code = '';
     let filepath = '';
@@ -378,6 +415,12 @@ async function buildWorkflowContext(workflow, sidebarProvider, customUri = null)
     return { code, filepath, objective };
 }
 
+/**
+ * Relays the active editor file context to KB tab.
+ * @param {any} sidebarProvider
+ * @param {vscode.Uri | null} [uri]
+ * @returns {Promise<void>}
+ */
 async function sendActiveFileToKb(sidebarProvider, uri) {
     const selectedPath = uri && uri.fsPath ? uri.fsPath : null;
     const editor = vscode.window.activeTextEditor;
@@ -393,6 +436,12 @@ async function sendActiveFileToKb(sidebarProvider, uri) {
     });
 }
 
+/**
+ * Relays the workspace folder context to KB tab.
+ * @param {any} sidebarProvider
+ * @param {vscode.Uri | null} [uri]
+ * @returns {Promise<void>}
+ */
 async function sendWorkspaceFolderToKb(sidebarProvider, uri) {
     const workspacePath = uri && uri.fsPath ? uri.fsPath : currentWorkspacePath('');
     if (!workspacePath) {

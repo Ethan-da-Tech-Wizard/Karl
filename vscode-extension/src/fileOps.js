@@ -1,3 +1,4 @@
+// @ts-check
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -6,6 +7,13 @@ const vscode = require('vscode');
 const MAX_CONTEXT_CHARS = 70000;
 const SUMMARY_CONTEXT_CHARS = 18000;
 
+/**
+ * Packages file or git context into a bounded payload.
+ * @param {any} raw
+ * @param {string} label
+ * @param {boolean} [summaryOnly]
+ * @returns {{code: string, meta: {label: string, originalChars: number, sentChars: number, truncated: boolean, summaryOnly: boolean}}}
+ */
 function packageContext(raw, label, summaryOnly = false) {
     const text = String(raw || '');
     const originalChars = text.length;
@@ -28,10 +36,23 @@ function packageContext(raw, label, summaryOnly = false) {
     };
 }
 
+/**
+ * Checks if a file exists.
+ * @param {string} filepath
+ * @returns {Promise<boolean>}
+ */
 async function checkFileExists(filepath) {
     return fs.promises.access(filepath).then(() => true).catch(() => false);
 }
 
+/**
+ * Writes content to a temp file and opens a vscode diff.
+ * @param {string} filename
+ * @param {string} targetPath
+ * @param {string} content
+ * @param {string} title
+ * @returns {Promise<string>}
+ */
 async function writeTempFileAndDiff(filename, targetPath, content, title) {
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'karl-proposed-'));
     const proposedPath = path.join(tempDir, filename);
