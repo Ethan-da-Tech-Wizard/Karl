@@ -82,6 +82,30 @@ class ImageStore:
         self._write_record(updated)
         return updated
 
+    def update_metadata(self, image_id: str, kind: str | None = None, tags: list[str] | None = None) -> ImageRecord:
+        fields = {}
+        if kind is not None:
+            fields["kind"] = kind
+        if tags is not None:
+            fields["tags"] = tags
+        return self.update_analysis(image_id, **fields)
+
+    def save_ocr_correction(self, image_id: str, corrected_text: str) -> ImageRecord:
+        record = self.get(image_id)
+        corrections = dict(record.corrections)
+        corrections["ocr_text"] = corrected_text
+        ocr = record.ocr.to_dict()
+        ocr["text"] = corrected_text
+        return self.update_analysis(image_id, corrections=corrections, ocr=ocr)
+
+    def save_caption_correction(self, image_id: str, corrected_caption: str) -> ImageRecord:
+        record = self.get(image_id)
+        corrections = dict(record.corrections)
+        corrections["caption"] = corrected_caption
+        vision = record.vision.to_dict()
+        vision["caption"] = corrected_caption
+        return self.update_analysis(image_id, corrections=corrections, vision=vision)
+
     def _create_record(self, image_id: str, original_path: Path, source: str, mime: str) -> ImageRecord:
         thumb_path = self.thumbnail_dir / f"{image_id}.png"
         processed_path = self.processed_dir / f"{image_id}_ocr.png"
@@ -120,4 +144,3 @@ class ImageStore:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 h.update(chunk)
         return h.hexdigest()
-

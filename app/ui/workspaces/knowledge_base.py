@@ -32,6 +32,13 @@ def _section(text: str) -> QLabel:
     return l
 
 
+def _label(text: str, obj: str = "") -> QLabel:
+    l = QLabel(text)
+    if obj:
+        l.setObjectName(obj)
+    return l
+
+
 # ── background ingest thread ──────────────────────────────────────────────────
 
 class _IngestThread(QThread):
@@ -561,4 +568,3 @@ class KnowledgeBaseWorkspace(QWidget):
 
     def _on_topk_changed(self, val):
         self.state.rag_top_k = val
-

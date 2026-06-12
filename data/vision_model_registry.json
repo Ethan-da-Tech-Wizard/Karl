@@ -1,0 +1,62 @@
+[
+  {
+    "id": "llava-1.5-7b",
+    "name": "LLaVA 1.5 7B",
+    "family": "llava15",
+    "model_filename": "llava-v1.5-7b-q4_k_m.gguf",
+    "projector_filename": "mmproj-llava-v1.5-7b-f16.gguf",
+    "min_ram_gb": 12,
+    "min_vram_gb": 6,
+    "n_ctx": 4096,
+    "strengths": "General image description, screenshots, UI mockups, simple diagram discussion.",
+    "notes": "Baseline offline multimodal option. Requires llama-cpp-python with the llava native library available."
+  },
+  {
+    "id": "llava-1.6-mistral-7b",
+    "name": "LLaVA 1.6 Mistral 7B",
+    "family": "llava16",
+    "model_filename": "llava-v1.6-mistral-7b-q4_k_m.gguf",
+    "projector_filename": "mmproj-llava-v1.6-mistral-7b-f16.gguf",
+    "min_ram_gb": 14,
+    "min_vram_gb": 8,
+    "n_ctx": 4096,
+    "strengths": "Sharper screenshot reasoning and stronger instruction following than LLaVA 1.5.",
+    "notes": "Good target for an RTX 3070 laptop if quantized model and projector files are installed locally."
+  },
+  {
+    "id": "minicpm-v-2.6",
+    "name": "MiniCPM-V 2.6",
+    "family": "minicpmv26",
+    "model_filename": "minicpm-v-2.6-q4_k_m.gguf",
+    "projector_filename": "mmproj-minicpm-v-2.6-f16.gguf",
+    "min_ram_gb": 10,
+    "min_vram_gb": 6,
+    "n_ctx": 4096,
+    "strengths": "Compact image Q&A, document screenshots, UI and code screenshot assistance.",
+    "notes": "Efficient multimodal target for laptops when available in GGUF + projector form."
+  },
+  {
+    "id": "qwen2.5-vl-7b",
+    "name": "Qwen2.5-VL 7B",
+    "family": "qwen25vl",
+    "model_filename": "qwen2.5-vl-7b-q4_k_m.gguf",
+    "projector_filename": "mmproj-qwen2.5-vl-7b-f16.gguf",
+    "min_ram_gb": 16,
+    "min_vram_gb": 8,
+    "n_ctx": 8192,
+    "strengths": "Document understanding, OCR-adjacent image reasoning, charts, diagrams, and screenshot Q&A.",
+    "notes": "Preferred high-accuracy target when model files and the matching projector are installed locally."
+  },
+  {
+    "id": "moondream2",
+    "name": "Moondream 2",
+    "family": "moondream",
+    "model_filename": "moondream2-q4_k_m.gguf",
+    "projector_filename": "mmproj-moondream2-f16.gguf",
+    "min_ram_gb": 8,
+    "min_vram_gb": 4,
+    "n_ctx": 2048,
+    "strengths": "Fast lightweight visual captioning and simple image questions.",
+    "notes": "Good fallback for speed. Prefer stronger models for precise code screenshot debugging."
+  }
+]

@@ -1031,19 +1031,28 @@ Mitigation:
 
 ## 18. Build Order Recommendation
 
-Start with the vertical slice:
+Current implementation state:
 
 ```text
-V1 image paste/save
-V2 OCR
-V3 Vision Workbench
-V5 image-aware chat
+V1 image paste/save                built
+V2 OCR                              built
+V3 Vision Workbench                 built
+V4 local VLM runtime layer          built as registry/loader/status/analyzer
+V5 image-aware chat                 built for saved attachments + analysis context
 ```
 
-Then add:
+Important V4 runtime note:
+
+- Karl now has an offline vision model registry at `data/vision_model_registry.json`.
+- Vision models are expected under `data/vision_models/`.
+- Matching multimodal projectors are expected under `data/vision_projectors/`.
+- The active vision model is stored in `data/active_vision_model.json`.
+- If `llama-cpp-python` lacks its native llava shared library, Karl reports that as a blocked local backend instead of pretending image inference is available.
+- OCR-only analysis and OCR-derived image classification still work without a VLM.
+
+Next high-value phases:
 
 ```text
-V4 local VLM
 V6 image RAG
 V7 Image Studio
 V8 bridge
@@ -1052,4 +1061,3 @@ V9 VS Code extension
 
 This gives useful screenshot/code-error assistance quickly while keeping the
 larger image training system grounded in real saved user data.
-

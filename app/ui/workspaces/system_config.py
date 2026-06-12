@@ -21,6 +21,11 @@ from PyQt6.QtGui import QColor
 from app.ui.themes import MONO, THEMES, get_theme_colors, get_theme_stylesheet
 from app.ui.widgets.tracing_panel import TracingPanel
 from app.ui.widgets.symbolic_icon import CheckIcon, CrossIcon
+from app.vision.vision_model_loader import (
+    VisionModelLoader,
+    installed_vision_models,
+    set_active_vision_model,
+)
 
 
 def _section(text: str) -> QLabel:
@@ -190,6 +195,7 @@ class SystemConfigWorkspace(QWidget):
         tabs.addTab(self._build_registry_tab(), "Registry")
         tabs.addTab(self._build_params_tab(), "Defaults")
         tabs.addTab(self._build_identity_tab(), "Identity")
+        tabs.addTab(self._build_vision_tab(), "Vision")
         tabs.addTab(self._build_theme_tab(), "Theme")
         tabs.addTab(self._build_hardware_tab(), "Hardware")
         root.addWidget(tabs, 1)
@@ -711,6 +717,158 @@ class SystemConfigWorkspace(QWidget):
 
         layout.addWidget(identity_panel, 1)
         return w
+
+    # ── vision tab ────────────────────────────────────────────────────────────
+
+    def _build_vision_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        runtime_panel = QWidget()
+        runtime_panel.setObjectName("panel")
+        rp = QVBoxLayout(runtime_panel)
+        rp.setContentsMargins(12, 12, 12, 12)
+        rp.setSpacing(8)
+        rp.addWidget(_section("VISION RUNTIME"))
+
+        desc = QLabel(
+            "Karl vision stays offline. OCR can run immediately when Tesseract is installed; "
+            "pixel-level image description requires a local GGUF vision model plus its matching projector."
+        )
+        desc.setObjectName("lbl-muted")
+        desc.setWordWrap(True)
+        rp.addWidget(desc)
+
+        self._vision_runtime_status = QLabel("")
+        self._vision_runtime_status.setObjectName("lbl-muted")
+        self._vision_runtime_status.setWordWrap(True)
+        rp.addWidget(self._vision_runtime_status)
+
+        model_row = QWidget()
+        mr = QHBoxLayout(model_row)
+        mr.setContentsMargins(0, 0, 0, 0)
+        mr.setSpacing(8)
+        self._vision_model_combo = QComboBox()
+        mr.addWidget(self._vision_model_combo, 1)
+
+        active_btn = QPushButton("set active")
+        active_btn.setObjectName("btn-secondary")
+        active_btn.clicked.connect(self._set_active_vision_model_from_combo)
+        mr.addWidget(active_btn)
+
+        load_btn = QPushButton("load now")
+        load_btn.setObjectName("btn-primary")
+        load_btn.clicked.connect(self._load_active_vision_model)
+        mr.addWidget(load_btn)
+
+        reset_btn = QPushButton("reset")
+        reset_btn.setObjectName("btn-ghost")
+        reset_btn.clicked.connect(self._reset_vision_runtime)
+        mr.addWidget(reset_btn)
+        rp.addWidget(model_row)
+
+        layout.addWidget(runtime_panel)
+
+        registry_panel = QWidget()
+        registry_panel.setObjectName("panel")
+        vp = QVBoxLayout(registry_panel)
+        vp.setContentsMargins(12, 12, 12, 12)
+        vp.setSpacing(8)
+        header = QWidget()
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(_section("LOCAL VISION MODEL REGISTRY"))
+        refresh_btn = QPushButton("refresh")
+        refresh_btn.setObjectName("btn-ghost")
+        refresh_btn.clicked.connect(self._refresh_vision_status)
+        hl.addWidget(refresh_btn)
+        vp.addWidget(header)
+
+        self._vision_registry_view = QTextBrowser()
+        self._vision_registry_view.setMinimumHeight(260)
+        vp.addWidget(self._vision_registry_view, 1)
+        layout.addWidget(registry_panel, 1)
+
+        self._refresh_vision_status()
+        return w
+
+    def _refresh_vision_status(self):
+        if not hasattr(self, "_vision_runtime_status"):
+            return
+
+        status = VisionModelLoader.status()
+        backend = "available" if status["backend_available"] else "blocked"
+        loaded = "loaded" if status["loaded"] else "not loaded"
+        active = status.get("active_name") or "none"
+        lines = [
+            f"Backend: {backend}",
+            f"Runtime: {loaded}",
+            f"Active model: {active}",
+        ]
+        if status.get("backend_error"):
+            lines.append(f"Backend detail: {status['backend_error']}")
+        if status.get("last_error"):
+            lines.append(f"Last error: {status['last_error']}")
+        self._vision_runtime_status.setText("\n".join(lines))
+
+        current = self._vision_model_combo.currentData()
+        self._vision_model_combo.blockSignals(True)
+        self._vision_model_combo.clear()
+        rows = installed_vision_models()
+        for row in rows:
+            ready = row.get("model_installed") and row.get("projector_installed")
+            suffix = "ready" if ready else "missing files"
+            self._vision_model_combo.addItem(f"{row['name']} ({suffix})", row["id"])
+        if current:
+            idx = self._vision_model_combo.findData(current)
+            if idx >= 0:
+                self._vision_model_combo.setCurrentIndex(idx)
+        self._vision_model_combo.blockSignals(False)
+
+        html_rows = []
+        for row in rows:
+            model_state = "present" if row.get("model_installed") else "missing"
+            projector_state = "present" if row.get("projector_installed") else "missing"
+            html_rows.append(
+                "<div style='margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid rgba(255,255,255,0.08);'>"
+                f"<b style='color:#00C2FF;'>{html.escape(row['name'])}</b><br/>"
+                f"<span style='color:#9090A8;'>Family:</span> {html.escape(row['family'])} &middot; "
+                f"<span style='color:#9090A8;'>Context:</span> {int(row['n_ctx']):,}<br/>"
+                f"<span style='color:#9090A8;'>Model:</span> {html.escape(row['model_path'])} "
+                f"<b>{model_state}</b><br/>"
+                f"<span style='color:#9090A8;'>Projector:</span> {html.escape(row['projector_path'])} "
+                f"<b>{projector_state}</b><br/>"
+                f"<span style='color:#9090A8;'>RAM:</span> &ge; {row['min_ram_gb']} GB &middot; "
+                f"<span style='color:#9090A8;'>VRAM:</span> &ge; {row['min_vram_gb']} GB<br/>"
+                f"<span style='color:#B8F7FF;'>{html.escape(row.get('strengths', ''))}</span><br/>"
+                f"<span style='color:#9090A8;'>{html.escape(row.get('notes', ''))}</span>"
+                "</div>"
+            )
+        self._vision_registry_view.setHtml(
+            f"<div style='font-family:{MONO}; font-size:9pt; line-height:1.45;'>"
+            + "".join(html_rows or ["No registry entries found."])
+            + "</div>"
+        )
+
+    def _set_active_vision_model_from_combo(self):
+        model_id = self._vision_model_combo.currentData()
+        if not model_id:
+            return
+        set_active_vision_model(model_id)
+        VisionModelLoader.reset()
+        self._refresh_vision_status()
+        QMessageBox.information(self, "Vision Model Selected", f"Active vision model set to {model_id}.")
+
+    def _load_active_vision_model(self):
+        model_id = self._vision_model_combo.currentData()
+        VisionModelLoader.load(model_id=model_id)
+        self._refresh_vision_status()
+
+    def _reset_vision_runtime(self):
+        VisionModelLoader.reset()
+        self._refresh_vision_status()
 
     # ── hardware tab ──────────────────────────────────────────────────────────
 
@@ -1702,4 +1860,3 @@ class SystemConfigWorkspace(QWidget):
             self, "Settings Saved",
             "Appearance configuration saved successfully to data/ui_config.json."
         )
-

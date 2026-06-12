@@ -790,10 +790,30 @@ class WorkbenchWorkspace(QMainWindow):
         )
         self._start_image_analysis(record.id)
 
+    def attach_existing_image(self, image_id: str):
+        try:
+            record = self.state.image_store.get(image_id)
+        except Exception as exc:
+            self._chat_view.append_system_note(f"image attach failed: {exc}")
+            return
+        attachment = {
+            "type": "image",
+            "id": record.id,
+            "path": record.original_path,
+            "thumbnail_path": record.thumbnail_path,
+            "label": f"{record.width}x{record.height} saved image",
+            "ocr_status": "ready" if record.ocr.text else "pending",
+        }
+        self._pending_image_attachments.append(attachment)
+        self._chat_view.append_system_note(
+            f"image attached from Vision Workbench: {record.id[:8]}. Ask a question to use it."
+        )
+
     def _start_image_analysis(self, image_id: str):
         thread = ImageAnalysisThread(self.state.image_store, image_id)
         thread.progress.connect(lambda msg, iid=image_id: self._on_image_analysis_progress(iid, msg))
         thread.ocr_done.connect(self._on_image_ocr_done)
+        thread.vision_done.connect(self._on_image_vision_done)
         thread.done.connect(self._on_image_analysis_done)
         thread.error.connect(lambda msg, iid=image_id: self._on_image_analysis_error(iid, msg))
         self._image_threads.add(thread)
@@ -817,6 +837,16 @@ class WorkbenchWorkspace(QMainWindow):
         self._chat_view.append_system_note(
             f"image {image_id[:8]}: OCR ready ({chars} chars, confidence {getattr(ocr, 'confidence', 0.0):.2f})"
         )
+
+    def _on_image_vision_done(self, image_id: str, vision):
+        for attachment in self._pending_image_attachments:
+            if attachment.get("id") == image_id:
+                attachment["analysis_status"] = "ready"
+                attachment["vision_engine"] = getattr(vision, "engine", "none")
+        caption = (getattr(vision, "caption", "") or "").strip()
+        if caption:
+            short = caption.replace("\n", " ")[:180]
+            self._chat_view.append_system_note(f"image {image_id[:8]}: vision analysis ready - {short}")
 
     def _on_image_analysis_done(self, image_id: str, _record):
         for attachment in self._pending_image_attachments:
@@ -851,7 +881,12 @@ class WorkbenchWorkspace(QMainWindow):
                     f"OCR Confidence: {record.ocr.confidence:.2f}",
                     "OCR Text:",
                     record.ocr.text.strip() or "(pending or unavailable)",
-                    "Vision Summary: pending",
+                    f"Vision Engine: {record.vision.engine}",
+                    f"Vision Model: {record.vision.model or '(none)'}",
+                    f"Detected Code: {record.vision.detected_code}",
+                    f"Detected Error: {record.vision.detected_error}",
+                    "Vision Summary:",
+                    record.vision.caption.strip() or "(pending or unavailable)",
                 ])
             )
         if not blocks:

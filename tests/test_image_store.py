@@ -68,3 +68,20 @@ def test_update_analysis_accepts_ocr_dict(tmp_path):
     assert updated.ocr.text == "NameError at line 3"
     assert updated.ocr.confidence == 0.9
     assert store.get(record.id).ocr.engine == "tesseract"
+
+
+def test_image_metadata_and_corrections_round_trip(tmp_path):
+    store = ImageStore(base_dir=str(tmp_path / "images"))
+    record = store.save_qimage(_sample_image(), source="test")
+
+    store.update_metadata(record.id, kind="code_screenshot", tags=["code", "traceback"])
+    store.save_ocr_correction(record.id, "Traceback line 10")
+    store.save_caption_correction(record.id, "A code editor showing a traceback.")
+    loaded = store.get(record.id)
+
+    assert loaded.kind == "code_screenshot"
+    assert loaded.tags == ["code", "traceback"]
+    assert loaded.ocr.text == "Traceback line 10"
+    assert loaded.corrections["ocr_text"] == "Traceback line 10"
+    assert loaded.vision.caption == "A code editor showing a traceback."
+    assert loaded.corrections["caption"] == "A code editor showing a traceback."

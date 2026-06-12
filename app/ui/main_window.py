@@ -17,6 +17,7 @@ from app.ui.widgets.status_bar import StatusBar
 from app.ui.workspaces.workbench import WorkbenchWorkspace
 from app.ui.workspaces.prompt_lab import PromptLabWorkspace
 from app.ui.workspaces.knowledge_base import KnowledgeBaseWorkspace
+from app.ui.workspaces.vision_workbench import VisionWorkbench
 from app.ui.workspaces.training_studio import TrainingStudioWorkspace
 from app.ui.workspaces.eval_suite import EvalSuiteWorkspace
 from app.ui.workspaces.system_config import SystemConfigWorkspace
@@ -48,9 +49,9 @@ class MainWindow(QMainWindow):
         self._palette_shortcut_p = QShortcut(QKeySequence("Ctrl+P"), self)
         self._palette_shortcut_p.activated.connect(self._open_command_palette)
         
-        # Workspace switching (Ctrl+1 to Ctrl+7)
+        # Workspace switching (Ctrl+1 to Ctrl+8)
         self._workspace_shortcuts = []
-        for idx in range(7):
+        for idx in range(8):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{idx+1}"), self)
             # Use a helper slot to avoid lambda cell capture issues
             shortcut.activated.connect(self._make_workspace_switcher(idx))
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         self._workbench      = WorkbenchWorkspace(self._state)
         self._prompt_lab     = PromptLabWorkspace(self._state)
         self._knowledge_base = KnowledgeBaseWorkspace(self._state)
+        self._vision         = VisionWorkbench(self._state, self._workbench)
         self._training       = TrainingStudioWorkspace(self._state)
         self._eval           = EvalSuiteWorkspace(self._state)
         self._system         = SystemConfigWorkspace(self._state)
@@ -118,6 +120,7 @@ class MainWindow(QMainWindow):
             self._workbench,
             self._prompt_lab,
             self._knowledge_base,
+            self._vision,
             self._training,
             self._eval,
             self._system,
@@ -289,4 +292,3 @@ class MainWindow(QMainWindow):
             print(f"[WebSocket] Error during exit teardown: {e}")
             
         event.accept()
-
