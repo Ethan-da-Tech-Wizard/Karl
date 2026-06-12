@@ -7,14 +7,13 @@ const {
     currentWorkspacePath,
     groupedDiagnostics,
     runWorkflowById,
-    sendActiveFileToKb,
-    sendWorkspaceFolderToKb
+    sendActiveFileToKb
 } = require('./commands');
 
 function getDiagnosticsStats() {
     const severityName = ['error', 'warning', 'info', 'hint'];
     const counts = { error: 0, warning: 0, info: 0, hint: 0 };
-    for (const [uri, items] of vscode.languages.getDiagnostics()) {
+    for (const [, items] of vscode.languages.getDiagnostics()) {
         items.forEach(item => {
             const severity = severityName[item.severity] || 'info';
             counts[severity] += 1;

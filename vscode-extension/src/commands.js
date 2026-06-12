@@ -238,7 +238,7 @@ async function runWorkflow(sidebarProvider, workflow, customUri = null) {
     });
 }
 
-async function runWorkflowById(sidebarProvider, workflowId, payload = {}) {
+async function runWorkflowById(sidebarProvider, workflowId, _payload = {}) {
     const workflow = WORKFLOW_REGISTRY[workflowId];
     if (workflow) {
         await runWorkflow(sidebarProvider, workflow);
