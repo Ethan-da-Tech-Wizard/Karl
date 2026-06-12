@@ -9,9 +9,120 @@ import os
 import re
 import json
 import subprocess
-from typing import Dict, Any, List, Optional
+import glob
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Any, List, Optional, Callable
 from app.engine.model_loader import ModelLoader
 from core.interaction_loop import build_prompt
+
+
+# ── Tool Registry ─────────────────────────────────────────────────────────────
+# Tools are registered here so both CoderAgent and external callers can extend
+# the dispatch table. Each value is (executor_fn, description_for_prompt).
+
+_TOOL_REGISTRY: dict[str, tuple[Callable, str]] = {}
+
+def register_tool(name: str, description: str):
+    """Decorator to register a tool function in the global tool registry."""
+    def decorator(fn):
+        _TOOL_REGISTRY[name] = (fn, description)
+        return fn
+    return decorator
+
+def get_tool_schema_block() -> str:
+    """Returns the tool schema XML block to inject into coder prompts."""
+    lines = ["<tools>"]
+    for name, (_, desc) in _TOOL_REGISTRY.items():
+        lines.append(f"  <tool name='{name}'>{desc}</tool>")
+    lines.append("</tools>")
+    return "\n".join(lines)
+
+
+@register_tool("write_file", "write_file(path, content) — overwrite a workspace file. path is relative to workspace root.")
+def _tool_write_file(workspace_path: str, args: dict) -> str:
+    import os, pathlib
+    rel = args.get("path", "")
+    content = args.get("content", "")
+    if not rel or ".." in rel or os.path.isabs(rel):
+        return "ERROR: invalid path"
+    full = pathlib.Path(workspace_path) / rel
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(content, encoding="utf-8")
+    return f"OK: wrote {len(content.splitlines())} lines to {rel}"
+
+@register_tool("read_file", "read_file(path) — read current contents of a workspace file.")
+def _tool_read_file(workspace_path: str, args: dict) -> str:
+    import os, pathlib
+    rel = args.get("path", "")
+    if not rel or ".." in rel or os.path.isabs(rel):
+        return "ERROR: invalid path"
+    full = pathlib.Path(workspace_path) / rel
+    if not full.exists():
+        return f"ERROR: file not found: {rel}"
+    try:
+        return full.read_text(encoding="utf-8", errors="ignore")[:6000]
+    except Exception as e:
+        return f"ERROR: {e}"
+
+@register_tool("grep_workspace", "grep_workspace(pattern) — find lines matching regex pattern across all .py files in workspace.")
+def _tool_grep_workspace(workspace_path: str, args: dict) -> str:
+    import pathlib, re as _re
+    pattern = args.get("pattern", "")
+    if not pattern:
+        return "ERROR: pattern required"
+    try:
+        compiled = _re.compile(pattern)
+    except _re.error as e:
+        return f"ERROR: invalid regex: {e}"
+    results = []
+    for f in pathlib.Path(workspace_path).rglob("*.py"):
+        if ".git" in f.parts or "venv" in f.parts or "__pycache__" in f.parts:
+            continue
+        try:
+            for i, line in enumerate(f.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+                if compiled.search(line):
+                    results.append(f"{f.relative_to(workspace_path)}:{i}: {line.rstrip()}")
+                    if len(results) >= 40:
+                        break
+        except Exception:
+            pass
+    return "\n".join(results) if results else "No matches found."
+
+@register_tool("shell_run", "shell_run(command) — run a shell command in the workspace directory. Returns stdout+stderr. Timeout 15s.")
+def _tool_shell_run(workspace_path: str, args: dict) -> str:
+    cmd = args.get("command", "")
+    if not cmd:
+        return "ERROR: command required"
+    try:
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True,
+            cwd=workspace_path, timeout=15
+        )
+        out = (result.stdout + result.stderr).strip()
+        return out[:3000] if out else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "ERROR: command timed out (15s)"
+    except Exception as e:
+        return f"ERROR: {e}"
+
+@register_tool("lint_python", "lint_python(path) — run pyflakes on a Python file and return violations.")
+def _tool_lint_python(workspace_path: str, args: dict) -> str:
+    import pathlib
+    rel = args.get("path", "")
+    if not rel:
+        return "ERROR: path required"
+    full = pathlib.Path(workspace_path) / rel
+    if not full.exists():
+        return f"ERROR: file not found: {rel}"
+    try:
+        result = subprocess.run(
+            ["python", "-m", "pyflakes", str(full)],
+            capture_output=True, text=True, timeout=10
+        )
+        out = (result.stdout + result.stderr).strip()
+        return out if out else "No violations found."
+    except Exception as e:
+        return f"ERROR: {e}"
 
 
 class BaseSwarmAgent:
@@ -151,6 +262,141 @@ class CoderAgent(BaseSwarmAgent):
     def __init__(self):
         super().__init__(self.SYSTEM_PROMPT, temperature=0.3, max_tokens=4096)
 
+    def generate(self, task: dict, workspace_context: dict,
+                 workspace_path: str = ".",
+                 token_callback: Callable[[str], None] | None = None) -> str:
+        """
+        Multi-turn tool loop. Model reads workspace, thinks, writes files.
+        Returns the final written content for the primary task file, or an error string.
+        token_callback: if provided, called with each generated token for streaming.
+        """
+        llm = ModelLoader.get_instance()
+        tool_schema = get_tool_schema_block()
+    
+        # Build initial prompt
+        context_snippet = "\n".join(
+            f"--- {k} ---\n{v[:800]}" for k, v in list(workspace_context.items())[:8]
+        )
+        system = (
+            "You are an expert software engineer. You MUST reason before acting.\n"
+            "Use the tools below to read existing code, then write correct, tested changes.\n"
+            "Always call read_file before writing to understand the existing implementation.\n"
+            "After writing files, call lint_python and fix any violations.\n"
+            "When finished with ALL changes, call done() with no arguments.\n\n"
+            f"{tool_schema}\n\n"
+            "Tool call format:\n"
+            "<tool_call name='TOOL_NAME'>\n"
+            "  param_name: value\n"
+            "</tool_call>\n\n"
+            "To finish: <tool_call_call name='done'></tool_call_call>"
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": (
+                f"Task: Edit {task['filepath']}\n\n"
+                f"Instructions: {task['instructions']}\n\n"
+                f"Workspace context:\n{context_snippet}"
+            )}
+        ]
+
+        written_content = ""
+
+        for _turn in range(8):
+            # Build prompt and generate
+            from core.interaction_loop import build_prompt
+            prompt_text = build_prompt(system, messages[1:])
+    
+            raw = ""
+            if token_callback:
+                try:
+                    res = llm(prompt_text, max_tokens=self.max_tokens,
+                              temperature=self.temperature, stream=True,
+                              stop=["</tool_call>", "<|im_end|>"], echo=False)
+                    if hasattr(res, "__iter__") and not isinstance(res, dict):
+                        for chunk in res:
+                            tok = chunk["choices"][0].get("text", "")
+                            raw += tok
+                            token_callback(tok)
+                    else:
+                        if isinstance(res, dict):
+                            raw = res["choices"][0]["text"]
+                        else:
+                            raw = str(res)
+                except Exception:
+                    res = llm(prompt_text, max_tokens=self.max_tokens,
+                              temperature=self.temperature, stream=False,
+                              stop=["<|im_end|>"], echo=False)
+                    if isinstance(res, dict):
+                        raw = res["choices"][0]["text"]
+                    else:
+                        raw = str(res)
+            else:
+                res = llm(prompt_text, max_tokens=self.max_tokens,
+                           temperature=self.temperature, stream=False,
+                           stop=["<|im_end|>"], echo=False)
+                if isinstance(res, dict):
+                    raw = res["choices"][0]["text"]
+                else:
+                    raw = str(res)
+    
+            messages.append({"role": "assistant", "content": raw})
+    
+            # Parse tool calls from raw output
+            tool_calls = re.findall(
+                r"<tool_call name='([^']+)'>(.*?)</tool_call>",
+                raw, re.DOTALL
+            )
+
+            if not tool_calls:
+                if _turn == 0:
+                    try:
+                        reasoning, tool_content = parse_reasoning_and_tool(raw)
+                        if tool_content is not None:
+                            written_content = tool_content
+                        else:
+                            written_content = self.clean_output(raw)
+                    except ValueError:
+                        written_content = self.clean_output(raw)
+                break
+
+            tool_results = []
+            done_called = False
+
+            for tool_name, tool_body in tool_calls:
+                if tool_name == "done":
+                    done_called = True
+                    break
+
+                # Parse YAML-style args (key: value per line)
+                args = {}
+                for line in tool_body.strip().splitlines():
+                    if ":" in line:
+                        k, _, v = line.partition(":")
+                        args[k.strip()] = v.strip()
+
+                if tool_name in _TOOL_REGISTRY:
+                    executor, _ = _TOOL_REGISTRY[tool_name]
+                    try:
+                        result_text = executor(workspace_path, args)
+                    except Exception as ex:
+                        result_text = f"ERROR: tool raised exception: {ex}"
+
+                    # Capture written content for return value
+                    if tool_name == "write_file":
+                        written_content = args.get("content", "")
+                else:
+                    result_text = f"ERROR: unknown tool '{tool_name}'"
+    
+                tool_results.append(f"<tool_result name='{tool_name}'>\n{result_text}\n</tool_result>")
+    
+            if done_called:
+                break
+
+            if tool_results:
+                messages.append({"role": "user", "content": "\n".join(tool_results)})
+
+        return written_content or f"# CoderAgent completed task: {task['filepath']}"
+
     def edit_file(
         self,
         filepath: str,
@@ -158,27 +404,11 @@ class CoderAgent(BaseSwarmAgent):
         instructions: str,
         test_failure_trace: Optional[str] = None
     ) -> str:
-        prompt = (
-            f"File to modify: {filepath}\n\n"
-            f"Current file contents:\n```\n{current_content}\n```\n\n"
-            f"Instructions:\n{instructions}\n"
-        )
+        task = {"filepath": filepath, "instructions": instructions}
+        workspace_context = {filepath: current_content}
         if test_failure_trace:
-            prompt += f"\nWarning: Previous test failed with this trace:\n{test_failure_trace}\nCorrect the code to fix this."
-
-        raw = self.call_llm(prompt)
-        
-        try:
-            reasoning, tool_content = parse_reasoning_and_tool(raw)
-            if tool_content is not None:
-                cleaned = tool_content
-            else:
-                cleaned = self.clean_output(raw)
-        except ValueError as e:
-            # Report the enforcer error as syntax/compilation failure comment
-            return f"# REASONING ERROR GENERATED: {str(e)}\n"
-
-        return cleaned
+            task["instructions"] += f"\nPrevious failure: {test_failure_trace}"
+        return self.generate(task, workspace_context)
 
 
 # ── Tester Agent ──────────────────────────────────────────────────────────────
@@ -191,6 +421,11 @@ class TesterAgent:
 
     def __init__(self, workspace_path: str):
         self.workspace_path = workspace_path
+
+    def run(self, command: str, workspace_path: str) -> tuple[bool, str]:
+        """Runs a subprocess command and returns (passed, trace)."""
+        res = self.run_test_command(command)
+        return res["passed"], res["error_trace"] or res["output"]
 
     def run_test_command(self, test_cmd: str) -> Dict[str, Any]:
         """Runs a shell test command inside the workspace and captures results."""

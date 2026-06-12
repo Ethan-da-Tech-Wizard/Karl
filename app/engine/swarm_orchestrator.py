@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
+from concurrent.futures import ThreadPoolExecutor
 from app.engine.swarm_agents import ArchitectAgent, CoderAgent, TesterAgent
 
 
@@ -57,6 +58,7 @@ class SwarmOrchestratorThread(QThread):
     file_edited = pyqtSignal(str, str)            # filepath, new_content
     test_result = pyqtSignal(bool, str)           # passed, error_traceback
     finished_swarm = pyqtSignal(bool, str)        # success, final_summary
+    coder_token = pyqtSignal(str, str)            # (filepath, token)
 
     def __init__(self, workspace_path: str, objective: str, test_command: str, hyperparams: dict = None):
         super().__init__()
@@ -75,6 +77,14 @@ class SwarmOrchestratorThread(QThread):
             if max_tok is not None:
                 self.architect.max_tokens = max_tok
                 self.coder.max_tokens = max_tok
+
+    def _process_events_if_main_thread(self):
+        import threading
+        from PyQt6.QtWidgets import QApplication
+        if threading.current_thread() is threading.main_thread():
+            app = QApplication.instance()
+            if app:
+                app.processEvents()
 
     def request_stop(self):
         self._stop_requested = True
@@ -140,7 +150,7 @@ class SwarmOrchestratorThread(QThread):
             dirs[:] = [d for d in dirs if d not in exclude_dirs]
             for f in files:
                 # Target Python and core text files
-                if f.endswith((".py", ".json", ".txt", ".md")) and f not in ("active_model.json", "model_registry.json"):
+                if f.endswith((".py", ".json", ".txt", ".md")) and f not in ("active_model.json", "model_registry.json", "run_tests.py"):
                     path = os.path.join(root, f)
                     rel_path = os.path.relpath(path, self.state.workspace_path)
                     try:
@@ -204,53 +214,126 @@ class SwarmOrchestratorThread(QThread):
 
         return layers
 
-    def _run_single_coder(self, filepath: str, instructions: str, failure_trace: Optional[str] = None) -> tuple[bool, Optional[str], Optional[str], Optional[str]]:
-        """
-        Runs CoderAgent on a single file. Returns (success, full_path_str, new_content, error_msg).
-        This executes in a background thread inside a ThreadPoolExecutor.
-        """
-        try:
-            resolved_filepath, full_path_obj = self._resolve_task_path(filepath)
-        except ValueError as exc:
-            return False, None, None, f"Refusing unsafe task path {filepath}: {exc}"
-        
-        full_path = str(full_path_obj)
-        self.state.tasks_status[resolved_filepath] = "in_progress"
-        self.status_update.emit(f"[Coder] Starting work on: {resolved_filepath}")
+    def _run_layer(self, layer_tasks: list, layer_index: int, total_layers: int, layer_failure_traces: dict) -> bool:
+        self.layer_started.emit(layer_index, total_layers, layer_tasks)
+        workspace_ctx = self.scan_workspace()
+        max_workers = min(len(layer_tasks), 4)
+        results: dict[str, tuple[bool, str]] = {}
+    
+        def _run_one(task: dict) -> tuple[str, bool, str]:
+            if self._stop_requested:
+                return task["filepath"], False, "stopped"
+            filepath = task["filepath"]
+            self.task_status_changed.emit(filepath, "in_progress", f"Layer {layer_index} coding")
 
-        # Read current content
-        current_content = ""
-        if os.path.exists(full_path):
+            def _tok_cb(tok: str):
+                self.coder_token.emit(filepath, tok)
+            
+            # Append failure trace to instructions if present
+            task_copy = dict(task)
+            trace = layer_failure_traces.get(filepath)
+            if trace:
+                task_copy["instructions"] += f"\nWarning: Previous test failed with this trace:\n{trace}\nCorrect the code to fix this."
+    
             try:
-                with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                    current_content = f.read()
+                content = self.coder.generate(
+                    task_copy, workspace_ctx,
+                    workspace_path=self.state.workspace_path,
+                    token_callback=_tok_cb,
+                )
+                if content.startswith("# SYNTAX ERROR"):
+                    self.task_status_changed.emit(filepath, "failed", content[:120])
+                    self.traceback_captured.emit(filepath, content)
+                    self.test_result.emit(False, content)
+                    layer_failure_traces[filepath] = content
+                    return filepath, False, content
+
+                # Syntax validation guards
+                syntax_error = None
+                if filepath.endswith(".py"):
+                    try:
+                        import ast
+                        ast.parse(content)
+                    except SyntaxError as e:
+                        syntax_error = f"SyntaxError: {e.msg} at line {e.lineno}"
+                elif filepath.endswith(".json"):
+                    try:
+                        import json
+                        json.loads(content)
+                    except json.JSONDecodeError as e:
+                        syntax_error = f"JSONDecodeError: {e.msg} at line {e.lineno} col {e.colno}"
+
+                if syntax_error:
+                    self.task_status_changed.emit(filepath, "failed", syntax_error)
+                    self.traceback_captured.emit(filepath, syntax_error)
+                    self.test_result.emit(False, syntax_error)
+                    layer_failure_traces[filepath] = syntax_error
+                    return filepath, False, syntax_error
+
+                _, full_path = self._resolve_task_path(filepath)
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(content, encoding="utf-8")
+                self.file_edited.emit(filepath, content)
+                self.task_status_changed.emit(filepath, "written", "File written")
+                return filepath, True, content
             except Exception as e:
-                return False, full_path, None, f"Failed to read file: {e}"
+                msg = str(e)
+                self.task_status_changed.emit(filepath, "failed", msg[:120])
+                self.traceback_captured.emit(filepath, msg)
+                self.test_result.emit(False, msg)
+                layer_failure_traces[filepath] = msg
+                return filepath, False, msg
 
-        # Generate code edit
-        coder = CoderAgent()
-        coder.temperature = self.coder.temperature
-        coder.max_tokens = self.coder.max_tokens
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_run_one, task): task for task in layer_tasks}
+            for future in futures:
+                fp, ok, detail = future.result()
+                results[fp] = (ok, detail)
 
-        new_content = coder.edit_file(resolved_filepath, current_content, instructions, failure_trace)
+        self._process_events_if_main_thread()
 
-        # Syntax validation guards
-        syntax_error = None
-        if resolved_filepath.endswith(".py"):
-            try:
-                ast.parse(new_content)
-            except SyntaxError as e:
-                syntax_error = f"SyntaxError: {e.msg} at line {e.lineno}"
-        elif resolved_filepath.endswith(".json"):
-            try:
-                json.loads(new_content)
-            except json.JSONDecodeError as e:
-                syntax_error = f"JSONDecodeError: {e.msg} at line {e.lineno} col {e.colno}"
+        # Verify the layer
+        if self._stop_requested:
+            return False
 
-        if syntax_error:
-            return False, full_path, None, syntax_error
-
-        return True, full_path, new_content, None
+        cmd = self.state.test_command
+        if cmd:
+            self.verification_started.emit(layer_index, cmd)
+            self._process_events_if_main_thread()
+            passed, trace = self.tester.run(cmd, self.state.workspace_path)
+            self.test_result.emit(passed, trace)
+            self._process_events_if_main_thread()
+            if not passed:
+                self.traceback_captured.emit(f"Layer {layer_index}", trace)
+                for task in layer_tasks:
+                    layer_failure_traces[task["filepath"]] = trace
+                    self.task_status_changed.emit(task["filepath"], "verification_failed", trace)
+                self.layer_finished.emit(layer_index, False, f"Layer {layer_index} verification failed")
+                self._process_events_if_main_thread()
+                return False
+            else:
+                for task in layer_tasks:
+                    self.state.tasks_status[task["filepath"]] = "completed"
+                    self.task_status_changed.emit(task["filepath"], "completed", f"Layer {layer_index} verified")
+                self.layer_finished.emit(layer_index, True, f"Layer {layer_index} verified")
+                self._process_events_if_main_thread()
+    
+        all_ok = all(ok for ok, _ in results.values())
+        if all_ok and not cmd:
+            for task in layer_tasks:
+                self.state.tasks_status[task["filepath"]] = "completed"
+                self.task_status_changed.emit(task["filepath"], "completed", f"Layer {layer_index} complete")
+        elif not all_ok:
+            for task in layer_tasks:
+                fp = task["filepath"]
+                ok, detail = results.get(fp, (False, "Unknown failure"))
+                if not ok:
+                    self.state.tasks_status[fp] = "failed"
+                    self.task_status_changed.emit(fp, "failed", detail)
+        
+        self.layer_finished.emit(layer_index, all_ok, f"Layer {layer_index} {'complete' if all_ok else 'had failures'}")
+        self._process_events_if_main_thread()
+        return all_ok
 
     def run(self):
         try:
@@ -266,36 +349,39 @@ class SwarmOrchestratorThread(QThread):
             plan = self.architect.create_plan(self.state.objective, context)
             self.state.plan = plan
             self.task_plan_created.emit(plan)
+            self._process_events_if_main_thread()
 
             try:
                 tasks = self._validate_tasks(plan.get("tasks", []))
             except ValueError as exc:
                 self.status_update.emit(f"[Architect] Rejected unsafe task plan: {exc}")
                 self.finished_swarm.emit(False, f"Unsafe task plan: {exc}")
+                self._process_events_if_main_thread()
                 return
 
             if not tasks:
                 self.status_update.emit("[Swarm] No coding tasks identified by the Architect.")
                 self.finished_swarm.emit(True, "No actions needed.")
+                self._process_events_if_main_thread()
                 return
 
             self.status_update.emit(f"[Swarm] Architect identified {len(tasks)} files to modify.")
+            self._process_events_if_main_thread()
             
             # Initialize tasks status
             for t in tasks:
                 self.state.tasks_status[t["filepath"]] = "pending"
                 self.task_status_changed.emit(t["filepath"], "pending", "Architect queued task")
-
-            # Phase 2 & 3: Coder and Tester loop
+            self._process_events_if_main_thread()
+            
             all_successful = True
             changed_files = []
 
             # 1. Group tasks into layers
             layers = self.build_dependency_layers(tasks)
             self.dependency_layers_built.emit(layers)
+            self._process_events_if_main_thread()
             self.status_update.emit(f"[Swarm] Divided {len(tasks)} tasks into {len(layers)} dependency layers.")
-
-            import concurrent.futures
 
             for layer_idx, layer in enumerate(layers, 1):
                 if self._stop_requested:
@@ -303,123 +389,36 @@ class SwarmOrchestratorThread(QThread):
                     return
 
                 self.status_update.emit(f"[Swarm] Starting execution of Layer {layer_idx}/{len(layers)} ({len(layer)} tasks)...")
-                self.layer_started.emit(layer_idx, len(layers), layer)
-
+                
                 layer_success = False
                 layer_retries = 0
                 max_layer_retries = 3
-                # We track the failure trace to pass to the coder agents
                 layer_failure_traces = {t["filepath"]: None for t in layer}
-
+                
                 while not layer_success and layer_retries < max_layer_retries:
                     if self._stop_requested:
                         self.finished_swarm.emit(False, "Execution stopped by user.")
                         return
-
-                    # Run coders in parallel
-                    futures = {}
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=len(layer)) as executor:
-                        for task in layer:
-                            filepath = task["filepath"]
-                            instructions = task["instructions"]
-                            trace = layer_failure_traces.get(filepath)
-                            self.task_status_changed.emit(filepath, "in_progress", f"Layer {layer_idx} coder running")
-                            
-                            # Submit worker
-                            futures[executor.submit(self._run_single_coder, filepath, instructions, trace)] = filepath
-
-                    # Wait for all coders to finish and get results
-                    layer_coder_results = {}
-                    for future in concurrent.futures.as_completed(futures):
-                        filepath = futures[future]
-                        try:
-                            success, file_path_written, new_content, error_msg = future.result()
-                            layer_coder_results[filepath] = {
-                                "success": success,
-                                "file_path_written": file_path_written,
-                                "new_content": new_content,
-                                "error_msg": error_msg
-                            }
-                        except Exception as e:
-                            layer_coder_results[filepath] = {
-                                "success": False,
-                                "file_path_written": None,
-                                "new_content": None,
-                                "error_msg": f"Thread exception: {e}"
-                            }
-
-                    # Check if all coders succeeded in generating syntax-valid files
-                    all_coders_ok = True
-                    for filepath, res in layer_coder_results.items():
-                        if not res["success"]:
-                            all_coders_ok = False
-                            self.state.tasks_status[filepath] = "failed"
-                            layer_failure_traces[filepath] = res["error_msg"]
-                            self.status_update.emit(f"[Coder] Code generation failed for {filepath}: {res['error_msg']}")
-                            self.task_status_changed.emit(filepath, "failed", res["error_msg"] or "Coder failed")
-                            self.traceback_captured.emit(filepath, res["error_msg"] or "")
-                            self.test_result.emit(False, res["error_msg"])
-                        else:
-                            self.state.tasks_status[filepath] = "in_progress"
-                            self.task_status_changed.emit(filepath, "generated", "Coder produced syntax-valid content")
-                            # Write changes to the file if they were successfully generated and validated
-                            if res["file_path_written"] and res["new_content"] is not None:
-                                try:
-                                    os.makedirs(os.path.dirname(res["file_path_written"]), exist_ok=True)
-                                    with open(res["file_path_written"], "w", encoding="utf-8") as f:
-                                        f.write(res["new_content"])
-                                    self.file_edited.emit(filepath, res["new_content"])
-                                    self.task_status_changed.emit(filepath, "written", "File written; awaiting verification")
-                                except Exception as exc:
-                                    all_coders_ok = False
-                                    layer_failure_traces[filepath] = f"Write error: {exc}"
-                                    self.status_update.emit(f"[Error] Failed to write {filepath}: {exc}")
-                                    self.task_status_changed.emit(filepath, "failed", f"Write error: {exc}")
-                                    self.traceback_captured.emit(filepath, f"Write error: {exc}")
-
-                    if not all_coders_ok:
+                    
+                    layer_success = self._run_layer(layer, layer_idx, len(layers), layer_failure_traces)
+                    if not layer_success:
                         layer_retries += 1
-                        self.status_update.emit(f"[Swarm] Layer {layer_idx} had generation/validation failures. Retrying layer (Attempt {layer_retries + 1}/{max_layer_retries})...")
-                        continue
-
-                    # Run TesterAgent verification
-                    self.status_update.emit(f"[Tester] Running tests: {self.state.test_command}...")
-                    self.verification_started.emit(layer_idx, self.state.test_command)
-                    test_res = self.tester.run_test_command(self.state.test_command)
-                    self.state.test_runs.append(test_res)
-
-                    if test_res["passed"]:
-                        self.status_update.emit(f"[Tester] Verification PASSED for all tasks in Layer {layer_idx}!")
-                        for task in layer:
-                            self.state.tasks_status[task["filepath"]] = "completed"
-                            self.task_status_changed.emit(task["filepath"], "completed", f"Layer {layer_idx} verified")
-                            if task["filepath"] not in changed_files:
-                                changed_files.append(task["filepath"])
-                        self.test_result.emit(True, "")
-                        layer_success = True
-                        self.layer_finished.emit(layer_idx, True, f"Layer {layer_idx} verified")
-                    else:
-                        failure_trace = test_res["error_trace"]
-                        self.status_update.emit(f"[Tester] Verification FAILED for Layer {layer_idx}!")
-                        self.test_result.emit(False, failure_trace)
-                        self.traceback_captured.emit(f"Layer {layer_idx}", failure_trace)
-                        for task in layer:
-                            layer_failure_traces[task["filepath"]] = failure_trace
-                            self.task_status_changed.emit(task["filepath"], "verification_failed", failure_trace)
-                        layer_retries += 1
-
-                if not layer_success:
+                        if layer_retries < max_layer_retries:
+                            self.status_update.emit(f"[Swarm] Layer {layer_idx} had failures. Retrying layer (Attempt {layer_retries + 1}/{max_layer_retries})...")
+                
+                if layer_success:
+                    for task in layer:
+                        if task["filepath"] not in changed_files:
+                            changed_files.append(task["filepath"])
+                else:
                     all_successful = False
                     self.status_update.emit(f"[Error] Failed to verify Layer {layer_idx} tasks after {max_layer_retries} attempts.")
-                    for task in layer:
-                        if self.state.tasks_status[task["filepath"]] != "completed":
-                            self.state.tasks_status[task["filepath"]] = "failed"
-                            self.task_status_changed.emit(task["filepath"], "failed", f"Layer {layer_idx} exhausted retries")
-                    self.layer_finished.emit(layer_idx, False, f"Layer {layer_idx} exhausted retries")
 
             summary = f"Modified files: {', '.join(changed_files)}" if changed_files else "No files modified successfully."
             self.finished_swarm.emit(all_successful, summary)
+            self._process_events_if_main_thread()
 
         except Exception as e:
             self.status_update.emit(f"[Error] Swarm runtime exception: {e}")
             self.finished_swarm.emit(False, f"Exception: {e}")
+            self._process_events_if_main_thread()

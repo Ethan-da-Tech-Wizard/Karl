@@ -4,7 +4,7 @@ import os
 import time
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
+from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QPlainTextEdit,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -231,6 +232,20 @@ class SwarmStudioWorkspace(QWidget):
         layout.setContentsMargins(8, 0, 0, 0)
         layout.setSpacing(8)
 
+        stream_header = QLabel("Live Code Stream")
+        stream_header.setObjectName("section-header")
+        layout.addWidget(stream_header)
+
+        self._stream_view = QPlainTextEdit()
+        self._stream_view.setReadOnly(True)
+        self._stream_view.setFont(QFont("Monospace", 8))
+        self._stream_view.setPlaceholderText("Tokens appear here as each coder agent writes...")
+        self._stream_view.setMaximumHeight(180)
+        self._stream_view.setStyleSheet(
+            "background: #080810; color: #A0D8B0; border: 1px solid #202040; border-radius: 4px; padding: 4px;"
+        )
+        layout.addWidget(self._stream_view)
+
         layout.addWidget(QLabel("File Preview"))
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
@@ -313,6 +328,7 @@ class SwarmStudioWorkspace(QWidget):
         self._thread.file_edited.connect(self._on_file_edited)
         self._thread.test_result.connect(self._on_test_result)
         self._thread.finished_swarm.connect(self._on_finished)
+        self._thread.coder_token.connect(self._on_coder_token)
         self._thread.finished.connect(self._thread.deleteLater)
 
         self._launch_btn.setEnabled(False)
@@ -333,6 +349,8 @@ class SwarmStudioWorkspace(QWidget):
         self._status_log.clear()
         self._preview.clear()
         self._traceback.clear()
+        self._stream_view.clear()
+        self._stream_current_file = None
         self._progress.setValue(0)
         self._layer_lbl.setText("Layers: 0")
         self._task_lbl.setText("Tasks: 0")
@@ -427,6 +445,15 @@ class SwarmStudioWorkspace(QWidget):
         else:
             self._result_banner.setStyleSheet("color: #FF5C7A; font-weight: bold;")
         self._thread = None
+
+    def _on_coder_token(self, filepath: str, token: str):
+        # Set header on first token for this file
+        current_header = getattr(self, '_stream_current_file', None)
+        if current_header != filepath:
+            self._stream_current_file = filepath
+            self._stream_view.appendPlainText(f"\n── {filepath} ──")
+        self._stream_view.moveCursor(QTextCursor.MoveOperation.End)
+        self._stream_view.insertPlainText(token)
 
     def _ensure_task_row(self, filepath: str, status: str, layer: str, detail: str):
         if not filepath:
