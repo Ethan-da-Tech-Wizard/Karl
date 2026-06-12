@@ -563,8 +563,8 @@ Eval Suite → pick dataset.jsonl → run
 7. **No `upgrade_manager.py` exists anymore.** It was removed. Do not reference or
    re-create it. Self-upgrade functionality has been permanently cut.
 
-8. **`Karl-main/` is a stale archive copy.** Do not modify it. It exists only as a
-   reference snapshot of the original codebase. All active work is in the root.
+8. **`Karl-main/` was removed.** It was a stale snapshot of the original codebase and
+   is no longer tracked. All active work is in the root. Do not re-create it.
 
 9. **`AppState` is the only cross-workspace communication channel.** Workspaces must
    not import each other or reference `MainWindow`. If a new workspace needs to trigger

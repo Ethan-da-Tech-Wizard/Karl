@@ -13,7 +13,16 @@ data/logs/
 data/sessions/
 
 # model_registry.json is SOURCE CONTROLLED — do not ignore it
-# active_model.json is written at runtime and committed by upgrade_manager
+# Runtime-written state files (never commit)
+data/active_model.json
+data/active_vision_model.json
+data/ui_config.json
+data/theme_config.json
+
+# Local scratch datasets (kept on disk, not in source control)
+workers.csv
+workers.xlsx
+*.xlsx
 
 # Training data and fine-tuned adapters (large, user-specific)
 data/training/
