@@ -187,6 +187,7 @@ UI_CONFIG_DEFAULTS: dict[str, Any] = {
     "glow_enabled": True,
     "animation_intensity": 1.0,
     "glow_strength": 1.0,
+    "theme_mode": "midnight",
 }
 
 

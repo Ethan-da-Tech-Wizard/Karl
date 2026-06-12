@@ -31,6 +31,7 @@ class AgenticThread(QThread):
     iteration_finished = pyqtSignal(int, str, str, dict)
     live_stats = pyqtSignal(int, float)
     loop_finished = pyqtSignal(int)
+    reload_notice = pyqtSignal(str)   # module name that was hot-reloaded
     error_occurred = pyqtSignal(str)
 
     def __init__(self, system_prompt, initial_history, hyperparams,
@@ -236,6 +237,7 @@ class AgenticThread(QThread):
         try:
             importlib.reload(core.interaction_loop)
             importlib.reload(core.agentic_loop)
+            self.reload_notice.emit("core/interaction_loop.py + core/agentic_loop.py")
 
             model_path = None
             if self.model_name:

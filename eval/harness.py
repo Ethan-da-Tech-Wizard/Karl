@@ -316,6 +316,24 @@ class EvalHarness:
             timestamp=datetime.now(timezone.utc).isoformat(),
             cases=results,
         )
+
+        # Persist last eval result for the Flywheel dashboard
+        try:
+            os.makedirs("data", exist_ok=True)
+            summary = {
+                "score": report.pass_rate,
+                "avg_score": report.avg_score,
+                "dataset": os.path.basename(dataset_path),
+                "workflow": workflow_name,
+                "timestamp": report.timestamp,
+                "cases_run": total,
+                "passed": passed,
+            }
+            with open("data/eval_last.json", "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2)
+        except Exception:
+            pass
+
         return report
 
     def save_report(self, report: EvalReport, output_dir: str = "eval/results") -> str:

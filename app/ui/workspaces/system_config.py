@@ -655,6 +655,17 @@ class SystemConfigWorkspace(QWidget):
         self._settings_rows.append(("Accessibility", row4))
         pp_layout.addWidget(row4)
 
+        # Theme Mode settings row
+        self._theme_mode_combo = QComboBox()
+        self._theme_mode_combo.addItems(["midnight", "slate", "ember"])
+        self._theme_mode_combo.setCurrentText(getattr(self.state, "theme_mode", "midnight"))
+        self._theme_mode_combo.currentTextChanged.connect(self._on_theme_mode_changed)
+        self._theme_mode_combo.setFixedWidth(120)
+
+        row5 = _row("Theme", self._theme_mode_combo)
+        self._settings_rows.append(("Theme", row5))
+        pp_layout.addWidget(row5)
+
         apply_btn = QPushButton("apply defaults")
         apply_btn.setObjectName("btn-primary")
         apply_btn.setToolTip("Save and apply default generation limits")
@@ -673,6 +684,13 @@ class SystemConfigWorkspace(QWidget):
             self._reduced_motion_check_app.setChecked(is_checked)
             self._reduced_motion_check_app.blockSignals(False)
         self._apply_active_theme()
+        self._save_appearance_config_silent()
+
+    def _on_theme_mode_changed(self, text: str):
+        self.state.theme_mode = text
+        from app.ui import themes
+        from PyQt6.QtWidgets import QApplication
+        QApplication.instance().setStyleSheet(themes.get_theme_stylesheet(self.state))
         self._save_appearance_config_silent()
 
     # ── identity tab ──────────────────────────────────────────────────────────
@@ -1630,6 +1648,13 @@ class SystemConfigWorkspace(QWidget):
         glow_enabled = config["glow_enabled"]
         animation_intensity = config["animation_intensity"]
         glow_strength = config["glow_strength"]
+        theme_mode = config.get("theme_mode", "midnight")
+
+        self.state.theme_mode = theme_mode
+        if hasattr(self, "_theme_mode_combo"):
+            self._theme_mode_combo.blockSignals(True)
+            self._theme_mode_combo.setCurrentText(theme_mode)
+            self._theme_mode_combo.blockSignals(False)
 
         self._theme_preset_combo.blockSignals(True)
         idx = self._theme_preset_combo.findText(theme_preset)
@@ -1675,6 +1700,12 @@ class SystemConfigWorkspace(QWidget):
         glow_enabled = getattr(self.state, "glow_enabled", True)
         animation_intensity = float(getattr(self.state, "animation_intensity", 1.0))
         glow_strength = float(getattr(self.state, "glow_strength", 1.0))
+        theme_mode = getattr(self.state, "theme_mode", "midnight")
+
+        if hasattr(self, "_theme_mode_combo"):
+            self._theme_mode_combo.blockSignals(True)
+            self._theme_mode_combo.setCurrentText(theme_mode)
+            self._theme_mode_combo.blockSignals(False)
 
         self._theme_preset_combo.blockSignals(True)
         idx = self._theme_preset_combo.findText(theme_preset)
@@ -1935,6 +1966,7 @@ class SystemConfigWorkspace(QWidget):
             "glow_enabled": self.state.glow_enabled,
             "animation_intensity": self.state.animation_intensity,
             "glow_strength": self.state.glow_strength,
+            "theme_mode": getattr(self.state, "theme_mode", "midnight"),
         })
 
     def _save_appearance_config(self):

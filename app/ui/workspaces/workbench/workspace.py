@@ -22,9 +22,9 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QSpinBox, QListWidget, QListWidgetItem,
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
     QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox, QColorDialog,
-    QApplication,
+    QApplication, QProgressBar,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
 
 
@@ -107,6 +107,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._refresh_sessions()
         self._refresh_model_combo()
         self._update_expert_strip()
+        self._update_token_budget()
 
 
     # ── build ─────────────────────────────────────────────────────────────────
@@ -224,6 +225,13 @@ class WorkbenchWorkspace(QMainWindow):
         self._command_header = self._build_command_header()
         layout.addWidget(self._command_header)
 
+        # reload notice banner
+        self._reload_notice_lbl = QLabel("")
+        self._reload_notice_lbl.setObjectName("reload-notice")
+        self._reload_notice_lbl.setVisible(False)
+        self._reload_notice_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._reload_notice_lbl)
+
         # chat display
         self._chat_view = ChatView(w)
         self._chat_view.anchorClicked.connect(self._on_chat_link_clicked)
@@ -274,18 +282,54 @@ class WorkbenchWorkspace(QMainWindow):
         layout.addWidget(self._params_drawer)
         layout.addWidget(_hline())
 
+        # Hot-reload notice banner (hidden until a generation triggers a reload)
+        self._reload_notice = QLabel("")
+        self._reload_notice.setObjectName("reload-notice")
+        self._reload_notice.setVisible(False)
+        self._reload_notice.setStyleSheet(
+            "background: #0F1D36; color: #7EC8E3; font-size: 8pt; "
+            "padding: 2px 10px; border-left: 2px solid #7EC8E3;"
+        )
+        self._reload_hide_timer = QTimer(self)
+        self._reload_hide_timer.setSingleShot(True)
+        self._reload_hide_timer.timeout.connect(lambda: self._reload_notice.setVisible(False))
+        layout.addWidget(self._reload_notice)
 
         # input area
         input_container = QWidget()
-        input_container.setFixedHeight(120)
+        input_container.setFixedHeight(140)
         ic_layout = QVBoxLayout(input_container)
         ic_layout.setContentsMargins(8, 6, 8, 6)
         ic_layout.setSpacing(6)
+
+        # Token Budget HUD
+        token_row = QWidget()
+        token_layout = QHBoxLayout(token_row)
+        token_layout.setContentsMargins(0, 0, 0, 0)
+        token_layout.setSpacing(8)
+
+        self._token_lbl = QLabel("0 / 4,096 tokens")
+        self._token_lbl.setObjectName("lbl-muted")
+        self._token_lbl.setStyleSheet("font-size: 8pt;")
+
+        from PyQt6.QtWidgets import QProgressBar
+        self._token_bar = QProgressBar()
+        self._token_bar.setObjectName("token-budget-bar")
+        self._token_bar.setFixedHeight(6)
+        self._token_bar.setTextVisible(False)
+        self._token_bar.setRange(0, 100)
+        self._token_bar.setValue(0)
+
+        token_layout.addWidget(self._token_bar, 1)
+        token_layout.addWidget(self._token_lbl)
+
+        ic_layout.addWidget(token_row)
 
         self._input = QTextEdit()
         self._input.setPlaceholderText("Ask Karl...")
         self._input.setFixedHeight(72)
         self._input.installEventFilter(self)
+        self._input.textChanged.connect(self._update_token_budget)
         ic_layout.addWidget(self._input)
 
         # controls
@@ -560,6 +604,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._pending_image_attachments = []
         prompt_text = self._build_image_prompt_context(text, attachments) if attachments else text
         user_node = self.chat_history.add_message("user", text, attachments=attachments)
+        self._update_token_budget()
         self._chat_view.push_user(text, user_node.id, attachments=attachments)
         self._pending_generation_history = list(self.chat_history)
         if self._pending_generation_history:
@@ -748,6 +793,40 @@ class WorkbenchWorkspace(QMainWindow):
         except KeyError:
             return "reasoning_minimal"
 
+    def _update_token_budget(self):
+        from app.engine.model_loader import ModelLoader
+        
+        total_words = 0
+        if self.chat_history:
+            for msg in self.chat_history:
+                total_words += len(msg.get("content", "").split())
+                
+        if hasattr(self, "_input"):
+            total_words += len(self._input.toPlainText().split())
+            
+        estimated = int(total_words * 1.3)
+        n_ctx = ModelLoader.n_ctx()
+        
+        pct = int((estimated / n_ctx) * 100) if n_ctx > 0 else 0
+        pct = max(0, min(100, pct))
+        
+        self._token_bar.setValue(pct)
+        self._token_lbl.setText(f"{estimated:,} / {n_ctx:,} tokens")
+        
+        if pct < 70:
+            color = "#00C2FF"  # cyan
+        elif pct < 90:
+            color = "#FFCC00"  # yellow
+        else:
+            color = "#FF3366"  # red
+            
+        self._token_bar.setStyleSheet(f"QProgressBar#token-budget-bar::chunk {{ background-color: {color}; }}")
+
+    def _show_reload_notice(self, module_name: str):
+        self._reload_notice.setText(f"⟳ {module_name} reloaded")
+        self._reload_notice.setVisible(True)
+        self._reload_hide_timer.start(3000)
+
     def _start_single(self, chunks: list[str]):
         self._chat_view.begin_stream()
         self._set_busy(True)
@@ -768,6 +847,7 @@ class WorkbenchWorkspace(QMainWindow):
         t.live_stats.connect(self._on_live_stats)
         t.generation_finished.connect(self._on_done)
         t.error_occurred.connect(self._on_error)
+        t.reload_notice.connect(self._show_reload_notice)
         
         # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
         self._active_threads.add(t)
@@ -798,6 +878,7 @@ class WorkbenchWorkspace(QMainWindow):
         t.iteration_finished.connect(self._on_iteration)
         t.loop_finished.connect(self._on_loop_done)
         t.error_occurred.connect(self._on_error)
+        t.reload_notice.connect(self._show_reload_notice)
         
         # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
         self._active_threads.add(t)
@@ -1151,6 +1232,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._sessions_list.blockSignals(True)
         self._sessions_list.setCurrentItem(None)
         self._sessions_list.blockSignals(False)
+        self._update_token_budget()
 
     # ── thread slots ──────────────────────────────────────────────────────────
 
@@ -1197,6 +1279,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._thread = None
         self.status_changed.emit("idle", False)
         self._save_current_session()
+        self._update_token_budget()
 
     def _on_iteration(self, index: int, _thought: str, response: str, diagnostics: dict | None = None):
         self._reasoning_stats_lbl.setText("")
@@ -1206,6 +1289,7 @@ class WorkbenchWorkspace(QMainWindow):
             diag_suffix = f" ({diagnostics.get('generation_tokens', 0)} tokens in {diagnostics.get('total_time', 0):.2f}s @ {diagnostics.get('total_tps', 0):.1f} t/s)"
         self._chat_view.append_system_note(f"— iteration {index + 1} complete{diag_suffix} —")
         self._last_response = response
+        self._update_token_budget()
 
     def _on_loop_done(self, total: int):
         self._reasoning_stats_lbl.setText("")
@@ -1236,6 +1320,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._thread = None
         self.status_changed.emit("idle", False)
         self._save_current_session()
+        self._update_token_budget()
 
     def _on_error(self, msg: str):
         self._reasoning_stats_lbl.setText("")
@@ -1370,6 +1455,7 @@ class WorkbenchWorkspace(QMainWindow):
             self._thumb_btn.setEnabled(False)
             self._thumb_down_btn.setEnabled(False)
             self._correct_btn.setEnabled(False)
+        self._update_token_budget()
 
     def on_close(self):
         self._save_current_session()

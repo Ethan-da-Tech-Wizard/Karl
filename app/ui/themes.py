@@ -365,6 +365,60 @@ THEMES = {
         "danger": "#FF2255",
         "glow_strength": 1.8,
         "motion_style": "pulse"
+    },
+    "Karl Midnight": {
+        "description": "Pure midnight variant — same obsidian core but deeper blacks and cooler border tones.",
+        "accent": "#00E5FF",
+        "accent_alt": "#007A99",
+        "bg_deep": "#000000",
+        "bg_surface": "#080810",
+        "bg_raised": "#0F0F20",
+        "border": "#18183A",
+        "border_hi": "#28285A",
+        "text_hi": "#F0F5FF",
+        "text_mid": "#8899BB",
+        "text_lo": "#445577",
+        "success": "#00FFAA",
+        "warning": "#FFCC00",
+        "danger": "#FF3366",
+        "glow_strength": 1.2,
+        "motion_style": "normal"
+    },
+    "Karl Slate": {
+        "description": "Cooler blue-gray slate base with subdued cyan accents and high-readability text.",
+        "accent": "#7EC8E3",
+        "accent_alt": "#4A9BB8",
+        "bg_deep": "#0A0D11",
+        "bg_surface": "#141820",
+        "bg_raised": "#1E2430",
+        "border": "#2A3040",
+        "border_hi": "#3A4254",
+        "text_hi": "#DDE3EF",
+        "text_mid": "#8A96AA",
+        "text_lo": "#505A6E",
+        "success": "#5DDBA4",
+        "warning": "#E8C96A",
+        "danger": "#E06070",
+        "glow_strength": 0.6,
+        "motion_style": "slow"
+    },
+    "Karl Ember": {
+        "description": "Warm amber and deep brown tones with glowing orange accents for focused night sessions.",
+        "accent": "#FF9A3C",
+        "accent_alt": "#CC6A00",
+        "bg_deep": "#0C0800",
+        "bg_surface": "#1A1205",
+        "bg_raised": "#261A08",
+        "border": "#3D2A10",
+        "border_hi": "#5A3E1A",
+        "text_hi": "#FFF2DE",
+        "text_mid": "#C8A870",
+        "text_lo": "#7A6040",
+        "success": "#78C84A",
+        "warning": "#FFCC00",
+        "danger": "#FF4444",
+        "glow_strength": 0.9,
+        "motion_style": "normal"
     }
 }
 
@@ -407,20 +461,42 @@ def _tint_hex_color(hex_str: str, r_mod: int, g_mod: int, b_mod: int) -> str:
     except ValueError:
         return "#" + hex_str
 
-def get_theme_colors(state_or_name, custom_accent=None, bg_tone="Default") -> dict:
+def get_theme_colors(state_or_name, custom_accent=None, bg_tone="Default", mode: str = None) -> dict:
     """Get the palette colors dictionary for the given theme, custom accent and background overlays."""
     if hasattr(state_or_name, "theme_preset"):
         state = state_or_name
         theme_name = getattr(state, "theme_preset", "Karl Obsidian Core")
         custom_accent = getattr(state, "custom_accent", None)
+        if mode is None:
+            mode = getattr(state, "theme_mode", "midnight")
         tone = "Default"
     else:
         theme_name = state_or_name
         if theme_name == "Karl Obsidian":
             theme_name = "Karl Obsidian Core"
+        if mode is None:
+            mode = "midnight"
         tone = bg_tone
         
     raw = dict(THEMES.get(theme_name, THEMES["Karl Obsidian Core"]))
+
+    # Theme mode overrides
+    if mode == "slate":
+        raw["bg_deep"] = "#0B0F17"
+        raw["bg_surface"] = "#151C2C"
+        raw["bg_raised"] = "#202A3E"
+        raw["border"] = "#2E364A"
+        raw["border_hi"] = "#3E4C66"
+    elif mode == "ember":
+        raw["bg_deep"] = "#120C0A"
+        raw["bg_surface"] = "#1A1310"
+        raw["bg_raised"] = "#261D1A"
+        raw["border"] = "#3D2E29"
+        raw["border_hi"] = "#5C4740"
+        if not custom_accent:
+            raw["accent"] = "#FF8C00"
+            raw["accent_alt"] = "#B35F00"
+
     if custom_accent:
         raw["accent"] = custom_accent
         raw["accent_alt"] = darken_hex_color(custom_accent, 0.7)
@@ -475,11 +551,17 @@ _STYLESHEET_CACHE: dict = {}
 _STYLESHEET_CACHE_MAX = 64
 
 
-def get_theme_stylesheet(state_or_name, custom_accent=None, bg_tone="Default") -> str:
+def get_theme_stylesheet(state_or_name, custom_accent=None, bg_tone="Default", mode: str = None) -> str:
     """Compile the QSS stylesheet for the given state configurations."""
     layout_preset = "Focused Workbench"
     if hasattr(state_or_name, "layout_preset"):
         layout_preset = getattr(state_or_name, "layout_preset", "Focused Workbench")
+
+    theme_mode = "midnight"
+    if hasattr(state_or_name, "theme_mode"):
+        theme_mode = getattr(state_or_name, "theme_mode", "midnight")
+    elif mode is not None:
+        theme_mode = mode
 
     if hasattr(state_or_name, "theme_preset"):
         cache_key = (
@@ -487,15 +569,16 @@ def get_theme_stylesheet(state_or_name, custom_accent=None, bg_tone="Default") -
             getattr(state_or_name, "custom_accent", None),
             "Default",
             layout_preset,
+            theme_mode,
         )
     else:
-        cache_key = (state_or_name, custom_accent, bg_tone, layout_preset)
+        cache_key = (state_or_name, custom_accent, bg_tone, layout_preset, theme_mode)
 
     cached = _STYLESHEET_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    p = get_theme_colors(state_or_name, custom_accent, bg_tone)
+    p = get_theme_colors(state_or_name, custom_accent, bg_tone, mode=theme_mode)
     p["mono"] = MONO
 
     margin = 12
@@ -957,6 +1040,21 @@ QMainWindow::separator:hover {{
     background: {accent};
 }}
 
+/* ── Token Budget Bar ──────────────────────────────────────── */
+QProgressBar#token-budget-bar {{
+    background: {bg_input};
+    border: none;
+    border-radius: 3px;
+}}
+
+/* ── Reload Notice Banner ────────────────────────────────── */
+#reload-notice {{
+    background: {bg_surface};
+    color: {accent};
+    border-bottom: 1px solid {border};
+    font-size: 8.5pt;
+}}
+
 /* ── ToolTip ──────────────────────────────────────────────── */
 QToolTip {{
     background: {bg_raised};
@@ -969,9 +1067,10 @@ QToolTip {{
 }}
 """
 
-def stylesheet(accent: str = ACCENT_DEFAULT) -> str:
+def stylesheet(accent: str = ACCENT_DEFAULT, mode: str = "midnight") -> str:
     class DummyState:
         theme_preset = "Karl Obsidian Core"
         custom_accent = accent
         layout_preset = "Focused Workbench"
+        theme_mode = mode
     return get_theme_stylesheet(DummyState())

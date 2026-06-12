@@ -26,6 +26,7 @@ class LLMThread(QThread):
     # thought, response, truncated, ended_in_thought, diagnostics
     generation_finished = pyqtSignal(str, str, bool, bool, dict)
     live_stats = pyqtSignal(int, float)
+    reload_notice = pyqtSignal(str)   # module name that was hot-reloaded
     error_occurred = pyqtSignal(str)
 
     def __init__(self, system_prompt, chat_history, hyperparams,
@@ -75,6 +76,7 @@ class LLMThread(QThread):
     def run(self):
         try:
             importlib.reload(core.interaction_loop)
+            self.reload_notice.emit("core/interaction_loop.py")
 
             llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
             trimmed_history = self._trim_history(self.chat_history)

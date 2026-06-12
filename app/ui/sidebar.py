@@ -9,8 +9,9 @@ _ITEMS = [
     ("◇", "Vision",     3),
     ("⬡", "Training",   4),
     ("◎", "Eval",       5),
-    ("≡", "System",     6),
-    ("▤", "Codex",      7),
+    ("☄", "Swarm",      6),
+    ("≡", "System",     7),
+    ("▤", "Codex",      8),
 ]
 
 
@@ -56,8 +57,9 @@ class Sidebar(QWidget):
             3: "Vision Workbench (Saved images, OCR, and screenshot reasoning)",
             4: "Training Studio (LoRA/QLoRA fine-tuning & curator)",
             5: "Eval Suite (Automated model benchmarking)",
-            6: "System Config (Hardware readout & model loader settings)",
-            7: "Codex (Prompt taxonomy & information guide)",
+            6: "Swarm (Autonomous multi-agent loop)",
+            7: "System Config (Hardware readout & model loader settings)",
+            8: "Codex (Prompt taxonomy & information guide)",
         }
         self._buttons: list[_SidebarButton] = []
         for icon, label, idx in _ITEMS:

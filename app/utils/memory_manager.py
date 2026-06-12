@@ -143,3 +143,23 @@ class MemoryManager:
                         "updated_time": updated_time
                     })
         return sorted(sessions, key=lambda x: x["updated_time"], reverse=True)
+
+    def load_swarm_history(self):
+        filepath = os.path.join(self.sessions_dir, "../swarm_history.json")
+        filepath = os.path.abspath(filepath)
+        if not os.path.exists(filepath):
+            return []
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+
+    def save_swarm_history(self, history):
+        filepath = os.path.join(self.sessions_dir, "../swarm_history.json")
+        filepath = os.path.abspath(filepath)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(history[:10], f, indent=4)
+        except Exception:
+            pass

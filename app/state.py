@@ -23,6 +23,14 @@ class AppState:
         self.adapter_name: str | None = None
         self.generating: bool = False
 
+        # Swarm Orchestrator state variables
+        self.swarm_running: bool = False
+        self.swarm_last_objective: str = ""
+        self.swarm_last_workspace: str = ""
+
+        # UI Theme mode
+        self.theme_mode: str = "midnight"
+
         # RAG retrieval parameters wired between KB and Workbench
         self.rag_threshold: float = 0.0
         self.rag_top_k: int = 3

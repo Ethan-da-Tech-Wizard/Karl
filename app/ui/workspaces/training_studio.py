@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QCheckBox, QInputDialog, QGridLayout,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QFont
 from app.ui.widgets.glow_panel import GlowPanel
 
 
@@ -207,6 +208,118 @@ class TrainingThread(QThread):
                 pass
 
 
+class _FlywheelStatsThread(QThread):
+    """Reads flywheel stats off the main thread to avoid blocking the UI."""
+    stats_ready = pyqtSignal(dict)
+
+    def run(self):
+        stats = {}
+        try:
+            # Traces
+            import glob
+            trace_files = glob.glob("data/logs/traces/*.jsonl")
+            total_traces = 0
+            for fp in trace_files:
+                try:
+                    with open(fp, "r", encoding="utf-8") as f:
+                        total_traces += sum(1 for line in f if line.strip())
+                except Exception:
+                    pass
+            stats["traces_total"] = str(total_traces)
+
+            # Sessions
+            session_files = glob.glob("data/sessions/*.json")
+            stats["sessions_saved"] = str(len(session_files))
+            if session_files:
+                latest = max(session_files, key=os.path.getmtime)
+                import time
+                age = time.time() - os.path.getmtime(latest)
+                if age < 3600:
+                    stats["last_session"] = f"{int(age // 60)}m ago"
+                elif age < 86400:
+                    stats["last_session"] = f"{int(age // 3600)}h ago"
+                else:
+                    stats["last_session"] = f"{int(age // 86400)}d ago"
+            else:
+                stats["last_session"] = "none"
+
+            # Feedback from curated.jsonl
+            thumbs_up = thumbs_down = corrections = 0
+            curated_path = "data/training/curated.jsonl"
+            if os.path.exists(curated_path):
+                with open(curated_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            src = entry.get("source", "")
+                            if src == "thumbs_up":
+                                thumbs_up += 1
+                            elif src == "thumbs_down":
+                                thumbs_down += 1
+                            elif src == "corrected":
+                                corrections += 1
+                        except Exception:
+                            pass
+            stats["thumbs_up"] = str(thumbs_up)
+            stats["thumbs_down"] = str(thumbs_down)
+            stats["corrections"] = str(corrections)
+            stats["sft_examples"] = str(thumbs_up + corrections)
+            stats["dpo_pairs"] = str(min(thumbs_up, thumbs_down))
+
+            # Last export
+            export_files = sorted(
+                glob.glob("data/training/*.jsonl") + glob.glob("data/training/*.json"),
+                key=os.path.getmtime, reverse=True
+            )
+            export_files = [f for f in export_files if "curated" not in f]
+            if export_files:
+                import time as _time
+                age = _time.time() - os.path.getmtime(export_files[0])
+                stats["last_export"] = f"{int(age // 3600)}h ago" if age > 3600 else f"{int(age // 60)}m ago"
+            else:
+                stats["last_export"] = "none"
+
+            # Last SFT export content
+            last_sft_content = ""
+            export_jsonls = sorted(glob.glob("data/training/*.jsonl"), key=os.path.getmtime, reverse=True)
+            export_jsonls = [f for f in export_jsonls if "curated" not in os.path.basename(f)]
+            if export_jsonls:
+                try:
+                    with open(export_jsonls[0], "r", encoding="utf-8") as f:
+                        lines = []
+                        for _ in range(50):
+                            line = f.readline()
+                            if not line:
+                                break
+                            lines.append(line)
+                        last_sft_content = "".join(lines)
+                except Exception:
+                    pass
+            stats["last_sft_content"] = last_sft_content
+
+            # Eval score
+            if os.path.exists("data/eval_last.json"):
+                with open("data/eval_last.json", "r", encoding="utf-8") as f:
+                    eval_data = json.load(f)
+                score = eval_data.get("score", 0.0)
+                stats["eval_score"] = f"{score:.1%}"
+                stats["eval_dataset"] = eval_data.get("dataset", "—")
+                ts = eval_data.get("timestamp", "")
+                stats["eval_date"] = ts[:10] if ts else "—"
+            else:
+                stats["eval_score"] = "no data"
+                stats["eval_dataset"] = "—"
+                stats["eval_date"] = "—"
+
+        except Exception as e:
+            stats["traces_total"] = f"error: {e}"
+
+        self.stats_ready.emit(stats)
+
+
 class TrainingStudioWorkspace(QWidget):
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -242,12 +355,206 @@ class TrainingStudioWorkspace(QWidget):
         root.addWidget(desc)
 
         tabs = QTabWidget()
+        tabs.addTab(self._build_flywheel_tab(), "Flywheel")
         tabs.addTab(self._build_dataset_tab(), "Dataset")
         tabs.addTab(self._build_export_tab(), "Export")
         tabs.addTab(self._build_train_tab(), "Train")
+        tabs.currentChanged.connect(self._on_tab_changed)
+        self._tabs = tabs
         root.addWidget(tabs, 1)
 
         self._refresh()
+
+    # ── flywheel tab ─────────────────────────────────────────────────────────
+
+    def _build_flywheel_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        header_row = QWidget()
+        hl = QHBoxLayout(header_row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel("Self-Improvement Flywheel")
+        lbl.setObjectName("lbl-accent")
+        hl.addWidget(lbl)
+        hl.addStretch()
+        self._flywheel_refresh_btn = QPushButton("Refresh")
+        self._flywheel_refresh_btn.setObjectName("btn-ghost")
+        self._flywheel_refresh_btn.clicked.connect(self._load_flywheel_stats)
+        hl.addWidget(self._flywheel_refresh_btn)
+        layout.addWidget(header_row)
+
+        pipeline_lbl = QLabel(
+            "Interactions  →  Feedback  →  Training Data  →  Eval Score  →  Export"
+        )
+        pipeline_lbl.setObjectName("lbl-muted")
+        pipeline_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(pipeline_lbl)
+
+        # Cards row
+        cards = QWidget()
+        cl = QHBoxLayout(cards)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(10)
+
+        self._fw_interactions = self._flywheel_card(
+            "Interactions", ["traces_total", "sessions_saved", "last_session"]
+        )
+        self._fw_feedback = self._flywheel_card(
+            "Feedback", ["thumbs_up", "thumbs_down", "corrections"]
+        )
+        self._fw_data = self._flywheel_card(
+            "Training Data", ["sft_examples", "dpo_pairs", "last_export"]
+        )
+        # Add SFT and DPO export buttons directly inside the Training Data card
+        btn_lay_data = QHBoxLayout()
+        btn_lay_data.setSpacing(6)
+        card_export_sft = QPushButton("Export SFT")
+        card_export_sft.setObjectName("btn-primary")
+        card_export_sft.clicked.connect(self._flywheel_export_sft)
+        card_export_dpo = QPushButton("Export DPO")
+        card_export_dpo.setObjectName("btn-secondary")
+        card_export_dpo.clicked.connect(self._flywheel_export_dpo)
+        btn_lay_data.addWidget(card_export_sft)
+        btn_lay_data.addWidget(card_export_dpo)
+        # We insert the buttons above the stretch
+        self._fw_data.layout().insertLayout(self._fw_data.layout().count() - 1, btn_lay_data)
+
+        self._fw_eval = self._flywheel_card(
+            "Eval Score", ["eval_score", "eval_dataset", "eval_date"]
+        )
+        # Add Run Eval button inside the Eval Score card
+        btn_lay_eval = QHBoxLayout()
+        card_run_eval = QPushButton("Run Eval")
+        card_run_eval.setObjectName("btn-primary")
+        card_run_eval.clicked.connect(self._flywheel_goto_eval)
+        btn_lay_eval.addWidget(card_run_eval)
+        self._fw_eval.layout().insertLayout(self._fw_eval.layout().count() - 1, btn_lay_eval)
+
+        # Export & Preview Card
+        self._fw_export_card = QFrame()
+        self._fw_export_card.setObjectName("panel")
+        ec_lay = QVBoxLayout(self._fw_export_card)
+        ec_lay.setContentsMargins(10, 10, 10, 10)
+        ec_lay.setSpacing(6)
+
+        export_title = QLabel("EXPORT & PREVIEW")
+        export_title.setObjectName("section-header")
+        ec_lay.addWidget(export_title)
+        ec_lay.addWidget(_hline())
+
+        open_folder_btn = QPushButton("Open training folder")
+        open_folder_btn.setObjectName("btn-primary")
+        open_folder_btn.clicked.connect(self._open_training_folder)
+        ec_lay.addWidget(open_folder_btn)
+
+        preview_title = QLabel("Last Export Preview:")
+        preview_title.setObjectName("lbl-muted")
+        preview_title.setStyleSheet("font-size: 8pt; font-weight: bold;")
+        ec_lay.addWidget(preview_title)
+
+        self._sft_preview = QTextBrowser()
+        self._sft_preview.setFont(QFont("Monospace", 8.5))
+        self._sft_preview.setStyleSheet("background-color: #0E0F15; border: 1px solid #1A1A24;")
+        self._sft_preview.setPlaceholderText("No recent SFT exports found.")
+        ec_lay.addWidget(self._sft_preview, 1)
+
+        for card in (self._fw_interactions, self._fw_feedback, self._fw_data, self._fw_eval, self._fw_export_card):
+            cl.addWidget(card, 1)
+
+        layout.addWidget(cards)
+
+        self._fw_status_lbl = QLabel("")
+        self._fw_status_lbl.setObjectName("lbl-muted")
+        layout.addWidget(self._fw_status_lbl)
+
+        layout.addStretch()
+        return w
+
+    def _flywheel_card(self, title: str, field_ids: list) -> QWidget:
+        card = QFrame()
+        card.setObjectName("panel")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(10, 10, 10, 10)
+        cl.setSpacing(6)
+
+        title_lbl = QLabel(title.upper())
+        title_lbl.setObjectName("section-header")
+        cl.addWidget(title_lbl)
+        cl.addWidget(_hline())
+
+        self._fw_fields = getattr(self, "_fw_fields", {})
+        for fid in field_ids:
+            row = QWidget()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(4)
+            name_lbl = QLabel(fid.replace("_", " ").title() + ":")
+            name_lbl.setObjectName("lbl-muted")
+            name_lbl.setFixedWidth(100)
+            val_lbl = QLabel("—")
+            val_lbl.setObjectName("lbl-accent" if fid in ("traces_total", "thumbs_up", "sft_examples", "eval_score") else "")
+            rl.addWidget(name_lbl)
+            rl.addWidget(val_lbl, 1)
+            cl.addWidget(row)
+            self._fw_fields[fid] = val_lbl
+
+        cl.addStretch()
+        return card
+
+    def _on_tab_changed(self, idx: int):
+        if idx == 0:  # Flywheel tab
+            self._load_flywheel_stats()
+
+    def _load_flywheel_stats(self):
+        self._fw_status_lbl.setText("Loading stats...")
+        self._flywheel_refresh_btn.setEnabled(False)
+        t = _FlywheelStatsThread()
+        t.stats_ready.connect(self._apply_flywheel_stats)
+        t.finished.connect(lambda: self._flywheel_refresh_btn.setEnabled(True))
+        t.finished.connect(t.deleteLater)
+        self._active_threads.add(t)
+        t.finished.connect(lambda: self._active_threads.discard(t))
+        t.start()
+
+    def _apply_flywheel_stats(self, stats: dict):
+        fields = getattr(self, "_fw_fields", {})
+        for fid, val in stats.items():
+            if fid in fields:
+                fields[fid].setText(str(val))
+
+        # Apply preview content
+        if "last_sft_content" in stats:
+            self._sft_preview.setPlainText(stats["last_sft_content"])
+
+        self._fw_status_lbl.setText("Stats loaded.")
+
+    def _flywheel_export_sft(self):
+        self._export("sft")
+        self._load_flywheel_stats()
+
+    def _flywheel_export_dpo(self):
+        self._export("dpo")
+        self._load_flywheel_stats()
+
+    def _open_training_folder(self):
+        import subprocess
+        try:
+            path = os.path.abspath("data/training")
+            os.makedirs(path, exist_ok=True)
+            subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to open folder: {e}")
+
+    def _flywheel_goto_eval(self):
+        try:
+            main_win = self.window()
+            if hasattr(main_win, "_sidebar"):
+                main_win._sidebar.select(5)
+        except Exception:
+            pass
 
     # ── dataset tab ──────────────────────────────────────────────────────────
 

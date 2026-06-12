@@ -25,6 +25,7 @@ from app.ui.workspaces.training_studio import TrainingStudioWorkspace
 from app.ui.workspaces.eval_suite import EvalSuiteWorkspace
 from app.ui.workspaces.system_config import SystemConfigWorkspace
 from app.ui.workspaces.docs import DocsWorkspace
+from app.ui.workspaces.swarm_workspace import SwarmWorkspace
 
 
 logger = logging.getLogger("karl.main_window")
@@ -139,6 +140,7 @@ class MainWindow(QMainWindow):
         self._vision         = VisionWorkbench(self._state, self._workbench)
         self._training       = TrainingStudioWorkspace(self._state)
         self._eval           = EvalSuiteWorkspace(self._state)
+        self._swarm          = SwarmWorkspace(self._state)
         self._system         = SystemConfigWorkspace(self._state)
         self._system.set_workbench(self._workbench)
         self._docs           = DocsWorkspace(self._state)
@@ -151,6 +153,7 @@ class MainWindow(QMainWindow):
             self._vision,
             self._training,
             self._eval,
+            self._swarm,
             self._system,
             self._docs,
         ):
@@ -214,7 +217,7 @@ class MainWindow(QMainWindow):
         self._state.adapter_name = name if name else None
 
     def _open_appearance_controls(self):
-        self._sidebar.select(6)
+        self._sidebar.select(7)
         if hasattr(self._system, "show_theme_tab"):
             self._system.show_theme_tab()
 
@@ -292,6 +295,32 @@ class MainWindow(QMainWindow):
             self._ws_server = WebSocketServerManager.get_instance(port=8080)
         except Exception as e:
             logger.warning(f"Failed to start WebSocket server on boot: {e}")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not hasattr(self, "_bridge_poll_timer"):
+            self._bridge_poll_timer = QTimer(self)
+            self._bridge_poll_timer.timeout.connect(self._poll_bridge_status)
+            self._bridge_poll_timer.start(5000)
+            self._poll_bridge_status()
+
+    def _poll_bridge_status(self):
+        try:
+            from app.engine.websocket_server import WebSocketServerManager
+            ws_mgr = WebSocketServerManager._instance
+            if ws_mgr and ws_mgr.server is not None:
+                n = len(ws_mgr.clients)
+                if n > 0:
+                    self._status_bar.set_bridge_status("connected", n)
+                else:
+                    self._status_bar.set_bridge_status("listening")
+            else:
+                self._status_bar.set_bridge_status("offline")
+        except Exception:
+            try:
+                self._status_bar.set_bridge_status("offline")
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         self._workbench.on_close()
