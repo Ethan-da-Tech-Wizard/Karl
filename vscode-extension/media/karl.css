@@ -1,15 +1,29 @@
 :root {
-    --karl-bg: color-mix(in srgb, var(--vscode-sideBar-background) 82%, #020817);
-    --karl-panel: color-mix(in srgb, var(--vscode-editor-background) 88%, #07162a);
-    --karl-panel-hi: color-mix(in srgb, var(--vscode-editor-background) 70%, #08284a);
-    --karl-border: color-mix(in srgb, var(--vscode-widget-border) 60%, #0ea5ff);
+    /* Backgrounds — follow VS Code's own surfaces so dark/light themes both work */
+    --karl-bg: var(--vscode-sideBar-background, #0d1117);
+    --karl-panel: var(--vscode-editor-background, #0f1620);
+    --karl-panel-hi: var(--vscode-editorWidget-background, var(--vscode-editor-background, #152030));
+
+    /* Border: widget border blended with the current accent */
+    --karl-border: color-mix(in srgb, var(--vscode-widget-border, #1e3a5f) 60%, var(--karl-accent));
+
+    /* Karl brand accent palette — overridden by theme/custom-accent picker */
     --karl-accent: #00c2ff;
     --karl-accent-2: #7dd3fc;
     --karl-good: #72f5a4;
     --karl-warn: #f6d365;
     --karl-danger: #ff6b7a;
-    --karl-muted: var(--vscode-descriptionForeground);
-    --karl-text: var(--vscode-foreground);
+
+    /* Text — always follow VS Code so light themes read correctly */
+    --karl-muted: var(--vscode-descriptionForeground, #6b8fa8);
+    --karl-text: var(--vscode-foreground, #e2e8f0);
+
+    /* Focus ring — uses VS Code's focusBorder so keyboard nav is always visible */
+    --karl-focus-border: var(--vscode-focusBorder, var(--karl-accent));
+
+    /* Link color */
+    --karl-link: var(--vscode-textLink-foreground, var(--karl-accent));
+
     --karl-radius: 8px;
 }
 
@@ -175,6 +189,31 @@ h2 {
     100% { transform: translateX(105%); opacity: 0.2; }
 }
 
+/* ── streaming cursor ─────────────────────────────────────────────────────── */
+
+@keyframes karl-blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+}
+
+.streaming-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    background: var(--karl-accent);
+    margin-left: 1px;
+    vertical-align: text-bottom;
+    border-radius: 1px;
+    box-shadow: 0 0 6px var(--karl-accent);
+    animation: karl-blink 0.85s ease-in-out infinite;
+    flex-shrink: 0;
+}
+
+body[data-motion="reduced"] .streaming-cursor {
+    animation: none;
+    opacity: 1;
+}
+
 .runtime-grid,
 .settings-grid {
     display: grid;
@@ -229,15 +268,20 @@ button {
 button:hover,
 .tab:hover {
     border-color: var(--karl-accent);
-    box-shadow: 0 0 14px rgba(0, 194, 255, 0.24);
+    box-shadow: 0 0 14px color-mix(in srgb, var(--karl-accent) 24%, transparent);
 }
 
 .tab.active,
 button.primary {
+    /* Dark text reads perfectly on the bright accent gradient */
     color: #00131c;
-    background: linear-gradient(180deg, #87e8ff, var(--karl-accent));
-    border-color: #b7f4ff;
-    box-shadow: 0 0 18px rgba(0, 194, 255, 0.38);
+    background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--karl-accent) 55%, #fff),
+        var(--karl-accent)
+    );
+    border-color: color-mix(in srgb, var(--karl-accent) 45%, #fff);
+    box-shadow: 0 0 18px color-mix(in srgb, var(--karl-accent) 38%, transparent);
 }
 
 button.danger {
@@ -334,8 +378,10 @@ input:focus,
 textarea:focus,
 select:focus {
     outline: none;
-    border-color: var(--karl-accent);
-    box-shadow: 0 0 0 1px rgba(0, 194, 255, 0.35), 0 0 18px rgba(0, 194, 255, 0.18);
+    border-color: var(--karl-focus-border);
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--karl-focus-border) 35%, transparent),
+        0 0 18px color-mix(in srgb, var(--karl-focus-border) 18%, transparent);
 }
 
 .check {
@@ -527,7 +573,7 @@ select:focus {
 .timeline-item {
     border-left: 2px solid var(--karl-accent);
     padding: 6px 8px;
-    background: rgba(0, 194, 255, 0.08);
+    background: color-mix(in srgb, var(--karl-accent) 8%, transparent);
     border-radius: 5px;
 }
 
@@ -560,13 +606,13 @@ pre {
 
 .message.user {
     margin-left: auto;
-    background: rgba(0, 194, 255, 0.12);
-    border-color: rgba(0, 194, 255, 0.32);
+    background: color-mix(in srgb, var(--karl-accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--karl-accent) 32%, transparent);
 }
 
 .message.assistant {
-    background: rgba(255, 255, 255, 0.045);
-    border-color: rgba(125, 211, 252, 0.18);
+    background: color-mix(in srgb, var(--vscode-editor-foreground, #fff) 4%, transparent);
+    border-color: color-mix(in srgb, var(--karl-accent-2) 18%, transparent);
 }
 
 .message-role {
@@ -579,20 +625,85 @@ pre {
 
 .thoughts {
     display: none;
-    padding: 9px;
+    flex-direction: column;
+    padding: 0;
     margin-bottom: 10px;
+    overflow: hidden;
 }
 
 .thoughts.active {
-    display: block;
+    display: flex;
 }
 
-.thoughts pre {
-    max-height: 130px;
+/* ── collapsible reasoning panel header ──────────────────────────────────── */
+
+.thoughts-header {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 10px;
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--karl-border) 45%, transparent);
+    transition: background 0.15s;
+    flex-shrink: 0;
+}
+
+.thoughts-header:hover {
+    background: color-mix(in srgb, var(--karl-accent) 7%, transparent);
+}
+
+.thoughts-header.thoughts-header--collapsed {
+    border-bottom-color: transparent;
+}
+
+.thoughts-toggle {
+    font-size: 10px;
+    color: var(--karl-accent);
+    width: 12px;
+    flex-shrink: 0;
+    text-align: center;
+}
+
+.thoughts-token-count {
+    margin-left: auto;
+    color: var(--karl-muted);
+    font-size: 9px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+
+.thoughts-pulse-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--karl-accent);
+    box-shadow: 0 0 6px var(--karl-accent);
+    opacity: 0;
+    flex-shrink: 0;
+    transition: opacity 0.2s;
+}
+
+.thoughts-pulse-dot.active {
+    opacity: 1;
+    animation: karl-blink 1.2s ease-in-out infinite;
+}
+
+/* ── thought body (the <pre> element) ────────────────────────────────────── */
+
+.thoughts-body {
+    max-height: 160px;
+    min-height: 0;
     overflow: auto;
-    margin: 6px 0 0;
-    color: #b9ebff;
+    margin: 0;
+    padding: 8px 10px;
+    color: var(--karl-accent-2);
     white-space: pre-wrap;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    line-height: 1.5;
+    transition: max-height 0.22s ease, padding 0.22s ease;
 }
 
 .queue.empty,
@@ -712,7 +823,7 @@ pre {
 
 .source-item:hover,
 .source-item.active {
-    background: rgba(0, 194, 255, 0.12);
+    background: color-mix(in srgb, var(--karl-accent) 12%, transparent);
 }
 
 .source-name {
@@ -855,9 +966,13 @@ pre {
 
 .subtab.active {
     color: #00131c;
-    background: linear-gradient(180deg, #87e8ff, var(--karl-accent));
-    border-color: #b7f4ff;
-    box-shadow: 0 0 10px rgba(0, 194, 255, 0.2);
+    background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--karl-accent) 55%, #fff),
+        var(--karl-accent)
+    );
+    border-color: color-mix(in srgb, var(--karl-accent) 45%, #fff);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--karl-accent) 20%, transparent);
 }
 
 .subworkspace {
@@ -1106,7 +1221,7 @@ code {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: rgba(0, 194, 255, 0.34);
+    background: color-mix(in srgb, var(--karl-accent) 34%, transparent);
     border-radius: 99px;
 }
 

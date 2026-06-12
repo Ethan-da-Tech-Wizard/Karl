@@ -1,3 +1,9 @@
+// ── module-level streaming state ───────────────────────────────────────────────
+let _thoughtTokenCount = 0;
+let _streamingTarget = null;   // the .message-content el that owns the cursor
+
+// ── helpers ────────────────────────────────────────────────────────────────────
+
 function escapeHtml(value) {
     return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -6,6 +12,81 @@ function escapeHtml(value) {
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
 }
+
+// ── streaming cursor ───────────────────────────────────────────────────────────
+
+function _getOrCreateCursor() {
+    let cursor = document.getElementById('streaming-cursor');
+    if (!cursor) {
+        cursor = document.createElement('span');
+        cursor.id = 'streaming-cursor';
+        cursor.className = 'streaming-cursor';
+        cursor.setAttribute('aria-hidden', 'true');
+    }
+    return cursor;
+}
+
+function attachStreamingCursor(contentEl) {
+    removeStreamingCursor();
+    _streamingTarget = contentEl;
+    contentEl.appendChild(_getOrCreateCursor());
+}
+
+function removeStreamingCursor() {
+    const cursor = document.getElementById('streaming-cursor');
+    if (cursor) cursor.remove();
+    _streamingTarget = null;
+}
+
+// Append plain text to a chat bubble's content element, keeping the cursor at
+// the very end of the text at all times so it appears to advance with output.
+function _appendChatText(el, text) {
+    if (!text) return;
+    const cursor = document.getElementById('streaming-cursor');
+    const cursorOwned = cursor && cursor.parentElement === el;
+    if (cursorOwned) cursor.remove();
+    el.appendChild(document.createTextNode(text));
+    if (cursorOwned || _streamingTarget === el) {
+        _streamingTarget = el;
+        el.appendChild(_getOrCreateCursor());
+    }
+}
+
+// ── thought-panel helpers ──────────────────────────────────────────────────────
+
+function appendThoughtToken(token) {
+    const str = String(token || '');
+    if (!str) return;
+    _thoughtTokenCount += Math.ceil(str.length / 4);
+    const thoughtsEl = $('introspectionThoughts');
+    if (thoughtsEl) {
+        thoughtsEl.textContent += str;
+        thoughtsEl.scrollTop = thoughtsEl.scrollHeight;
+    }
+    const countEl = $('thoughtsTokenCount');
+    if (countEl) countEl.textContent = `~${_thoughtTokenCount.toLocaleString()} tokens`;
+    const dot = $('thoughtsPulseDot');
+    if (dot && !dot.classList.contains('active')) dot.classList.add('active');
+}
+
+function resetThoughtsPanel() {
+    _thoughtTokenCount = 0;
+    const thoughtsEl = $('introspectionThoughts');
+    if (thoughtsEl) thoughtsEl.textContent = '';
+    const countEl = $('thoughtsTokenCount');
+    if (countEl) countEl.textContent = '0 tokens';
+    const dot = $('thoughtsPulseDot');
+    if (dot) dot.classList.remove('active');
+    const box = $('introspectionBox');
+    if (box) box.classList.remove('active');
+}
+
+function finalizeThoughts() {
+    const dot = $('thoughtsPulseDot');
+    if (dot) dot.classList.remove('active');
+}
+
+// ── model / download lists ─────────────────────────────────────────────────────
 
 function buildModelCard(title, metaHtml, buttonHtml) {
     return `<div class="model-card">
@@ -47,6 +128,8 @@ function renderDownloadRegistry(models) {
     }).join('');
 }
 
+// ── theme catalog ──────────────────────────────────────────────────────────────
+
 function renderThemeCatalog() {
     const grid = $('themeGrid');
     if (!grid) return;
@@ -73,6 +156,8 @@ function renderThemeCatalog() {
         `;
     }).join('');
 }
+
+// ── pending-edit cards ─────────────────────────────────────────────────────────
 
 function formatLineDelta(edit) {
     if (!Number.isFinite(edit.lineDelta)) return 'line delta unknown';
@@ -116,44 +201,40 @@ function renderPendingEdits() {
     `).join('');
 }
 
+// ── lab diff ───────────────────────────────────────────────────────────────────
+
 function renderLabDiff(textA, textB) {
     const diffContainer = $('labDiff');
     if (!textA || !textB) {
         diffContainer.innerText = 'Run both prompts before computing a diff.';
         return;
     }
-    
-    // Character-level simple diffing
     let i = 0, j = 0;
     let html = '';
     while (i < textA.length || j < textB.length) {
         if (i < textA.length && j < textB.length && textA[i] === textB[j]) {
             html += escapeHtml(textA[i]);
-            i++;
-            j++;
+            i++; j++;
         } else {
-            let del = '';
-            let add = '';
-            while (i < textA.length && (j >= textB.length || textA[i] !== textB[j])) {
-                del += textA[i];
-                i++;
-            }
-            while (j < textB.length && (i >= textA.length || textA[i] !== textB[j])) {
-                add += textB[j];
-                j++;
-            }
-            if (del) html += `<span class="diff-del" style="background: rgba(255, 107, 122, 0.25); border-bottom: 1px solid var(--karl-danger);">${escapeHtml(del)}</span>`;
-            if (add) html += `<span class="diff-add" style="background: rgba(114, 245, 164, 0.25); border-bottom: 1px solid var(--karl-good);">${escapeHtml(add)}</span>`;
+            let del = '', add = '';
+            while (i < textA.length && (j >= textB.length || textA[i] !== textB[j])) { del += textA[i]; i++; }
+            while (j < textB.length && (i >= textA.length || textA[i] !== textB[j])) { add += textB[j]; j++; }
+            if (del) html += `<span class="diff-del">${escapeHtml(del)}</span>`;
+            if (add) html += `<span class="diff-add">${escapeHtml(add)}</span>`;
         }
     }
     diffContainer.innerHTML = html;
 }
+
+// ── prompt pairs ───────────────────────────────────────────────────────────────
 
 function renderPromptPairs(pairs) {
     $('promptPairSelect').innerHTML = '<option value="">Saved prompt pairs...</option>' + pairs.map(pair => {
         return `<option value="${escapeHtml(pair.name)}">${escapeHtml(pair.name)}</option>`;
     }).join('');
 }
+
+// ── knowledge base ─────────────────────────────────────────────────────────────
 
 function renderKbSnapshot(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') snapshot = {};
@@ -211,12 +292,16 @@ function renderKbSearch(payload) {
     `; }).join('') : '<div class="result-card">No chunks matched the current query and threshold.</div>';
 }
 
+// ── codex ──────────────────────────────────────────────────────────────────────
+
 function renderCodexTopics(topics) {
     if (!Array.isArray(topics)) topics = [];
     $('codexList').innerHTML = topics.length ? topics.map(topic => {
         return `<div class="source-item" data-topic="${escapeHtml(topic)}"><span>${escapeHtml(topic)}</span></div>`;
     }).join('') : '<div class="source-item">No chapters loaded.</div>';
 }
+
+// ── branches ───────────────────────────────────────────────────────────────────
 
 function renderBranches() {
     const panel = $('branchTree');
@@ -235,6 +320,8 @@ function renderBranches() {
     `).join('');
 }
 
+// ── task queue ─────────────────────────────────────────────────────────────────
+
 function renderTaskQueue() {
     const panel = $('taskQueue');
     if (!taskQueue.length) {
@@ -251,6 +338,8 @@ function renderTaskQueue() {
     `).join('');
 }
 
+// ── context meter ──────────────────────────────────────────────────────────────
+
 function renderContextMeta(meta) {
     if (!meta) {
         $('contextMeter').innerText = 'Context package: none queued.';
@@ -260,6 +349,8 @@ function renderContextMeta(meta) {
     $('contextMeter').innerText = `Context package: ${meta.sentChars}/${meta.originalChars} chars sent from ${meta.label}${meta.truncated ? ' · safely truncated' : ''}.`;
     $('contextMeter').className = `context-meter ${meta.truncated ? 'warn' : 'ok'}`;
 }
+
+// ── swarm timeline / log ───────────────────────────────────────────────────────
 
 function addTimeline(title, detail) {
     const item = document.createElement('div');
@@ -274,15 +365,15 @@ function log(message) {
     terminal.scrollTop = terminal.scrollHeight;
 }
 
+// ── diagnostics ────────────────────────────────────────────────────────────────
+
 function renderDiagnosticsList(diagDetails) {
     const listPanel = $('diagnosticsList');
     if (!listPanel) return;
-
     if (!diagDetails || !diagDetails.files || !Object.keys(diagDetails.files).length) {
         listPanel.innerHTML = '<div class="source-item">No current diagnostics found.</div>';
         return;
     }
-
     let html = '';
     Object.entries(diagDetails.files).forEach(([filepath, items]) => {
         const basename = filepath.split(/[/\\]/).pop();
@@ -300,6 +391,8 @@ function renderDiagnosticsList(diagDetails) {
     });
     listPanel.innerHTML = html;
 }
+
+// ── cockpit state ──────────────────────────────────────────────────────────────
 
 function updateCockpitState(state) {
     $('cockpitWorkspace').innerText = state.workspacePath || '--';
@@ -321,12 +414,13 @@ function updateCockpitState(state) {
     renderDiagnosticsList(state.diagnosticsDetails);
 }
 
+// ── runtime status ─────────────────────────────────────────────────────────────
+
 function renderRuntimeOffline() {
     $('runtimeModel').innerText = 'unknown';
     $('runtimeState').innerText = 'offline';
     $('runtimeAdapter').innerText = 'none';
     $('runtimeSystem').innerText = '--';
-    
     $('cockpitModel').innerText = 'unknown';
     $('cockpitSystem').innerText = '--';
 }
@@ -343,16 +437,15 @@ function renderRuntimeStatus(status) {
     const desc = `${model.name || 'none'}${model.loaded ? ' loaded' : ''}`;
     $('runtimeModel').innerText = desc;
     $('cockpitModel').innerText = desc;
-    
+
     const stateStr = `${runtime.state || 'idle'} · ${clients} client${clients === 1 ? '' : 's'}`;
     $('runtimeState').innerText = stateStr;
-    
     $('runtimeAdapter').innerText = adapter.name || 'none';
-    
+
     const sysStr = `${system.ram_mb ?? '--'} MB · ${model.n_ctx || '--'} ctx`;
     $('runtimeSystem').innerText = sysStr;
     $('cockpitSystem').innerText = sysStr;
-    
+
     if ($('systemActiveModel')) $('systemActiveModel').innerText = model.name || 'none';
     if ($('systemContext')) $('systemContext').innerText = `${model.n_ctx || '--'} ctx`;
     if ($('systemRamCheck')) {
@@ -362,14 +455,11 @@ function renderRuntimeStatus(status) {
     }
     if ($('systemAdapterWarning')) {
         $('systemAdapterWarning').innerText = adapter.name && adapter.base_model && model.name && adapter.base_model !== model.name
-            ? 'base mismatch'
-            : 'none';
+            ? 'base mismatch' : 'none';
     }
     if (status.bridge && status.bridge.version) {
         $('bridgeMeta').dataset.version = status.bridge.version;
     }
-    
-    // Hide Vision warning if bridge version reports Vision capability
     if (status.bridge && status.bridge.capabilities && status.bridge.capabilities.includes('vision')) {
         $('visionBridgeWarning').style.display = 'none';
     } else {
@@ -377,11 +467,20 @@ function renderRuntimeStatus(status) {
     }
 }
 
+// ── chat bubbles ───────────────────────────────────────────────────────────────
+
 function appendMessageBubble(role, text) {
     const msg = document.createElement('div');
     msg.className = `message ${role}`;
     msg.innerHTML = `<div class="message-role">${role === 'user' ? 'User' : 'Karl'}</div><div class="message-content"></div>`;
-    msg.querySelector('.message-content').innerText = text;
+    const contentEl = msg.querySelector('.message-content');
+    if (text) {
+        contentEl.innerText = text;
+    } else if (role === 'assistant') {
+        // Blank assistant bubble signals start of a streaming response.
+        // Attach the animated cursor so the user sees immediate activity.
+        attachStreamingCursor(contentEl);
+    }
     $('chatMessages').appendChild(msg);
     $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
 }
@@ -394,10 +493,13 @@ function appendChatToken(token) {
     }
 }
 
+// Routes incoming response-stream tokens: text content goes to the chat
+// bubble; <think>…</think> sections are routed to the reasoning panel.
+// The streaming cursor is kept at the very end of chat content at all times.
 function routeThinkMarkup(token, chatTarget) {
     const text = String(token || '');
     if (!responseThinkActive && !text.includes('<think') && !text.includes('</think>')) {
-        chatTarget.innerText += text;
+        _appendChatText(chatTarget, text);
         return;
     }
     let remaining = text;
@@ -406,24 +508,73 @@ function routeThinkMarkup(token, chatTarget) {
             const close = remaining.indexOf('</think>');
             $('introspectionBox').classList.add('active');
             if (close === -1) {
-                $('introspectionThoughts').innerText += remaining;
+                appendThoughtToken(remaining);
                 remaining = '';
             } else {
-                $('introspectionThoughts').innerText += remaining.slice(0, close);
+                appendThoughtToken(remaining.slice(0, close));
                 remaining = remaining.slice(close + '</think>'.length);
                 responseThinkActive = false;
             }
             continue;
         }
-
         const open = remaining.indexOf('<think>');
         if (open === -1) {
-            chatTarget.innerText += remaining;
+            _appendChatText(chatTarget, remaining);
             break;
         }
-        chatTarget.innerText += remaining.slice(0, open);
+        _appendChatText(chatTarget, remaining.slice(0, open));
         remaining = remaining.slice(open + '<think>'.length);
         responseThinkActive = true;
     }
-    $('introspectionThoughts').scrollTop = $('introspectionThoughts').scrollHeight;
+}
+
+// ── quick actions / recent tasks ───────────────────────────────────────────────
+
+function renderQuickActions() {
+    const panel = $('quickActions');
+    if (!panel) return;
+    const actions = [
+        { label: '⚡ Fix Selection', workflow: 'fixSelection' },
+        { label: '🔍 Explain Selection', workflow: 'explainSelection' },
+        { label: '🧪 Generate Tests', workflow: 'generateTests' },
+        { label: '📋 Review File', workflow: 'reviewActiveFile' },
+        { label: '📤 Send to Swarm', workflow: 'sendCurrentFileToSwarm' },
+        { label: '💬 Ask Workspace', workflow: 'askWorkspace' },
+    ];
+    panel.innerHTML = actions.map(action => `
+        <button class="quick-action" data-workflow="${escapeHtml(action.workflow)}">${escapeHtml(action.label)}</button>
+    `).join('');
+}
+
+function renderRecentTasks() {
+    const panel = $('recentTasksHistory');
+    if (!panel) return;
+    if (!recentTasks.length) {
+        panel.className = 'recent-list empty';
+        panel.innerText = 'No recent tasks.';
+        return;
+    }
+    panel.className = 'recent-list';
+    panel.innerHTML = recentTasks.slice(0, 8).map((task, index) => `
+        <button class="recent-item" data-task-idx="${index}">
+            <strong>${escapeHtml(task.title || task.workflowId)}</strong>
+            <span>${escapeHtml((task.objective || '').slice(0, 60))}</span>
+        </button>
+    `).join('');
+}
+
+function renderRecentKbQueries() {
+    const panel = $('recentKbQueries');
+    if (!panel) return;
+    if (!recentKbQueries.length) {
+        panel.className = 'recent-list empty';
+        panel.innerText = 'No recent queries.';
+        return;
+    }
+    panel.className = 'recent-list';
+    panel.innerHTML = recentKbQueries.slice(0, 6).map((q, index) => `
+        <button class="recent-item" data-kb-query="${index}">
+            <span>${escapeHtml(q)}</span>
+        </button>
+    `).join('');
 }

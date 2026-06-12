@@ -1,3 +1,33 @@
+// ── Bridge Relay Layer ─────────────────────────────────────────────────────────
+// All outbound RPC passes through BridgeRelay. When window.KARL_USE_HOST_RELAY
+// is true the extension host owns the WebSocket and we communicate via
+// postMessage. When false (the default), we manage the WebSocket directly.
+// The relay flag lets the host opt-in without any webview code changes.
+
+const BridgeRelay = (() => {
+    function _directSend(payload) {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify(payload));
+        }
+    }
+
+    return {
+        send(payload) {
+            if (window.KARL_USE_HOST_RELAY) {
+                vscode.postMessage({ command: 'bridge_send', payload });
+            } else {
+                _directSend(payload);
+            }
+        },
+        connected() {
+            if (window.KARL_USE_HOST_RELAY) return connectionState === 'connected';
+            return socket !== null && socket.readyState === WebSocket.OPEN;
+        }
+    };
+})();
+
+// ── connection state ──────────────────────────────────────────────────────────
+
 function setConnectionState(state, label) {
     connectionState = state;
     $('statusDot').className = `status-dot ${state}`;
@@ -31,7 +61,6 @@ function teardownSocket(isError = false) {
 
 function handleDisconnect(isError = false) {
     teardownSocket(isError);
-
     if (boot.autoConnect && !manualDisconnect && !reconnectTimer) {
         nextReconnectSec = 5;
         log(`[Bridge] Connection lost. Retrying in ${nextReconnectSec}s.`);
@@ -48,7 +77,40 @@ function handleDisconnect(isError = false) {
     }
 }
 
+// ── public connection API ──────────────────────────────────────────────────────
+
+// connect() is the single entry point. It dispatches to the host relay or to
+// the direct WebSocket implementation depending on KARL_USE_HOST_RELAY.
 function connect() {
+    if (window.KARL_USE_HOST_RELAY) {
+        manualDisconnect = false;
+        const port = Number($('bridgePort').value) || boot.port || 8080;
+        $('cockpitPort').innerText = port;
+        setConnectionState('connecting', 'Connecting');
+        log(`[Bridge] Requesting host relay connection to ws://localhost:${port}`);
+        vscode.postMessage({ command: 'bridge_connect', port });
+        return;
+    }
+    _directConnect();
+}
+
+function disconnect() {
+    manualDisconnect = true;
+    if (reconnectTimer) {
+        clearInterval(reconnectTimer);
+        reconnectTimer = null;
+    }
+    if (window.KARL_USE_HOST_RELAY) {
+        vscode.postMessage({ command: 'bridge_disconnect' });
+        setConnectionState('offline', 'Offline');
+        return;
+    }
+    teardownSocket(false);
+}
+
+// ── direct WebSocket implementation ───────────────────────────────────────────
+
+function _directConnect() {
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
         teardownSocket(false);
     }
@@ -57,6 +119,7 @@ function connect() {
     $('cockpitPort').innerText = port;
     setConnectionState('connecting', 'Connecting');
     log(`[Bridge] Connecting to ws://localhost:${port}`);
+
     try {
         socket = new WebSocket(`ws://localhost:${port}`);
     } catch (err) {
@@ -88,23 +151,34 @@ function connect() {
             updateBridgeMeta();
         }
     };
+
     socket.onerror = () => {
         lastBridgeError = 'Connection failed';
         vscode.postMessage({ command: 'show_error', text: 'Karl bridge connection failed. Start Karl and verify the WebSocket port.' });
     };
+
     socket.onclose = () => {
         handleDisconnect(false);
     };
 }
 
-function disconnect() {
-    manualDisconnect = true;
-    if (reconnectTimer) {
-        clearInterval(reconnectTimer);
-        reconnectTimer = null;
+// ── RPC ───────────────────────────────────────────────────────────────────────
+
+function rpc(id, method, params) {
+    if (!BridgeRelay.connected()) {
+        if (![20, 31, 40, 50].includes(id)) {
+            vscode.postMessage({ command: 'show_error', text: 'Karl bridge is offline.' });
+        }
+        return;
     }
-    teardownSocket(false);
+    BridgeRelay.send({ jsonrpc: '2.0', id, method, params });
 }
+
+function isConnected() {
+    return BridgeRelay.connected();
+}
+
+// ── incoming message dispatcher ───────────────────────────────────────────────
 
 function handleSocketMessage(data) {
     if (data.error) {
@@ -126,11 +200,14 @@ function handleSocketMessage(data) {
 
     const method = data.method;
     const params = data.params || {};
+
     if (method === 'status_update') {
         log(params.message || '');
         addTimeline('Status', params.message || '');
+
     } else if (method === 'task_plan_created') {
         addTimeline('Plan', 'Swarm architect created an implementation plan.');
+
     } else if (method === 'file_edited') {
         log(`[Edit] Proposed change for ${params.filepath}`);
         vscode.postMessage({
@@ -140,19 +217,23 @@ function handleSocketMessage(data) {
             summary: params.summary || 'Swarm proposed a file update.'
         });
         switchWorkspace('changes');
+
     } else if (method === 'test_result') {
         const status = params.passed ? 'passed' : 'failed';
         addTimeline('Test', `Verification ${status}.`);
         log(`[Test] ${status.toUpperCase()}`);
         if (!params.passed && params.error_trace) log(params.error_trace);
+
     } else if (method === 'finished_swarm') {
         setConnectionState('connected', 'Connected');
         finishActiveTask(params.success ? 'completed' : 'failed');
         addTimeline('Finished', params.success ? 'Swarm finished successfully.' : 'Swarm finished with issues.');
         log(`[Swarm] ${params.success ? 'SUCCESS' : 'FAILURE'}: ${params.summary || ''}`);
+
     } else if (method === 'kb_ingest_progress') {
         $('kbIngestState').innerText = `${params.current}/${params.total}`;
         log(`[KB] ${params.current}/${params.total}: ${params.filename}`);
+
     } else if (method === 'kb_ingest_finished') {
         $('kbIngestBtn').disabled = false;
         $('kbIngestState').innerText = params.error_count ? 'Check Log' : 'Ready';
@@ -161,16 +242,20 @@ function handleSocketMessage(data) {
         log(`[KB] Added ${params.chunks_added} chunk(s) from ${params.file_count} file(s).`);
         (params.errors || []).forEach(err => log(`[KB] ${err.filename}: ${err.error}`));
         if (kbQueueRunning) ingestNextQueuedPath();
+
     } else if (method === 'chat_thought_token') {
+        // Route thought tokens to the collapsible reasoning panel
         if (!labRunning) {
             $('introspectionBox').classList.add('active');
-            $('introspectionThoughts').innerText += params.token || '';
-            $('introspectionThoughts').scrollTop = $('introspectionThoughts').scrollHeight;
+            appendThoughtToken(params.token || '');
         }
+
     } else if (method === 'chat_response_token') {
         handleResponseToken(params.token || '');
+
     } else if (method === 'chat_finished') {
         handleChatFinished();
+
     } else if (method === 'vision_result') {
         $('visionResult').style.display = 'block';
         $('visionResultText').innerText = `Caption: ${params.caption || 'No caption'}\n\nOCR Text:\n${params.ocr || 'No OCR text detected.'}`;
@@ -226,13 +311,11 @@ function handleRpcResult(id, result) {
             </div>
             <div class="codex-content">${escapeHtml(cleanText)}</div>
         `;
-        
         $('codexSendChatBtn').addEventListener('click', () => {
             const txt = $('codexViewer').querySelector('.codex-content').innerText;
             $('chatInput').value = `Codex Reference:\n\n${txt}\n\n`;
             switchWorkspace('chat');
         });
-        
         $('codexSendSwarmBtn').addEventListener('click', () => {
             const txt = $('codexViewer').querySelector('.codex-content').innerText;
             $('objective').value = `Codex Reference:\n\n${txt}\n\n${$('objective').value}`;
@@ -240,6 +323,8 @@ function handleRpcResult(id, result) {
         });
     }
 }
+
+// ── polling ────────────────────────────────────────────────────────────────────
 
 function requestRuntimeStatus() {
     rpc(30, 'get_runtime_status');
@@ -250,7 +335,7 @@ function updateBridgeMeta(status) {
     const heartbeat = lastHeartbeatAt ? `${Math.max(0, Math.round((Date.now() - lastHeartbeatAt.getTime()) / 1000))}s ago` : 'never';
     const connected = lastConnectedAt ? lastConnectedAt.toLocaleTimeString() : 'never';
     const version = (status && status.bridge && status.bridge.version) || $('bridgeMeta').dataset.version || 'unknown';
-    
+
     let reconnectStr = '';
     if (reconnectTimer && nextReconnectSec > 0) {
         reconnectStr = ` · Retrying in ${nextReconnectSec}s`;
@@ -266,6 +351,8 @@ function updateBridgeMeta(status) {
     $('bridgeMeta').innerText = `Heartbeat: ${heartbeat} · Last connect: ${connected} · Version: ${version}${reconnectStr}${error}`;
     $('cockpitHeartbeat').innerText = heartbeat;
 }
+
+// ── data loaders ───────────────────────────────────────────────────────────────
 
 function loadModels() {
     if (!isConnected()) {
@@ -289,18 +376,4 @@ function loadKbSources() {
 
 function loadCodexTopics() {
     rpc(20, 'list_codex_topics');
-}
-
-function rpc(id, method, params) {
-    if (!isConnected()) {
-        if (![20, 31, 40, 50].includes(id)) {
-            vscode.postMessage({ command: 'show_error', text: 'Karl bridge is offline.' });
-        }
-        return;
-    }
-    socket.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
-}
-
-function isConnected() {
-    return socket && socket.readyState === WebSocket.OPEN;
 }

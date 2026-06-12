@@ -1,6 +1,7 @@
 window.addEventListener('DOMContentLoaded', () => {
     initializeAppearance();
     hydrate();
+    _initThoughtsPanel();
     bindEvents();
     renderQuickActions();
     renderRecentTasks();
@@ -11,40 +12,59 @@ window.addEventListener('DOMContentLoaded', () => {
     renderDownloadRegistry([]);
     bridgeMetaTimer = setInterval(() => updateBridgeMeta(), 1000);
     appendMessageBubble('assistant', 'Karl command cockpit ready. Connect to the local backend to execute agentic workflows.');
-    
-    // Post ready handshake
+
     vscode.postMessage({ command: 'ready' });
 
     if (boot.autoConnect) connect();
 });
 
 window.addEventListener('unload', () => {
-    if (bridgeMetaTimer) {
-        clearInterval(bridgeMetaTimer);
-        bridgeMetaTimer = null;
-    }
-    if (reconnectTimer) {
-        clearInterval(reconnectTimer);
-        reconnectTimer = null;
-    }
-    if (runtimeStatusTimer) {
-        clearInterval(runtimeStatusTimer);
-        runtimeStatusTimer = null;
-    }
-    if (socket) {
-        socket.onopen = null;
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        try {
-            socket.close();
-        } catch {}
-        socket = null;
+    if (bridgeMetaTimer) { clearInterval(bridgeMetaTimer); bridgeMetaTimer = null; }
+    if (reconnectTimer)  { clearInterval(reconnectTimer);  reconnectTimer = null; }
+    // runtimeStatusTimer and socket are cleaned up by teardownSocket/disconnect
+    if (window.KARL_USE_HOST_RELAY) {
+        vscode.postMessage({ command: 'bridge_disconnect' });
+    } else {
+        teardownSocket(false);
     }
 });
 
 window.addEventListener('message', event => {
     const message = event.data || {};
+
+    // ── Host-relay bridge events ──────────────────────────────────────────────
+    // When KARL_USE_HOST_RELAY is active the extension host owns the WebSocket
+    // and forwards frames/lifecycle events here via postMessage.
+    if (message.command === 'bridge_message') {
+        try {
+            const data = typeof message.data === 'string'
+                ? JSON.parse(message.data)
+                : message.data;
+            handleSocketMessage(data);
+        } catch (err) {
+            log(`[Relay] Malformed bridge frame: ${err.message}`);
+        }
+        return;
+    }
+    if (message.command === 'bridge_status') {
+        const state = message.state || 'offline';
+        if (state === 'connected') {
+            lastConnectedAt = new Date();
+            setConnectionState('connected', 'Connected');
+            if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+            requestRuntimeStatus();
+            runtimeStatusTimer = runtimeStatusTimer || setInterval(requestRuntimeStatus, 4000);
+            persist();
+        } else if (state === 'error') {
+            lastBridgeError = message.message || 'Host relay error';
+            handleDisconnect(true);
+        } else {
+            handleDisconnect(false);
+        }
+        return;
+    }
+
+    // ── Webview ↔ host commands ───────────────────────────────────────────────
     if (message.command === 'start_workflow') {
         startWorkflow(message.workflowId, message.data || {});
     } else if (message.command === 'set_kb_path') {
@@ -453,6 +473,52 @@ function stopSwarm() {
     rpc(2, 'stop_task');
 }
 
+// ── thoughts panel initialisation ─────────────────────────────────────────────
+// Transforms the static HTML inside #introspectionBox into a collapsible
+// reasoning panel matching Karl's Obsidian aesthetic. Called once on load.
+function _initThoughtsPanel() {
+    const box = $('introspectionBox');
+    const thoughts = $('introspectionThoughts');
+    if (!box || !thoughts) return;
+
+    // Replace the static .eyebrow div with a full interactive header
+    const oldEyebrow = box.querySelector('.eyebrow');
+    const header = document.createElement('div');
+    header.id = 'thoughtsHeader';
+    header.className = 'thoughts-header';
+    header.innerHTML = `
+        <span class="thoughts-toggle" id="thoughtsToggle">▼</span>
+        <span class="eyebrow" style="margin:0">Reasoning</span>
+        <span id="thoughtsTokenCount" class="thoughts-token-count">0 tokens</span>
+        <span id="thoughtsPulseDot" class="thoughts-pulse-dot"></span>
+    `;
+    if (oldEyebrow) {
+        box.replaceChild(header, oldEyebrow);
+    } else {
+        box.insertBefore(header, thoughts);
+    }
+
+    // Mark the <pre> so CSS targets it as the scrollable body
+    thoughts.classList.add('thoughts-body');
+
+    // Wire the collapse/expand toggle
+    let _collapsed = false;
+    header.addEventListener('click', () => {
+        _collapsed = !_collapsed;
+        if (_collapsed) {
+            thoughts.style.maxHeight = '0';
+            thoughts.style.paddingTop = '0';
+            thoughts.style.paddingBottom = '0';
+        } else {
+            thoughts.style.maxHeight = '';
+            thoughts.style.paddingTop = '';
+            thoughts.style.paddingBottom = '';
+        }
+        $('thoughtsToggle').textContent = _collapsed ? '▶' : '▼';
+        header.classList.toggle('thoughts-header--collapsed', _collapsed);
+    });
+}
+
 function sendChatMessage() {
     const input = $('chatInput');
     const text = input.value.trim();
@@ -467,8 +533,8 @@ function sendChatMessage() {
     input.value = '';
     chatFinished = false;
     $('chatSendBtn').disabled = true;
-    $('introspectionThoughts').innerText = '';
-    $('introspectionBox').classList.remove('active');
+    // Reset the reasoning panel for this new generation
+    resetThoughtsPanel();
     currentResponseText = '';
     rpc(3, 'submit_chat', {
         message: text,
@@ -513,6 +579,9 @@ function handleChatFinished() {
         }
         return;
     }
+    // Remove streaming cursor and stop the pulse dot before recording the turn
+    removeStreamingCursor();
+    finalizeThoughts();
     chatFinished = true;
     $('chatSendBtn').disabled = false;
     const lastAssistant = $('chatMessages').querySelector('.message.assistant:last-child .message-content');
@@ -659,6 +728,24 @@ function deletePromptPair() {
     if (name) rpc(43, 'delete_prompt_pair', { name });
 }
 
+function applyPromptPair(result) {
+    if (!result || typeof result !== 'object') return;
+    if (result.name) $('promptPairName').value = result.name;
+    if (result.system_a !== undefined) $('labSysA').value = result.system_a;
+    if (result.user_a  !== undefined) $('labUser').value  = result.user_a;
+    if (result.system_b !== undefined) $('labSysB').value = result.system_b;
+    if (result.rag_a   !== undefined) $('karlRag').checked  = !!result.rag_a;
+    if (result.loop_a  !== undefined) $('karlLoop').checked = !!result.loop_a;
+    labOutputA = result.output_a_raw || '';
+    labOutputB = result.output_b_raw || '';
+    if (labOutputA || labOutputB) {
+        $('labOutputA').innerText = result.output_a_display || labOutputA;
+        $('labOutputB').innerText = result.output_b_display || labOutputB;
+        renderLabDiff(labOutputA, labOutputB);
+    }
+    log(`[Prompt Lab] Loaded pair: ${result.name || '(unnamed)'}`);
+}
+
 function addKbQueuePath() {
     const ingestPath = $('kbPath').value.trim();
     if (!ingestPath) {
@@ -690,6 +777,14 @@ function ingestNextQueuedPath() {
     $('kbPath').value = next.path;
     renderKbQueue();
     ingestKbPath();
+}
+
+function markCurrentKbQueueDone(status) {
+    const running = kbQueue.find(item => item.status === 'running');
+    if (running) {
+        running.status = status;
+        renderKbQueue();
+    }
 }
 
 function ingestKbPath() {
