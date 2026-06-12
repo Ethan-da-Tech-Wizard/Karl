@@ -1,9 +1,9 @@
 {
-  "score": 1.0,
-  "avg_score": 1.0,
-  "dataset": "test_dataset.jsonl",
-  "workflow": "grounded_answer",
-  "timestamp": "2026-06-12T03:17:03.042790+00:00",
-  "cases_run": 2,
-  "passed": 2
+  "score": 0.0,
+  "avg_score": 0.0,
+  "dataset": "dataset.jsonl",
+  "workflow": "general_chat",
+  "timestamp": "2026-06-12T15:16:31.298203+00:00",
+  "cases_run": 1,
+  "passed": 0
 }

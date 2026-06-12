@@ -120,7 +120,36 @@ def test_file_rotation():
         tl._MAX_BYTES = old_max
         shutil.rmtree(temp_dir)
 
+def test_log_pruning():
+    import time
+    from unittest.mock import patch
+    print("Testing TraceLogger pruning logic...")
+    temp_dir = tempfile.mkdtemp()
+    
+    with patch("app.engine.config_store.get_ui_config", return_value={"log_retention_days": 2}):
+        logger = TraceLogger(log_dir=temp_dir)
+        
+        old_file = os.path.join(temp_dir, "trace_2020-01-01.jsonl")
+        new_file = os.path.join(temp_dir, "trace_2026-06-12.jsonl")
+        
+        with open(old_file, "w") as f:
+            f.write("{}\n")
+        with open(new_file, "w") as f:
+            f.write("{}\n")
+            
+        now = time.time()
+        os.utime(old_file, (now - 10 * 86400, now - 10 * 86400))
+        
+        logger.prune_logs()
+        
+        assert not os.path.exists(old_file), "Expected old log to be pruned"
+        assert os.path.exists(new_file), "Expected new log to be kept"
+        
+    shutil.rmtree(temp_dir)
+    print("TraceLogger pruning OK.")
+
 if __name__ == "__main__":
     test_schema_fields()
     test_file_rotation()
+    test_log_pruning()
     print("All trace logger unit tests PASSED!")

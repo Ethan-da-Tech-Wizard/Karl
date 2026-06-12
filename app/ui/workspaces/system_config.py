@@ -666,6 +666,28 @@ class SystemConfigWorkspace(QWidget):
         self._settings_rows.append(("Theme", row5))
         pp_layout.addWidget(row5)
 
+        self._log_rotation_spin = QSpinBox()
+        self._log_rotation_spin.setRange(1, 500)
+        self._log_rotation_spin.setSingleStep(5)
+        self._log_rotation_spin.setValue(getattr(self.state, "log_rotation_size_mb", 10))
+        self._log_rotation_spin.setFixedWidth(90)
+        self._log_rotation_spin.valueChanged.connect(self._on_log_rotation_changed)
+
+        row6 = _row("Log Size Limit (MB)", self._log_rotation_spin)
+        self._settings_rows.append(("Log Size Limit (MB)", row6))
+        pp_layout.addWidget(row6)
+
+        self._log_retention_spin = QSpinBox()
+        self._log_retention_spin.setRange(1, 365)
+        self._log_retention_spin.setSingleStep(5)
+        self._log_retention_spin.setValue(getattr(self.state, "log_retention_days", 30))
+        self._log_retention_spin.setFixedWidth(90)
+        self._log_retention_spin.valueChanged.connect(self._on_log_retention_changed)
+
+        row7 = _row("Log Retention (Days)", self._log_retention_spin)
+        self._settings_rows.append(("Log Retention (Days)", row7))
+        pp_layout.addWidget(row7)
+
         apply_btn = QPushButton("apply defaults")
         apply_btn.setObjectName("btn-primary")
         apply_btn.setToolTip("Save and apply default generation limits")
@@ -691,6 +713,14 @@ class SystemConfigWorkspace(QWidget):
         from app.ui import themes
         from PyQt6.QtWidgets import QApplication
         QApplication.instance().setStyleSheet(themes.get_theme_stylesheet(self.state))
+        self._save_appearance_config_silent()
+
+    def _on_log_rotation_changed(self, val):
+        self.state.log_rotation_size_mb = val
+        self._save_appearance_config_silent()
+
+    def _on_log_retention_changed(self, val):
+        self.state.log_retention_days = val
         self._save_appearance_config_silent()
 
     # ── identity tab ──────────────────────────────────────────────────────────
@@ -1967,6 +1997,8 @@ class SystemConfigWorkspace(QWidget):
             "animation_intensity": self.state.animation_intensity,
             "glow_strength": self.state.glow_strength,
             "theme_mode": getattr(self.state, "theme_mode", "midnight"),
+            "log_rotation_size_mb": getattr(self.state, "log_rotation_size_mb", 10),
+            "log_retention_days": getattr(self.state, "log_retention_days", 30),
         })
 
     def _save_appearance_config(self):

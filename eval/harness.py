@@ -273,6 +273,29 @@ class EvalHarness:
                 output, latency = self._run_model(system_prompt, user_prompt, hp, model_name, adapter_name)
                 grade = self._grade(output, case, context_chunks)
                 error = None
+                
+                # Curate eval failures as SFT/DPO pairs
+                if not grade.get("passed"):
+                    try:
+                        from app.utils.training_curator import save_example
+                        expected_ans = case.get("expected", "")
+                        if not isinstance(expected_ans, str):
+                            expected_ans = json.dumps(expected_ans, ensure_ascii=False)
+                        
+                        save_example(
+                            system_prompt=system_prompt,
+                            user_msg=user_prompt,
+                            good_response=expected_ans,
+                            source="eval_chosen"
+                        )
+                        save_example(
+                            system_prompt=system_prompt,
+                            user_msg=user_prompt,
+                            good_response=output,
+                            source="eval_rejected"
+                        )
+                    except Exception as curation_exc:
+                        print(f"  WARNING: failed to curate eval failure: {curation_exc}")
             except Exception as e:
                 output = ""
                 latency = 0.0

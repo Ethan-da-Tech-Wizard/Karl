@@ -113,9 +113,9 @@ def export_dpo(output_path: str = "data/training/export_unsloth_dpo.jsonl") -> s
         if key not in groups:
             groups[key] = {"chosen": [], "rejected": []}
             
-        if source in ("thumbs_up", "corrected"):
+        if source in ("thumbs_up", "corrected", "eval_chosen"):
             groups[key]["chosen"].append(response)
-        elif source == "thumbs_down":
+        elif source in ("thumbs_down", "eval_rejected"):
             groups[key]["rejected"].append(response)
             
     # Generate DPO pairs

@@ -182,6 +182,7 @@ class MainWindow(QMainWindow):
         self._system.adapter_changed.connect(self._status_bar.set_adapter)
         self._system.adapter_changed.connect(self._on_adapter_changed)
         self._system.appearance_changed.connect(self._apply_theme_from_state)
+        self._state.state_changed.connect(self._on_state_changed)
 
     def _init_model(self):
         if self._model_init_thread is not None and self._model_init_thread.isRunning():
@@ -216,6 +217,17 @@ class MainWindow(QMainWindow):
     def _on_adapter_changed(self, name: str):
         self._state.adapter_name = name if name else None
 
+    def _on_state_changed(self, name: str, value: object):
+        if name in (
+            "theme_preset", "theme_mode", "custom_accent", "layout_preset",
+            "reduced_motion", "glow_enabled", "animation_intensity", "glow_strength"
+        ):
+            self._apply_theme_from_state()
+        elif name == "model_name":
+            self._status_bar.set_model(str(value))
+        elif name == "adapter_name":
+            self._status_bar.set_adapter(value)
+
     def _open_appearance_controls(self):
         self._sidebar.select(7)
         if hasattr(self._system, "show_theme_tab"):
@@ -232,6 +244,8 @@ class MainWindow(QMainWindow):
         self._state.glow_enabled = config["glow_enabled"]
         self._state.animation_intensity = config["animation_intensity"]
         self._state.glow_strength = config["glow_strength"]
+        self._state.log_rotation_size_mb = config.get("log_rotation_size_mb", 10)
+        self._state.log_retention_days = config.get("log_retention_days", 30)
 
         self._apply_theme_from_state()
 

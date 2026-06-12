@@ -17,21 +17,60 @@ class TraceLogger:
         self._session_id = str(uuid.uuid4())
         self._log_file: str | None = None
         self._refresh_path()
+        self.prune_logs()
+
+    def _get_max_bytes(self) -> int:
+        global _MAX_BYTES
+        if _MAX_BYTES != 50 * 1024 * 1024:
+            return _MAX_BYTES
+        try:
+            from app.engine import config_store
+            config = config_store.get_ui_config()
+            size_mb = config.get("log_rotation_size_mb", 10)
+            return size_mb * 1024 * 1024
+        except Exception:
+            return 10 * 1024 * 1024
+
+    def prune_logs(self):
+        """Delete trace log files older than log_retention_days."""
+        try:
+            from app.engine import config_store
+            config = config_store.get_ui_config()
+            retention_days = config.get("log_retention_days", 30)
+        except Exception:
+            retention_days = 30
+
+        if not retention_days or retention_days <= 0:
+            return
+
+        now = datetime.now(timezone.utc)
+        for f in os.listdir(self.log_dir):
+            if f.startswith("trace_") and f.endswith(".jsonl"):
+                path = os.path.join(self.log_dir, f)
+                try:
+                    mtime = os.path.getmtime(path)
+                    mtime_dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+                    age_days = (now - mtime_dt).days
+                    if age_days > retention_days:
+                        os.remove(path)
+                except Exception as e:
+                    logger.warning(f"Failed to prune log file {f}: {e}")
 
     def _refresh_path(self):
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         base = os.path.join(self.log_dir, f"trace_{date_str}.jsonl")
+        max_bytes = self._get_max_bytes()
         if not os.path.exists(base):
             self._log_file = base
             return
         # Rotate if file exceeds size limit
-        if os.path.getsize(base) < _MAX_BYTES:
+        if os.path.getsize(base) < max_bytes:
             self._log_file = base
             return
         i = 1
         while True:
             candidate = os.path.join(self.log_dir, f"trace_{date_str}_{i}.jsonl")
-            if not os.path.exists(candidate) or os.path.getsize(candidate) < _MAX_BYTES:
+            if not os.path.exists(candidate) or os.path.getsize(candidate) < max_bytes:
                 self._log_file = candidate
                 return
             i += 1
@@ -58,6 +97,7 @@ class TraceLogger:
 
         The JSONL schema is compatible with Unsloth SFT and DPO export.
         """
+        self.prune_logs()
         self._refresh_path()
 
         timing = {

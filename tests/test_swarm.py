@@ -139,6 +139,65 @@ class TestSwarmOrchestrator(unittest.TestCase):
         self.assertTrue(signals["finished"][0])  # Success is True
         self.assertIn("math_utils.py", signals["finished"][1])  # Summary names modified file
 
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_swarm_parallel_execution(self, mock_get_llm):
+        # We simulate a stateful LLM to return Architect plan then Coder edits
+        def stateful_mock_llm(prompt, **kwargs):
+            if "Architect" in prompt or "tasks" in prompt:
+                plan = {
+                    "explanation": "Create two independent helper files.",
+                    "tasks": [
+                        {
+                            "filepath": "math_utils.py",
+                            "instructions": "Define an add(a, b) function."
+                        },
+                        {
+                            "filepath": "string_utils.py",
+                            "instructions": "Define a reverse(s) function."
+                        }
+                    ]
+                }
+                return {"choices": [{"text": json.dumps(plan)}]}
+            elif "math_utils.py" in prompt:
+                return {"choices": [{"text": "def add(a, b):\n    return a + b\n"}]}
+            elif "string_utils.py" in prompt:
+                return {"choices": [{"text": "def reverse(s):\n    return s[::-1]\n"}]}
+            return {"choices": [{"text": ""}]}
+
+        mock_llm_callable = MagicMock(side_effect=stateful_mock_llm)
+        mock_get_llm.return_value = mock_llm_callable
+
+        objective = "Create math_utils.py and string_utils.py"
+        test_command = "echo 'tests passed'"
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective=objective,
+            test_command=test_command
+        )
+
+        signals = {
+            "status_messages": [],
+            "plan": None,
+            "edited_files": {},
+            "finished": None
+        }
+
+        orchestrator.status_update.connect(lambda msg: signals["status_messages"].append(msg))
+        orchestrator.task_plan_created.connect(lambda plan: signals.update({"plan": plan}))
+        orchestrator.file_edited.connect(lambda path, content: signals["edited_files"].update({path: content}))
+        orchestrator.finished_swarm.connect(lambda success, summary: signals.update({"finished": (success, summary)}))
+
+        orchestrator.run()
+
+        # Check that we parsed imports and sorted into 1 layer of 2 parallel tasks
+        self.assertIsNotNone(signals["plan"])
+        self.assertEqual(len(signals["plan"]["tasks"]), 2)
+        self.assertIn("math_utils.py", signals["edited_files"])
+        self.assertIn("string_utils.py", signals["edited_files"])
+        self.assertIsNotNone(signals["finished"])
+        self.assertTrue(signals["finished"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

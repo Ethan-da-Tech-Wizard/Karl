@@ -1,7 +1,4 @@
-"""
-Shared application state passed to every workspace.
-Workspaces communicate through this object rather than through MainWindow.
-"""
+from PyQt6.QtCore import QObject, pyqtSignal
 from app.utils.rag_pipeline import RAGPipeline
 from app.utils.memory_manager import MemoryManager
 from app.utils.trace_logger import TraceLogger
@@ -9,8 +6,13 @@ from app.utils.training_curator import TrainingCurator
 from app.vision.image_store import ImageStore
 
 
-class AppState:
+class AppState(QObject):
+    state_changed = pyqtSignal(str, object)
+
     def __init__(self):
+        super().__init__()
+        self._initialized = False
+
         self.rag = RAGPipeline()
         self.codex_rag = RAGPipeline(namespace="codex")
         self.memory = MemoryManager()
@@ -43,3 +45,17 @@ class AppState:
         self.glow_enabled: bool = True
         self.animation_intensity: float = 1.0
         self.glow_strength: float = 1.0
+        self.log_rotation_size_mb: int = 10
+        self.log_retention_days: int = 30
+
+        self._initialized = True
+
+    def __setattr__(self, name, value):
+        if name.startswith('_') or not getattr(self, '_initialized', False):
+            super().__setattr__(name, value)
+            return
+
+        old_value = getattr(self, name, None)
+        super().__setattr__(name, value)
+        if old_value != value:
+            self.state_changed.emit(name, value)

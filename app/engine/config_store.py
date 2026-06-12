@@ -188,6 +188,8 @@ UI_CONFIG_DEFAULTS: dict[str, Any] = {
     "animation_intensity": 1.0,
     "glow_strength": 1.0,
     "theme_mode": "midnight",
+    "log_rotation_size_mb": 10,
+    "log_retention_days": 30,
 }
 
 

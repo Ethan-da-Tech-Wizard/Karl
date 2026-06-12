@@ -93,6 +93,79 @@ def test_eval_harness_model_and_adapter_selection():
         shutil.rmtree(temp_dir)
 
 
+def test_eval_harness_failure_curation():
+    print("Testing EvalHarness failure curation...")
+    from eval.harness import EvalHarness
+    from app.engine.model_loader import ModelLoader
+    import app.utils.training_curator as tc
+    
+    # Save original states
+    orig_get_instance = ModelLoader.get_instance
+    orig_model_name = ModelLoader.model_name
+    orig_n_ctx = ModelLoader.n_ctx
+    orig_curated_path = tc.CURATED_PATH
+    
+    temp_dir = tempfile.mkdtemp()
+    tc.CURATED_PATH = os.path.join(temp_dir, "curated_eval_test.jsonl")
+    dataset_path = os.path.join(temp_dir, "dataset.jsonl")
+    
+    class FailingMockLlama:
+        def tokenize(self, text_bytes, add_bos=True):
+            return [0]
+        def __call__(self, prompt, **kwargs):
+            return {"choices": [{"text": "<think>thinking</think>bad response output"}]}
+            
+    ModelLoader.get_instance = lambda **kwargs: FailingMockLlama()
+    ModelLoader.model_name = lambda: "mock.gguf"
+    ModelLoader.n_ctx = lambda: 4096
+    
+    case = {"id": "test_failed", "prompt": "Who wrote Hamlet?", "expected": "Shakespeare", "grader": "keyword_hit", "keywords": ["Shakespeare"], "require_all": True}
+    
+    try:
+        with open(dataset_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(case) + "\n")
+            
+        harness = EvalHarness()
+        report = harness.run(dataset_path=dataset_path, workflow_name="general_chat")
+        
+        # Verify case failed
+        assert report.total == 1
+        assert report.passed == 0
+        assert report.failed == 1
+        
+        # Verify curated examples
+        examples = tc.get_all_examples()
+        assert len(examples) == 2, f"Expected 2 entries, got {len(examples)}"
+        
+        e_chosen = [e for e in examples if e["source"] == "eval_chosen"][0]
+        e_rejected = [e for e in examples if e["source"] == "eval_rejected"][0]
+        
+        assert e_chosen["messages"][2]["content"] == "Shakespeare"
+        assert e_rejected["messages"][2]["content"] == "bad response output"
+        assert e_chosen["messages"][1]["content"] == "Who wrote Hamlet?"
+        assert e_rejected["messages"][1]["content"] == "Who wrote Hamlet?"
+        
+        # Verify DPO export works for these
+        dpo_file = os.path.join(temp_dir, "dpo.jsonl")
+        tc.export_dpo(dpo_file)
+        
+        with open(dpo_file, "r") as f:
+            dpo_lines = f.readlines()
+        assert len(dpo_lines) == 1
+        dpo_pair = json.loads(dpo_lines[0].strip())
+        assert dpo_pair["chosen"][0]["content"] == "Shakespeare"
+        assert dpo_pair["rejected"][0]["content"] == "bad response output"
+        
+        print("EvalHarness failure curation PASSED!")
+    finally:
+        ModelLoader.get_instance = orig_get_instance
+        ModelLoader.model_name = orig_model_name
+        ModelLoader.n_ctx = orig_n_ctx
+        tc.CURATED_PATH = orig_curated_path
+        shutil.rmtree(temp_dir)
+
+
 if __name__ == "__main__":
     test_eval_harness_model_and_adapter_selection()
+    test_eval_harness_failure_curation()
     print("All eval harness unit tests PASSED!")
