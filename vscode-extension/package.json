@@ -13,28 +13,7 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onView:karl.sidebarView",
-    "onCommand:karl.openSidebar",
-    "onCommand:karl.fixSelection",
-    "onCommand:karl.explainSelection",
-    "onCommand:karl.generateTests",
-    "onCommand:karl.reviewActiveFile",
-    "onCommand:karl.askWorkspace",
-    "onCommand:karl.ingestActiveFile",
-    "onCommand:karl.ingestWorkspaceFolder",
-    "onCommand:karl.reviewStagedDiff",
-    "onCommand:karl.reviewUnstagedDiff",
-    "onCommand:karl.explainDiagnostics",
-    "onCommand:karl.explainCurrentFileDiagnostics",
-    "onCommand:karl.generateCommitMessage",
-    "onCommand:karl.branchSummary",
-    "onCommand:karl.createImplementationPlan",
-    "onCommand:karl.searchKbSelection",
-    "onCommand:karl.sendCurrentFileToSwarm",
-    "onCommand:karl.openReviewBay",
-    "onCommand:karl.reviewCombinedDiff",
-    "onCommand:karl.analyzeImage",
-    "onCommand:karl.reviewScreenshotError"
+    "onView:karl.sidebarView"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -276,5 +255,11 @@
         }
       }
     }
+  },
+  "scripts": {
+    "test": "node src/tests/run.js"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0"
   }
 }

@@ -1,0 +1,9 @@
+.git
+.gitignore
+.vscode
+src/tests
+*.vsix
+eslint.config.js
+.eslintrc.json
+package-lock.json
+node_modules
