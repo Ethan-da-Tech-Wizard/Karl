@@ -1,0 +1,38 @@
+# Virtual Environment
+venv/
+
+# Downloaded models (large binary files)
+data/models/
+
+# Vector DB index (regenerate by re-ingesting)
+# NOTE: metadata.json and index.faiss are now persisted but are user-specific artifacts
+data/vector_db/
+
+# Trace logs and sessions (user data, not source)
+data/logs/
+data/sessions/
+
+# model_registry.json is SOURCE CONTROLLED — do not ignore it
+# active_model.json is written at runtime and committed by upgrade_manager
+
+# Training data and fine-tuned adapters (large, user-specific)
+data/training/
+
+# Eval results (run artifacts — reproducible from datasets)
+eval/results/
+
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.spec
+
+# VS Build Tools installer
+vs_buildtools.exe
+
+# Temp/scratch dirs
+t/
+
+# IDE
+.vscode/
