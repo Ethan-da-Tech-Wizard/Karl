@@ -236,9 +236,13 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QApplication
         from app.ui.themes import get_theme_stylesheet
 
-        # Apply stylesheet to application
+        # Re-applying an identical app-wide stylesheet forces Qt to restyle
+        # every widget; skip it when nothing in the compiled QSS changed
+        # (e.g. only glow/animation toggles were touched).
         stylesheet_str = get_theme_stylesheet(self._state)
-        QApplication.instance().setStyleSheet(stylesheet_str)
+        if stylesheet_str != getattr(self, "_applied_stylesheet", None):
+            QApplication.instance().setStyleSheet(stylesheet_str)
+            self._applied_stylesheet = stylesheet_str
 
         # Apply theme colors to the workbench workspace
         self._workbench.update_theme()

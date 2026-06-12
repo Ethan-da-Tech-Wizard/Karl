@@ -1757,13 +1757,22 @@ class SystemConfigWorkspace(QWidget):
         ai = self._animation_intensity_slider.value() / 10.0
         self._glow_strength_val_lbl.setText(f"{gs:.1f}x")
         self._animation_intensity_val_lbl.setText(f"{ai:.1f}x")
-        
+
         # Also sync reduced motion check in defaults tab
         self._reduced_motion_check.blockSignals(True)
         self._reduced_motion_check.setChecked(self._reduced_motion_check_app.isChecked())
         self._reduced_motion_check.blockSignals(False)
 
-        self._apply_active_theme()
+        # Debounce: slider drags fire valueChanged per tick; recompiling and
+        # re-applying the app stylesheet on every tick stutters the drag.
+        # Labels above update live, the theme applies once the drag settles.
+        if not hasattr(self, "_theme_apply_timer"):
+            from PyQt6.QtCore import QTimer
+            self._theme_apply_timer = QTimer(self)
+            self._theme_apply_timer.setSingleShot(True)
+            self._theme_apply_timer.setInterval(120)
+            self._theme_apply_timer.timeout.connect(self._apply_active_theme)
+        self._theme_apply_timer.start()
 
     def _apply_active_theme(self):
         # Read from controls
@@ -1838,6 +1847,13 @@ class SystemConfigWorkspace(QWidget):
     def _update_theme_gallery(self):
         if not hasattr(self, "_theme_gallery_layout"):
             return
+        # The 20 cards only differ by which one carries the ACTIVE marker;
+        # skip the full rebuild when the selection hasn't changed.
+        selected_now = self._theme_preset_combo.currentText()
+        if (getattr(self, "_gallery_built_for", None) == selected_now
+                and self._theme_gallery_layout.count() > 0):
+            return
+        self._gallery_built_for = selected_now
         while self._theme_gallery_layout.count():
             item = self._theme_gallery_layout.takeAt(0)
             widget = item.widget()

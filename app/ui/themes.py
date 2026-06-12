@@ -468,15 +468,36 @@ def get_theme_colors(state_or_name, custom_accent=None, bg_tone="Default") -> di
     p["motion_style"] = raw.get("motion_style", "normal")
     return p
 
+# Compiled QSS memo: the sheet is a pure function of (theme, accent, tone,
+# layout), so repeat applications (live preview, startup, slider edits) reuse
+# the cached string instead of re-formatting the ~450-line template.
+_STYLESHEET_CACHE: dict = {}
+_STYLESHEET_CACHE_MAX = 64
+
+
 def get_theme_stylesheet(state_or_name, custom_accent=None, bg_tone="Default") -> str:
     """Compile the QSS stylesheet for the given state configurations."""
-    p = get_theme_colors(state_or_name, custom_accent, bg_tone)
-    p["mono"] = MONO
-    
-    # Adjust spacing and sizes based on layout preset
     layout_preset = "Focused Workbench"
     if hasattr(state_or_name, "layout_preset"):
         layout_preset = getattr(state_or_name, "layout_preset", "Focused Workbench")
+
+    if hasattr(state_or_name, "theme_preset"):
+        cache_key = (
+            getattr(state_or_name, "theme_preset", "Karl Obsidian Core"),
+            getattr(state_or_name, "custom_accent", None),
+            "Default",
+            layout_preset,
+        )
+    else:
+        cache_key = (state_or_name, custom_accent, bg_tone, layout_preset)
+
+    cached = _STYLESHEET_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    p = get_theme_colors(state_or_name, custom_accent, bg_tone)
+    p["mono"] = MONO
+
     margin = 12
     spacing = 10
     font_size = 10
@@ -497,8 +518,12 @@ def get_theme_stylesheet(state_or_name, custom_accent=None, bg_tone="Default") -
     p["margin"] = str(margin)
     p["spacing"] = str(spacing)
     p["font_size"] = str(font_size)
-    
-    return _SHEET.format(**p)
+
+    sheet = _SHEET.format(**p)
+    if len(_STYLESHEET_CACHE) >= _STYLESHEET_CACHE_MAX:
+        _STYLESHEET_CACHE.clear()
+    _STYLESHEET_CACHE[cache_key] = sheet
+    return sheet
 
 _SHEET = """\
 /* ── Reset ───────────────────────────────────────────────── */
