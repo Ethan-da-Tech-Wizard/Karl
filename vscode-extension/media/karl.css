@@ -836,24 +836,165 @@ pre {
     box-shadow: 0 0 12px currentColor;
 }
 
+/* Subtabs Layout */
+.subtabs {
+    display: flex;
+    gap: 6px;
+    border-bottom: 1px solid rgba(125, 211, 252, 0.16);
+    padding-bottom: 6px;
+    margin-bottom: 10px;
+}
+
+.subtab {
+    min-height: 26px;
+    padding: 3px 10px;
+    font-size: 11px;
+    border-radius: 5px;
+    font-weight: 600;
+}
+
+.subtab.active {
+    color: #00131c;
+    background: linear-gradient(180deg, #87e8ff, var(--karl-accent));
+    border-color: #b7f4ff;
+    box-shadow: 0 0 10px rgba(0, 194, 255, 0.2);
+}
+
+.subworkspace {
+    display: none;
+}
+
+.subworkspace.active {
+    display: block;
+}
+
+/* Theme Previews Grid */
+.theme-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.theme-card {
+    padding: 8px;
+    border: 1px solid rgba(125, 211, 252, 0.18);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
+    cursor: pointer;
+    text-align: left;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.theme-card:hover,
+.theme-card.active {
+    border-color: var(--karl-accent);
+    box-shadow: 0 0 12px rgba(0, 194, 255, 0.22);
+}
+
+.theme-card-title {
+    font-weight: 750;
+    font-size: 11px;
+    margin-bottom: 4px;
+    color: var(--karl-text);
+}
+
+.theme-card-colors {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.theme-card-colors span {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.theme-card-desc {
+    font-size: 9px;
+    color: var(--karl-muted);
+    line-height: 1.3;
+}
+
+/* Status grids for Cockpit & Git */
+.cockpit-status-grid,
+.diagnostics-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+
+.git-status-card {
+    border-radius: var(--karl-radius);
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(125, 211, 252, 0.12);
+    font-family: var(--vscode-editor-font-family, monospace);
+    margin-bottom: 10px;
+}
+
+/* Layout Modes Implementations */
+
+/* 1. Compact Sidebar Layout Mode */
 body[data-layout="compact-sidebar"] {
     padding: 6px;
     font-size: 11px;
 }
 
-body[data-layout="compact-sidebar"] .runtime-grid,
-body[data-layout="compact-sidebar"] .settings-grid,
-body[data-layout="compact-sidebar"] .tabs {
-    grid-template-columns: 1fr;
+body[data-layout="compact-sidebar"] .shell {
+    gap: 6px;
 }
 
-body[data-layout="compact-sidebar"] .workspace,
-body[data-layout="compact-sidebar"] .topbar,
-body[data-layout="compact-sidebar"] .connection-row,
-body[data-layout="compact-sidebar"] .settings {
+body[data-layout="compact-sidebar"] .topbar {
     padding: 8px;
 }
 
+body[data-layout="compact-sidebar"] h1 {
+    font-size: 14px;
+}
+
+body[data-layout="compact-sidebar"] .tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+}
+
+body[data-layout="compact-sidebar"] .tab,
+body[data-layout="compact-sidebar"] button {
+    min-height: 24px;
+    padding: 2px 4px;
+    font-size: 10px;
+}
+
+body[data-layout="compact-sidebar"] .workspace {
+    padding: 6px;
+}
+
+body[data-layout="compact-sidebar"] .metric {
+    padding: 4px 6px;
+}
+
+body[data-layout="compact-sidebar"] .metric strong {
+    font-size: 10px;
+}
+
+body[data-layout="compact-sidebar"] .chat,
+body[data-layout="compact-sidebar"] #terminal {
+    height: 180px;
+}
+
+body[data-layout="compact-sidebar"] .quick-actions {
+    grid-template-columns: 1fr;
+    gap: 4px;
+}
+
+/* 2. Wide Panel Layout Mode */
 body[data-layout="wide-panel"] main {
     display: grid;
 }
@@ -862,35 +1003,93 @@ body[data-layout="wide-panel"] .workspace.active {
     min-height: 520px;
 }
 
-body[data-layout="review-bay"] #workspace-changes,
-body[data-layout="swarm-ops"] #workspace-swarm,
-body[data-layout="knowledge-scout"] #workspace-kb,
-body[data-layout="prompt-lab"] #workspace-lab {
-    box-shadow: 0 0 0 1px var(--karl-accent), 0 0 28px rgba(0, 194, 255, 0.28);
+@media (min-width: 680px) {
+    body[data-layout="wide-panel"] .cockpit-status-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    body[data-layout="wide-panel"] .workbench-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
-body[data-layout="review-bay"] .tabs .tab[data-workspace="changes"],
-body[data-layout="swarm-ops"] .tabs .tab[data-workspace="swarm"],
-body[data-layout="knowledge-scout"] .tabs .tab[data-workspace="kb"],
-body[data-layout="prompt-lab"] .tabs .tab[data-workspace="lab"] {
-    border-color: var(--karl-accent-2);
+/* 3. Focus / Layout Mode modifiers */
+body[data-layout="review-bay"] #workspace-changes {
+    box-shadow: 0 0 0 1px var(--karl-accent), 0 0 24px rgba(0, 194, 255, 0.2);
 }
 
-body[data-layout="review-bay"] .change-card {
-    padding: 12px;
+body[data-layout="review-bay"] .tabs .tab[data-workspace="changes"] {
+    border-color: var(--karl-accent);
+    box-shadow: 0 0 10px rgba(0, 194, 255, 0.2);
+}
+
+body[data-layout="swarm-ops"] #workspace-swarm {
+    box-shadow: 0 0 0 1px var(--karl-accent), 0 0 24px rgba(0, 194, 255, 0.2);
+}
+
+body[data-layout="swarm-ops"] .tabs .tab[data-workspace="swarm"] {
+    border-color: var(--karl-accent);
 }
 
 body[data-layout="swarm-ops"] #terminal {
-    height: 260px;
+    height: 350px;
 }
 
-body[data-layout="knowledge-scout"] .source-list,
-body[data-layout="knowledge-scout"] .result-list {
-    min-height: 160px;
+body[data-layout="knowledge-scout"] #workspace-knowledge {
+    box-shadow: 0 0 0 1px var(--karl-accent), 0 0 24px rgba(0, 194, 255, 0.2);
+}
+
+body[data-layout="knowledge-scout"] .tabs .tab[data-workspace="knowledge"] {
+    border-color: var(--karl-accent);
+}
+
+body[data-layout="knowledge-scout"] .source-list {
+    min-height: 180px;
+}
+
+body[data-layout="prompt-lab"] #workspace-lab {
+    box-shadow: 0 0 0 1px var(--karl-accent), 0 0 24px rgba(0, 194, 255, 0.2);
+}
+
+body[data-layout="prompt-lab"] .tabs .tab[data-workspace="lab"] {
+    border-color: var(--karl-accent);
 }
 
 body[data-layout="prompt-lab"] .lab-output {
-    min-height: 180px;
+    min-height: 200px;
+}
+
+body[data-layout="vision-desk"] #workspace-vision {
+    box-shadow: 0 0 0 1px var(--karl-accent), 0 0 24px rgba(0, 194, 255, 0.2);
+}
+
+body[data-layout="vision-desk"] .tabs .tab[data-workspace="vision"] {
+    border-color: var(--karl-accent);
+}
+
+/* 4. High Contrast Modifier Mode */
+body[data-layout-contrast="high"] {
+    --karl-bg: #000000;
+    --karl-panel: #0a0a0a;
+    --karl-panel-hi: #181818;
+    --karl-border: #ffffff;
+    --karl-muted: #aaaaaa;
+}
+
+body[data-layout-contrast="high"] .glow-panel,
+body[data-layout-contrast="high"] .workspace,
+body[data-layout-contrast="high"] button,
+body[data-layout-contrast="high"] input,
+body[data-layout-contrast="high"] textarea {
+    border: 1.5px solid #ffffff;
+    box-shadow: none !important;
+}
+
+/* Reduced Motion Mode Modifier */
+body[data-motion="reduced"] *,
+body[data-motion="reduced"] *::before,
+body[data-motion="reduced"] *::after {
+    animation: none !important;
+    transition: none !important;
 }
 
 code {
@@ -909,6 +1108,10 @@ code {
 ::-webkit-scrollbar-thumb {
     background: rgba(0, 194, 255, 0.34);
     border-radius: 99px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--karl-accent);
 }
 
 @media (min-width: 560px) {
@@ -931,7 +1134,7 @@ code {
 
 @media (min-width: 820px) {
     .tabs {
-        grid-template-columns: repeat(9, minmax(0, 1fr));
+        grid-template-columns: repeat(11, minmax(0, 1fr));
     }
 }
 
@@ -943,3 +1146,4 @@ code {
         transition: none !important;
     }
 }
+

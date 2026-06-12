@@ -1,80 +1,43 @@
 # Karl VS/OSS Code Extension
 
-Karl adds a local coding cockpit for the Karl desktop bridge.
+Karl adds a local high-end programming cockpit for the Karl desktop bridge, exposing real-time LLM introspection, offline RAG pipelines, and multi-iteration agentic swarm loops.
 
-## Main Surfaces
+## Main Surfaces (11-Tab Webview)
 
-- **Workbench**: direct chat, live thought routing, branch tracking, quick actions,
-  workspace tasks, refactors, reviews, and test-generation jobs.
-- **Knowledge Base**: inspect RAG health, queue files or folders for batch ingest,
-  and preview retrieval chunks with distance scores.
-- **Prompt Lab**: run A/B prompt comparisons, save prompt pairs, sync prompt
-  columns, and render diffs.
-- **Training**: configure fine-tuning runs, adapter metadata, dataset paths, and
-  loss-log surfaces. Runtime training actions show a bridge-required state until
-  matching backend methods are exposed.
-- **Eval**: configure benchmark datasets, progress/ETA display, log filtering,
-  and summary export surfaces. Runtime eval actions require bridge harness methods.
-- **System**: inspect runtime status, model registry entries, download tiers,
-  RAM/context signals, and adapter compatibility warnings.
-- **Codex**: browse local reference material exposed by Karl.
-- **Review Bay**: review proposed file edits before applying them.
-- **Look**: choose visual themes, custom accent colors, and cockpit layouts.
+- **Cockpit**: The central home view showing connection status, active workspace, active file, current git branch, pending changes count, diagnostics count, recent tasks history (click-to-rerun), and a Quick Actions launcher.
+- **Chat**: Dedicated chat panel for direct assistant queries, live thought streaming, and conversation branch forks.
+- **Swarm**: Swarm composition, workspace-wide objectives execution, agent timeline, and task queue management.
+- **Changes**: The pending changes review bay for previewing, applying, rejecting, and rolling back code modifications.
+- **Git**: Workspace branch display, diff review (staged, unstaged, and combined), and commit message generation.
+- **Diag**: Diagnostics summary counts (errors, warnings, info, hints), grouped by file problem lists, and click-to-reveal navigation.
+- **Knowledge**: Merges RAG index controls (ingestion queue, chunk configurations) and the seeded Codex Library.
+- **Vision**: OCR and image caption analysis workflows, supporting active image reviews and error screenshots.
+- **Lab**: A/B prompt comparisons, prompt pairs save/load, tokenizer previews, and character-level inline diff comparisons.
+- **Settings**: Appearance presets (with dynamically rendered catalog previews), custom accent picker, VS Code theme sync, high-contrast, reduced motion, animation speed controls, and bridge port/hyperparameter configs.
+- **Logs**: Swarm logs, fine-tuning loss outputs, and eval harness execution readouts.
 
-## Appearance
+## Look / Aesthetics System
 
-The extension ships with twenty local visual presets and a custom accent picker.
-Themes are applied through CSS variables inside the webview and persisted per
-workspace.
-
-Theme presets:
-
-- Karl Obsidian Core
-- Abyssal Blue Engine
-- Matrix Verdant
-- White Lightning Lab
-- Neon Circuit
-- Arctic Mainframe
-- Deep Space Console
-- Quantum Teal
-- Solar Flare Dark
-- Red Team Ops
-- Ghost Glass
-- Midnight Compiler
-- Hologram Blue
-- Synthwave Control
-- Monochrome Signal
-- Emerald Archive
-- Storm Grid
-- Plasma Lab
-- Stealth Operator
-- God Mode Cyan
-
-Layout modes:
-
-- Cockpit
-- Review Bay
-- Swarm Ops
-- Knowledge Scout
-- Prompt Lab
-- Compact Sidebar
-- Wide Panel
+The appearance tab supports twenty local visual presets matched to the desktop app. Previews are rendered as circular color dots showing the background, panel, border, and accent colors for each theme.
+Additional controls include:
+- **VS Code Theme Sync**: Mixes active VS Code colors into Karl's glass panel layouts.
+- **High Contrast**: Toggles high-contrast layout borders.
+- **Reduced Motion**: Disables scanning animations, glow transitions, and moving trace rails.
+- **Animation Intensity Slider**: Scales key visual speed properties from 0% to 100%.
 
 ## Safety Model
 
-Karl no longer writes swarm edits immediately from bridge notifications. Proposed
-edits enter the **Changes** queue first. Use **Preview** to open a diff against a
-temporary proposed file, **Apply** to write the real file with a `.original`
-backup, or **Reject** to discard the pending edit.
-
-The review bay also supports previewing all pending files, copied patch summaries,
-per-file status chips, byte counts, and line-count deltas.
-
-Recent upgrades add grouped review state, risk labels, reject-all, file opening,
-path copying, and rollback for applied files when a `.original` backup exists.
+Karl never overwrites files blindly. Swarm edits queue into the **Changes** review bay where they are categorized by risk level (based on line and byte deltas).
+Buttons let you:
+- **Preview Diff**: Opens VS Code's side-by-side diff comparing the original to the proposed code.
+- **Apply File**: Copies a `.original` backup and writes the proposed changes.
+- **Reject File**: Discards the proposed changes.
+- **Rollback**: Restores the backup file if edits were already applied.
+- **Preview All / Reject All / Copy Summary**: Group operations to speed up review.
 
 ## Commands
 
+All commands are contributed to the Command Palette with predictable, keyboard-friendly labels:
 - `Karl: Open Karl Panel`
 - `Karl: Ask Karl to Refactor Selection`
 - `Karl: Explain Selection`
@@ -82,6 +45,7 @@ path copying, and rollback for applied files when a `.original` backup exists.
 - `Karl: Review Active File`
 - `Karl: Review Staged Git Diff`
 - `Karl: Review Unstaged Git Diff`
+- `Karl: Review Combined Git Diff`
 - `Karl: Summarize Current Git Branch`
 - `Karl: Explain Current Diagnostics`
 - `Karl: Explain Active File Diagnostics`
@@ -93,17 +57,14 @@ path copying, and rollback for applied files when a `.original` backup exists.
 - `Karl: Search Knowledge Base from Selection`
 - `Karl: Send Current File to Swarm`
 - `Karl: Open Pending Change Review Bay`
+- `Karl: Analyze Image with Karl Vision`
+- `Karl: Review Screenshot Error with Karl`
 
-## Productivity Flow
+## Context Bounding
 
-The Workbench includes a Quick Actions launcher, recent objective history,
-conversation branch tracking, context-size warnings, live thought routing, and a
-lightweight task queue. Large files or diffs are packaged with a visible
-bounded-context notice instead of being sent blindly.
+Before large files or diffs are packaged and sent, Karl estimates the context size. If it exceeds 30,000 characters, it prompts the user with a warning dialog allowing them to choose between sending full context, sending a bounded head/tail summary, or canceling.
 
-The Knowledge Base keeps recent KB searches for fast reruns and supports a local
-batch-ingestion queue. Bridge status shows heartbeat age, last connection time,
-and bridge version when available.
+## Bridge Connection
 
-The extension expects the Karl desktop bridge to be listening on the configured
-`karl.port`, defaulting to `8080`.
+The extension communicates with the Karl desktop bridge over WebSockets. The status bar displays heartbeat age, connection states, model metadata, and supports reconnection count timers.
+Default port: `8080`.

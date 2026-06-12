@@ -31,7 +31,10 @@
     "onCommand:karl.createImplementationPlan",
     "onCommand:karl.searchKbSelection",
     "onCommand:karl.sendCurrentFileToSwarm",
-    "onCommand:karl.openReviewBay"
+    "onCommand:karl.openReviewBay",
+    "onCommand:karl.reviewCombinedDiff",
+    "onCommand:karl.analyzeImage",
+    "onCommand:karl.reviewScreenshotError"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -125,6 +128,21 @@
         "command": "karl.openSidebar",
         "title": "Open Karl Panel",
         "category": "Karl"
+      },
+      {
+        "command": "karl.reviewCombinedDiff",
+        "title": "Review Combined Git Diff",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.analyzeImage",
+        "title": "Analyze Image with Karl Vision",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.reviewScreenshotError",
+        "title": "Review Screenshot Error with Karl",
+        "category": "Karl"
       }
     ],
     "menus": {
@@ -185,6 +203,21 @@
           "command": "karl.createImplementationPlan",
           "when": "resourceScheme == file",
           "group": "karl@4"
+        },
+        {
+          "command": "karl.reviewActiveFile",
+          "when": "resourceScheme == file",
+          "group": "karl@5"
+        },
+        {
+          "command": "karl.sendCurrentFileToSwarm",
+          "when": "resourceScheme == file",
+          "group": "karl@6"
+        },
+        {
+          "command": "karl.analyzeImage",
+          "when": "resourceScheme == file && resourceExtname =~ /\\.(png|jpe?g|gif|svg|webp)$/i",
+          "group": "karl@7"
         }
       ],
       "scm/title": [
@@ -195,6 +228,10 @@
         {
           "command": "karl.reviewUnstagedDiff",
           "group": "karl@2"
+        },
+        {
+          "command": "karl.reviewCombinedDiff",
+          "group": "karl@2.5"
         },
         {
           "command": "karl.generateCommitMessage",

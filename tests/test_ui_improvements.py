@@ -43,7 +43,7 @@ class TestUIImprovements(unittest.TestCase):
         from app.state import AppState
         
         # Verify default library structure
-        self.assertIn("Steering Tactics", DEFAULT_LIBRARY)
+        self.assertIn("AI Steering", DEFAULT_LIBRARY)
         self.assertIn("Python", DEFAULT_LIBRARY)
         self.assertIn("Docker", DEFAULT_LIBRARY)
         self.assertIn("FastAPI", DEFAULT_LIBRARY)
@@ -54,7 +54,7 @@ class TestUIImprovements(unittest.TestCase):
         
         # Check cache is populated
         self.assertGreater(len(workspace._cache), 0)
-        self.assertIn("Steering Tactics", workspace._cache)
+        self.assertIn("AI Steering", workspace._cache)
         self.assertIn("Python", workspace._cache)
         
         # Test search filtering logic
@@ -71,7 +71,7 @@ class TestUIImprovements(unittest.TestCase):
         # Test selecting a topic loads it dynamically
         workspace._on_topic_selected("Rust")
         rendered_html = workspace._browser.toHtml().lower()
-        self.assertIn("borrowing", rendered_html)
+        self.assertIn("borrow", rendered_html)
         self.assertIn("ownership", rendered_html)
 
     def test_workbench_docks(self):

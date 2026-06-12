@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QLabel, QSizePolicy, QFrame, QCheckBox,
     QDoubleSpinBox, QSpinBox, QListWidget, QListWidgetItem,
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
-    QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox,
+    QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox, QColorDialog,
     QApplication,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QEvent, QUrl
@@ -362,6 +362,7 @@ class WorkbenchWorkspace(QMainWindow):
     status_changed = pyqtSignal(str, bool)   # (text, active)
     model_changed = pyqtSignal(str)          # (model_name)
     adapter_changed = pyqtSignal(str)        # (adapter_name)
+    appearance_requested = pyqtSignal()
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -516,6 +517,9 @@ class WorkbenchWorkspace(QMainWindow):
         self._expert_strip = self._build_expert_strip()
         layout.addWidget(self._expert_strip)
 
+        self._command_header = self._build_command_header()
+        layout.addWidget(self._command_header)
+
         # chat display
         self._chat_view = ChatView(w)
         self._chat_view.anchorClicked.connect(self._on_chat_link_clicked)
@@ -654,6 +658,82 @@ class WorkbenchWorkspace(QMainWindow):
         layout.addWidget(input_container)
 
         return w
+
+    def _build_command_header(self) -> QWidget:
+        header = QFrame()
+        header.setObjectName("panel")
+        root = QVBoxLayout(header)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(8)
+
+        model_row = QWidget()
+        ml = QHBoxLayout(model_row)
+        ml.setContentsMargins(0, 0, 0, 0)
+        ml.setSpacing(8)
+
+        model_title = QLabel("Model")
+        model_title.setObjectName("section-header")
+        ml.addWidget(model_title)
+
+        self._header_model_combo = QComboBox()
+        self._header_model_combo.setMinimumWidth(280)
+        self._header_model_combo.setToolTip("Installed GGUF models from data/models/. Select a row, then click Load Selected Model.")
+        self._header_model_combo.currentIndexChanged.connect(self._on_header_model_staged)
+        ml.addWidget(self._header_model_combo, 2)
+
+        self._header_load_model_btn = QPushButton("Load Selected Model")
+        self._header_load_model_btn.setObjectName("btn-primary")
+        self._header_load_model_btn.clicked.connect(self._load_header_selected_model)
+        ml.addWidget(self._header_load_model_btn)
+
+        self._header_reload_model_btn = QPushButton("Reload Active")
+        self._header_reload_model_btn.setObjectName("btn-ghost")
+        self._header_reload_model_btn.clicked.connect(self._reload_active_model)
+        ml.addWidget(self._header_reload_model_btn)
+
+        self._header_model_status = QLabel("Model: none")
+        self._header_model_status.setObjectName("lbl-muted")
+        self._header_model_status.setMinimumWidth(260)
+        ml.addWidget(self._header_model_status, 1)
+        root.addWidget(model_row)
+
+        appearance_row = QWidget()
+        al = QHBoxLayout(appearance_row)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(8)
+
+        agent_title = QLabel("Agent")
+        agent_title.setObjectName("section-header")
+        al.addWidget(agent_title)
+
+        self._header_agent_combo = QComboBox()
+        self._header_agent_combo.setMinimumWidth(130)
+        self._header_agent_combo.setToolTip("Select Karl's active Workbench agent profile.")
+        for key, data in AGENT_PROFILES.items():
+            self._header_agent_combo.addItem(data["label"], key)
+            idx = self._header_agent_combo.count() - 1
+            self._header_agent_combo.setItemData(idx, data["description"], Qt.ItemDataRole.ToolTipRole)
+        self._header_agent_combo.currentIndexChanged.connect(self._on_header_agent_selected)
+        al.addWidget(self._header_agent_combo)
+
+        self._theme_indicator = QLabel("Theme: Karl Obsidian Core")
+        self._theme_indicator.setObjectName("lbl-muted")
+        al.addWidget(self._theme_indicator, 1)
+
+        self._appearance_btn = QPushButton("Appearance / Color Wheel")
+        self._appearance_btn.setObjectName("btn-secondary")
+        self._appearance_btn.setToolTip("Open the System Theme tab to change palettes, accent color, glow, and motion.")
+        self._appearance_btn.clicked.connect(self.appearance_requested.emit)
+        al.addWidget(self._appearance_btn)
+
+        self._accent_btn = QPushButton("Accent Color")
+        self._accent_btn.setObjectName("btn-primary")
+        self._accent_btn.setToolTip("Open a color wheel and apply a custom Karl accent color immediately.")
+        self._accent_btn.clicked.connect(self._pick_header_accent)
+        al.addWidget(self._accent_btn)
+        root.addWidget(appearance_row)
+
+        return header
 
 
     def _build_params_drawer(self) -> QWidget:
@@ -1042,7 +1122,40 @@ class WorkbenchWorkspace(QMainWindow):
 
     def _on_agent_selected(self, *_args):
         self._agent_profile = self._agent_combo.currentData() or "karl"
+        if hasattr(self, "_header_agent_combo"):
+            idx = self._header_agent_combo.findData(self._agent_profile)
+            if idx >= 0 and self._header_agent_combo.currentIndex() != idx:
+                self._header_agent_combo.blockSignals(True)
+                self._header_agent_combo.setCurrentIndex(idx)
+                self._header_agent_combo.blockSignals(False)
         self._update_expert_strip()
+
+    def _on_header_agent_selected(self, *_args):
+        self._agent_profile = self._header_agent_combo.currentData() or "karl"
+        if hasattr(self, "_agent_combo"):
+            idx = self._agent_combo.findData(self._agent_profile)
+            if idx >= 0 and self._agent_combo.currentIndex() != idx:
+                self._agent_combo.blockSignals(True)
+                self._agent_combo.setCurrentIndex(idx)
+                self._agent_combo.blockSignals(False)
+        self._update_expert_strip()
+
+    def _pick_header_accent(self):
+        from app.ui.themes import THEMES
+        from PyQt6.QtWidgets import QApplication
+        from app.ui.themes import get_theme_stylesheet
+
+        default_color = self.state.custom_accent
+        if not default_color:
+            theme_name = getattr(self.state, "theme_preset", "Karl Obsidian Core")
+            default_color = THEMES.get(theme_name, {}).get("accent", "#00E5FF")
+        color = QColorDialog.getColor(QColor(default_color), self, "Select Karl Accent Color")
+        if not color.isValid():
+            return
+        self.state.custom_accent = color.name().upper()
+        QApplication.instance().setStyleSheet(get_theme_stylesheet(self.state))
+        self.update_theme()
+        self.appearance_requested.emit()
 
     def _active_system_prompt(self) -> str:
         profile = AGENT_PROFILES.get(self._agent_profile, AGENT_PROFILES["karl"])
@@ -1079,10 +1192,62 @@ class WorkbenchWorkspace(QMainWindow):
         return False
 
     def _refresh_model_combo(self):
-        self._model_combo.blockSignals(True)
-        self._model_combo.clear()
+        entries = self._model_selection_entries()
+
+        for combo in (getattr(self, "_model_combo", None), getattr(self, "_header_model_combo", None)):
+            if combo is None:
+                continue
+            combo.blockSignals(True)
+            combo.clear()
+            for entry in entries:
+                label = entry["short_label"] if combo is getattr(self, "_model_combo", None) else entry["label"]
+                combo.addItem(label, entry["data"])
+                idx = combo.count() - 1
+                combo.setItemData(idx, entry["tooltip"], Qt.ItemDataRole.ToolTipRole)
+            
+        # Select active model and adapter combination
+        active_model = self.state.model_name
+        active_adapter = self.state.adapter_name
         
+        for combo in (getattr(self, "_model_combo", None), getattr(self, "_header_model_combo", None)):
+            if combo is None:
+                continue
+            self._select_model_combo_value(combo, active_model, active_adapter)
+            combo.blockSignals(False)
+
+        self._update_model_pill()
+        self._update_header_model_status()
+
+    def _select_model_combo_value(self, combo: QComboBox, active_model: str | None, active_adapter: str | None):
+        found = False
+        for idx in range(combo.count()):
+            d = combo.itemData(idx)
+            if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") == active_adapter:
+                combo.setCurrentIndex(idx)
+                found = True
+                break
+        if not found:
+            for idx in range(combo.count()):
+                d = combo.itemData(idx)
+                if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") is None:
+                    combo.setCurrentIndex(idx)
+                    found = True
+                    break
+        if not found and combo.count() > 0:
+            combo.setCurrentIndex(0)
+
+    def _model_selection_entries(self) -> list[dict]:
+        import json
         import os
+
+        registry = {}
+        try:
+            with open("data/model_registry.json", "r", encoding="utf-8") as f:
+                for item in json.load(f):
+                    registry[item.get("filename", "")] = item
+        except Exception:
+            registry = {}
+
         adapters_dir = "data/adapters"
         adapters = []
         if os.path.exists(adapters_dir):
@@ -1090,7 +1255,6 @@ class WorkbenchWorkspace(QMainWindow):
                 for d in sorted(os.listdir(adapters_dir)):
                     d_path = os.path.join(adapters_dir, d)
                     if os.path.isdir(d_path):
-                        # check for gguf/bin files
                         files_in_dir = os.listdir(d_path)
                         if any(f.endswith(".gguf") or f.endswith(".bin") for f in files_in_dir):
                             adapters.append(d)
@@ -1101,50 +1265,98 @@ class WorkbenchWorkspace(QMainWindow):
         files = []
         if os.path.exists(models_dir):
             files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
-            
-        for f in sorted(files):
-            # Base model
-            self._model_combo.addItem(f, {"model": f, "adapter": None})
-            # List compatible adapters
+
+        entries = []
+        for filename in sorted(files):
+            meta = registry.get(filename, {})
+            size = self._model_file_size_label(filename)
+            detail = self._model_registry_detail(filename, meta, size)
+            entries.append({
+                "short_label": filename,
+                "label": detail,
+                "tooltip": self._model_tooltip(filename, meta, size, None),
+                "data": {"model": filename, "adapter": None, "meta": meta},
+            })
             for adapter in adapters:
-                if self._is_adapter_compatible(f, adapter):
-                    self._model_combo.addItem(f"{f} ({adapter})", {"model": f, "adapter": adapter})
-            
-        # Select active model and adapter combination
-        active_model = self.state.model_name
-        active_adapter = self.state.adapter_name
-        
-        found = False
-        for idx in range(self._model_combo.count()):
-            d = self._model_combo.itemData(idx)
-            if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") == active_adapter:
-                self._model_combo.setCurrentIndex(idx)
-                found = True
-                break
-                
-        if not found:
-            for idx in range(self._model_combo.count()):
-                d = self._model_combo.itemData(idx)
-                if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") is None:
-                    self._model_combo.setCurrentIndex(idx)
-                    found = True
-                    break
-                    
-        if not found and self._model_combo.count() > 0:
-            self._model_combo.setCurrentIndex(0)
-                
-        self._update_model_pill()
-        self._model_combo.blockSignals(False)
+                compatible = self._is_adapter_compatible(filename, adapter)
+                if compatible:
+                    entries.append({
+                        "short_label": f"{filename} ({adapter})",
+                        "label": f"{detail} · adapter {adapter}",
+                        "tooltip": self._model_tooltip(filename, meta, size, adapter),
+                        "data": {"model": filename, "adapter": adapter, "meta": meta},
+                    })
+        return entries
+
+    def _model_file_size_label(self, filename: str) -> str:
+        import os
+        path = os.path.join("data", "models", filename)
+        try:
+            return f"{os.path.getsize(path) / (1024 ** 3):.2f} GB"
+        except Exception:
+            return "unknown size"
+
+    def _model_registry_detail(self, filename: str, meta: dict, size: str) -> str:
+        tier = meta.get("tier")
+        n_ctx = meta.get("n_ctx")
+        ram = meta.get("min_ram_gb")
+        bits = [filename, size]
+        if tier:
+            bits.append(f"Tier {tier}")
+        if n_ctx:
+            bits.append(f"ctx {int(n_ctx):,}")
+        if ram:
+            bits.append(f"RAM {ram} GB")
+        if filename == self.state.model_name:
+            bits.append("ACTIVE")
+        return " · ".join(bits)
+
+    def _model_tooltip(self, filename: str, meta: dict, size: str, adapter: str | None) -> str:
+        lines = [
+            f"File: {filename}",
+            f"Size: {size}",
+            f"Adapter: {adapter or 'none'}",
+        ]
+        if meta:
+            lines.extend([
+                f"Registry name: {meta.get('name', filename)}",
+                f"Tier: {meta.get('tier', 'unknown')}",
+                f"Context: {meta.get('n_ctx', 'unknown')}",
+                f"Recommended RAM: {meta.get('min_ram_gb', 'unknown')} GB",
+            ])
+        return "\n".join(lines)
 
     def _on_model_selected(self, index: int):
         data = self._model_combo.itemData(index)
+        self._load_model_selection(data)
+
+    def _on_header_model_staged(self, *_args):
+        self._update_header_model_status(staged=True)
+
+    def _load_header_selected_model(self):
+        data = self._header_model_combo.currentData()
+        self._load_model_selection(data)
+
+    def _reload_active_model(self):
+        if not self.state.model_name:
+            self._chat_view.append_system_note("No active model is selected.")
+            return
+        self._load_model_selection({
+            "model": self.state.model_name,
+            "adapter": self.state.adapter_name,
+            "meta": {},
+            "force_reload": True,
+        })
+
+    def _load_model_selection(self, data: dict | None):
         if not isinstance(data, dict):
             return
             
         filename = data.get("model")
         adapter_name = data.get("adapter")
         
-        if filename == self.state.model_name and adapter_name == self.state.adapter_name:
+        if not data.get("force_reload") and filename == self.state.model_name and adapter_name == self.state.adapter_name:
+            self._update_header_model_status()
             return
         
         from PyQt6.QtWidgets import QApplication
@@ -1178,11 +1390,14 @@ class WorkbenchWorkspace(QMainWindow):
             self.model_changed.emit(filename)
             self.adapter_changed.emit(adapter_name or "")
             self._update_model_pill()
+            self._refresh_model_combo()
+            self._update_expert_strip()
             
             note = f"— Active model switched to: {filename} (adapter: {adapter_name or 'none'}) —"
             self._chat_view.append_system_note(note)
         except Exception as e:
             self._chat_view.append_system_note(f"[Error switching model: {str(e)}]")
+            self._update_header_model_status(error=str(e))
         finally:
             self._set_busy(False)
             self.status_changed.emit("idle", False)
@@ -1194,6 +1409,30 @@ class WorkbenchWorkspace(QMainWindow):
             self._model_pill.setText(f"● {model} ({adapter})")
         else:
             self._model_pill.setText(f"● {model}")
+        self._update_header_model_status()
+
+    def _update_header_model_status(self, staged: bool = False, error: str | None = None):
+        if not hasattr(self, "_header_model_status"):
+            return
+        from app.engine.model_loader import ModelLoader
+        model = self.state.model_name or "none"
+        adapter = self.state.adapter_name or "none"
+        n_ctx = ModelLoader.n_ctx() if ModelLoader.is_loaded() else "not loaded"
+        if staged and hasattr(self, "_header_model_combo"):
+            data = self._header_model_combo.currentData()
+            if isinstance(data, dict):
+                model = data.get("model") or model
+                adapter = data.get("adapter") or "none"
+                meta = data.get("meta") or {}
+                n_ctx = meta.get("n_ctx", n_ctx)
+        accent = get_theme_colors(self.state).get("accent", "#00C2FF")
+        if error:
+            self._header_model_status.setText(f"Model error: {error}")
+            self._header_model_status.setStyleSheet("color: #FF3366;")
+            return
+        prefix = "Staged" if staged else "Active"
+        self._header_model_status.setText(f"{prefix}: {model} · adapter {adapter} · ctx {n_ctx}")
+        self._header_model_status.setStyleSheet(f"color: {accent}; font-weight: bold;")
 
     def _new_session(self):
         self._save_current_session()
@@ -1458,6 +1697,12 @@ class WorkbenchWorkspace(QMainWindow):
             accent = theme_colors.get("accent", "#00C2FF")
             self._reasoning_panel_container.set_accent_color(accent)
             self._reasoning_panel_container.update_style()
+        if hasattr(self, "_theme_indicator"):
+            accent = self.state.custom_accent or theme_colors.get("accent", "#00E5FF")
+            self._theme_indicator.setText(f"Theme: {self.state.theme_preset} · Accent: {accent}")
+            self._theme_indicator.setStyleSheet(f"color: {theme_colors.get('accent', '#00E5FF')}; font-weight: bold;")
+        if hasattr(self, "_header_model_status"):
+            self._update_header_model_status()
 
     def _set_busy(self, busy: bool):
         self._send_btn.setEnabled(not busy)

@@ -7,36 +7,140 @@ const path = require('path');
 const MAX_CONTEXT_CHARS = 70000;
 const SUMMARY_CONTEXT_CHARS = 18000;
 
-const WORKFLOWS = {
-    refactorSelection: {
-        command: 'karl.fixSelection',
-        mode: 'Refactor Selection',
-        context: 'selection',
-        objective: 'Refactor for clarity, safety, and maintainability.'
+const WORKFLOW_REGISTRY = {
+    fixSelection: {
+        id: 'fixSelection',
+        title: 'Refactor Selection',
+        description: 'Refactor code selection for clarity, safety, and maintainability.',
+        requiresSelection: true,
+        requiresFile: true,
+        targetTab: 'chat',
+        promptBuilder: (context) => `Refactor this code from ${context.filepath}:\n\n${context.code}\n\nObjective: ${context.objective}`
     },
     explainSelection: {
-        command: 'karl.explainSelection',
-        mode: 'Explain Selection',
-        context: 'selection',
-        objective: 'Explain control flow, risks, and intent.'
+        id: 'explainSelection',
+        title: 'Explain Selection',
+        description: 'Explain selection control flow, risks, and intent.',
+        requiresSelection: true,
+        requiresFile: true,
+        targetTab: 'chat',
+        promptBuilder: (context) => `Explain this code from ${context.filepath}:\n\n${context.code}\n\nObjective: ${context.objective}`
     },
     generateTests: {
-        command: 'karl.generateTests',
-        mode: 'Generate Tests',
-        context: 'activeFile',
-        objective: 'Generate focused tests for the active file. Preserve existing behavior and name likely test commands.'
+        id: 'generateTests',
+        title: 'Generate Tests',
+        description: 'Generate unit tests for the active file.',
+        requiresFile: true,
+        targetTab: 'swarm',
+        promptBuilder: (context) => `Generate unit tests for the active file: ${context.filepath}\n\nCode:\n${context.code}\n\nObjective: ${context.objective}`
     },
     reviewActiveFile: {
-        command: 'karl.reviewActiveFile',
-        mode: 'Review Active File',
-        context: 'activeFile',
-        objective: 'Review the active file for bugs, regressions, missing tests, and concrete improvements.'
+        id: 'reviewActiveFile',
+        title: 'Review Active File',
+        description: 'Review the active file for bugs, regressions, and improvements.',
+        requiresFile: true,
+        targetTab: 'swarm',
+        promptBuilder: (context) => `Review this file: ${context.filepath}\n\nCode:\n${context.code}\n\nObjective: ${context.objective}`
     },
     sendCurrentFileToSwarm: {
-        command: 'karl.sendCurrentFileToSwarm',
-        mode: 'Current File Swarm Task',
-        context: 'activeFile',
-        objective: 'Implement the requested change in this file and verify behavior.'
+        id: 'sendCurrentFileToSwarm',
+        title: 'Send File to Swarm',
+        description: 'Send current file and objective to Karl Swarm.',
+        requiresFile: true,
+        targetTab: 'swarm',
+        promptBuilder: (context) => `Implement the changes in: ${context.filepath}\n\nCode:\n${context.code}\n\nObjective: ${context.objective}`
+    },
+    reviewStagedDiff: {
+        id: 'reviewStagedDiff',
+        title: 'Review Staged Diff',
+        description: 'Review the staged git diff.',
+        requiresGit: true,
+        targetTab: 'git',
+        promptBuilder: (context) => `Review this staged git diff:\n\n${context.code}\n\nObjective: ${context.objective}`
+    },
+    reviewUnstagedDiff: {
+        id: 'reviewUnstagedDiff',
+        title: 'Review Unstaged Diff',
+        description: 'Review the unstaged git diff.',
+        requiresGit: true,
+        targetTab: 'git',
+        promptBuilder: (context) => `Review this unstaged git diff:\n\n${context.code}\n\nObjective: ${context.objective}`
+    },
+    reviewCombinedDiff: {
+        id: 'reviewCombinedDiff',
+        title: 'Review Combined Diff',
+        description: 'Review all staged and unstaged changes.',
+        requiresGit: true,
+        targetTab: 'git',
+        promptBuilder: (context) => `Review the combined git diff (all modified files):\n\n${context.code}\n\nObjective: ${context.objective}`
+    },
+    generateCommitMessage: {
+        id: 'generateCommitMessage',
+        title: 'Generate Commit Message',
+        description: 'Generate a conventional commit message from staged changes.',
+        requiresGit: true,
+        targetTab: 'git',
+        promptBuilder: (context) => `Generate a conventional commit message from this staged diff:\n\n${context.code}\n\nObjective: ${context.objective}`
+    },
+    branchSummary: {
+        id: 'branchSummary',
+        title: 'Summarize Git Branch',
+        description: 'Summarize the current branch status and commits.',
+        requiresGit: true,
+        targetTab: 'git',
+        promptBuilder: (context) => `Summarize current git branch state:\n\n${context.code}\n\nObjective: ${context.objective}`
+    },
+    explainDiagnostics: {
+        id: 'explainDiagnostics',
+        title: 'Explain Diagnostics',
+        description: 'Explain all workspace diagnostics.',
+        targetTab: 'diagnostics',
+        promptBuilder: (context) => `Explain these workspace diagnostics:\n\n${context.code}\n\nObjective: ${context.objective}`
+    },
+    explainCurrentFileDiagnostics: {
+        id: 'explainCurrentFileDiagnostics',
+        title: 'Explain File Diagnostics',
+        description: 'Explain active file diagnostics.',
+        requiresFile: true,
+        targetTab: 'diagnostics',
+        promptBuilder: (context) => `Explain these diagnostics in active file:\n\n${context.code}\n\nObjective: ${context.objective}`
+    },
+    askWorkspace: {
+        id: 'askWorkspace',
+        title: 'Ask About Workspace',
+        description: 'Ask Karl about the workspace architecture.',
+        targetTab: 'chat',
+        promptBuilder: (context) => `Question about the workspace:\n\nObjective: ${context.objective}`
+    },
+    createImplementationPlan: {
+        id: 'createImplementationPlan',
+        title: 'Create Implementation Plan',
+        description: 'Create an implementation plan from selected files.',
+        targetTab: 'swarm',
+        promptBuilder: (context) => `Create an implementation plan across the selected files:\n\n${context.code}\n\nObjective: ${context.objective}`
+    },
+    searchKbSelection: {
+        id: 'searchKbSelection',
+        title: 'Search KB',
+        description: 'Search the Knowledge Base for selected text.',
+        requiresSelection: true,
+        requiresFile: true,
+        targetTab: 'knowledge',
+        promptBuilder: (context) => `${context.code}`
+    },
+    analyzeImage: {
+        id: 'analyzeImage',
+        title: 'Analyze Image',
+        description: 'Analyze an image using Karl Vision.',
+        targetTab: 'vision',
+        promptBuilder: (context) => `Analyze this image at ${context.filepath}\n\nObjective: ${context.objective}`
+    },
+    reviewScreenshotError: {
+        id: 'reviewScreenshotError',
+        title: 'Review Screenshot Error',
+        description: 'Review screenshot of an error.',
+        targetTab: 'vision',
+        promptBuilder: (context) => `Review this error screenshot at ${context.filepath}\n\nObjective: ${context.objective}`
     }
 };
 
@@ -54,24 +158,30 @@ function activate(context) {
         vscode.commands.executeCommand('workbench.view.extension.karl-swarm');
     });
 
-    Object.values(WORKFLOWS).forEach(workflow => {
-        register(workflow.command, () => runWorkflow(sidebarProvider, workflow));
+    // Register all workflows
+    Object.keys(WORKFLOW_REGISTRY).forEach(id => {
+        register(`karl.${id}`, (uri) => runWorkflow(sidebarProvider, WORKFLOW_REGISTRY[id], uri));
     });
-    register('karl.askWorkspace', () => runWorkspaceWorkflow(sidebarProvider));
+
     register('karl.ingestActiveFile', (uri) => sendActiveFileToKb(sidebarProvider, uri));
     register('karl.ingestWorkspaceFolder', (uri) => sendWorkspaceFolderToKb(sidebarProvider, uri));
-    register('karl.reviewStagedDiff', () => runGitDiffWorkflow(sidebarProvider, 'Review Staged Diff', ['diff', '--staged']));
-    register('karl.reviewUnstagedDiff', () => runGitDiffWorkflow(sidebarProvider, 'Review Unstaged Diff', ['diff']));
-    register('karl.generateCommitMessage', () => runGitDiffWorkflow(sidebarProvider, 'Generate Commit Message', ['diff', '--staged']));
-    register('karl.branchSummary', () => runBranchSummaryWorkflow(sidebarProvider));
-    register('karl.explainDiagnostics', () => runDiagnosticsWorkflow(sidebarProvider));
-    register('karl.explainCurrentFileDiagnostics', () => runDiagnosticsWorkflow(sidebarProvider, true));
-    register('karl.createImplementationPlan', (...args) => runImplementationPlanWorkflow(sidebarProvider, args));
-    register('karl.searchKbSelection', () => searchKbFromSelection(sidebarProvider));
     register('karl.openReviewBay', async () => {
         await revealKarlPanel(sidebarProvider);
         sidebarProvider.postMessageToWebview({ command: 'open_review_bay' });
     });
+
+    // Synchronize cockpit state on events
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(() => {
+            sendActiveStateToWebview(sidebarProvider);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.languages.onDidChangeDiagnostics(() => {
+            sendActiveStateToWebview(sidebarProvider);
+        })
+    );
 }
 
 async function revealKarlPanel(sidebarProvider) {
@@ -86,10 +196,10 @@ function currentWorkspacePath(fallbackFile) {
     return fallbackFile ? path.dirname(fallbackFile) : '';
 }
 
-function packageContext(raw, label) {
+function packageContext(raw, label, summaryOnly = false) {
     const text = String(raw || '');
     const originalChars = text.length;
-    if (originalChars <= MAX_CONTEXT_CHARS) {
+    if (originalChars <= MAX_CONTEXT_CHARS && !summaryOnly) {
         return {
             code: text,
             meta: { label, originalChars, sentChars: originalChars, truncated: false, summaryOnly: false }
@@ -108,82 +218,209 @@ function packageContext(raw, label) {
     };
 }
 
-async function runWorkflow(sidebarProvider, workflow) {
-    if (workflow.context === 'selection') {
-        return runSelectionWorkflow(sidebarProvider, workflow);
-    }
-    if (workflow.context === 'activeFile') {
-        return runEditorWorkflow(sidebarProvider, workflow);
-    }
-}
+async function runWorkflow(sidebarProvider, workflow, customUri = null) {
+    const context = await buildWorkflowContext(workflow, sidebarProvider, customUri);
+    if (!context) return;
 
-async function runSelectionWorkflow(sidebarProvider, workflow) {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-        vscode.window.showInformationMessage('No active editor found.');
-        return;
+    let finalCode = context.code;
+    let isTruncated = false;
+    let isSummary = false;
+    const originalChars = finalCode.length;
+
+    // Check size limit warning threshold (30,000 characters)
+    if (originalChars > 30000) {
+        const selection = await vscode.window.showWarningMessage(
+            `The packaged context is large (${originalChars} characters). How would you like to proceed?`,
+            'Send Full Context',
+            'Send Bounded Summary (Head/Tail)',
+            'Cancel'
+        );
+
+        if (selection === 'Cancel' || !selection) {
+            return;
+        }
+
+        if (selection === 'Send Bounded Summary (Head/Tail)') {
+            isSummary = true;
+        }
     }
 
-    const selection = editor.selection;
-    const code = editor.document.getText(selection);
-    if (!code.trim()) {
-        vscode.window.showWarningMessage('Highlight code before sending a selection task to Karl.');
-        return;
-    }
+    const packaged = packageContext(finalCode, workflow.title, isSummary);
+    finalCode = packaged.code;
+    isTruncated = packaged.meta.truncated;
+    isSummary = packaged.meta.summaryOnly;
 
-    const filepath = editor.document.uri.fsPath;
-    const objective = await vscode.window.showInputBox({
-        prompt: `${workflow.mode}: what should Karl do?`,
-        placeHolder: workflow.mode === 'Explain Selection'
-            ? 'Explain control flow, risks, and intent.'
-            : 'Refactor for clarity, safety, and maintainability.'
-    });
-    if (!objective) return;
-
-    const packaged = packageContext(code, 'selected code');
+    // Now reveal sidebar provider and send task/question
     await revealKarlPanel(sidebarProvider);
+
+    if (workflow.id === 'searchKbSelection') {
+        sidebarProvider.postMessageToWebview({
+            command: 'search_kb_text',
+            query: finalCode
+        });
+        return;
+    }
+
     sidebarProvider.postMessageToWebview({
-        command: 'start_code_task',
+        command: 'start_workflow',
+        workflowId: workflow.id,
         data: {
-            mode: workflow.mode,
-            objective,
-            code: packaged.code,
-            context_meta: packaged.meta,
-            filepath,
-            workspace_path: currentWorkspacePath(filepath)
+            mode: workflow.title,
+            objective: context.objective || workflow.description,
+            code: finalCode,
+            filepath: context.filepath || workflow.title,
+            workspace_path: currentWorkspacePath(context.filepath),
+            targetTab: workflow.targetTab,
+            context_meta: {
+                label: workflow.title,
+                originalChars,
+                sentChars: finalCode.length,
+                truncated: isTruncated,
+                summaryOnly: isSummary
+            }
         }
     });
 }
 
-async function runEditorWorkflow(sidebarProvider, workflow) {
+async function runWorkflowById(sidebarProvider, workflowId, payload = {}) {
+    const workflow = WORKFLOW_REGISTRY[workflowId];
+    if (workflow) {
+        await runWorkflow(sidebarProvider, workflow);
+    }
+}
+
+async function buildWorkflowContext(workflow, sidebarProvider, customUri = null) {
+    let code = '';
+    let filepath = '';
+    let objective = '';
+
     const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-        vscode.window.showInformationMessage('No active editor found.');
-        return;
+
+    if (workflow.requiresSelection) {
+        if (!editor) {
+            vscode.window.showErrorMessage('No active text editor found.');
+            return null;
+        }
+        const selection = editor.selection;
+        code = editor.document.getText(selection);
+        if (!code.trim()) {
+            vscode.window.showWarningMessage('Please highlight some code first.');
+            return null;
+        }
+        filepath = editor.document.uri.fsPath;
+    } else if (workflow.requiresFile) {
+        const pathFromUri = customUri && customUri.fsPath;
+        if (pathFromUri) {
+            filepath = pathFromUri;
+            try {
+                const stat = await fs.promises.stat(filepath);
+                if (stat.isFile()) {
+                    code = await fs.promises.readFile(filepath, 'utf8');
+                }
+            } catch (err) {
+                vscode.window.showErrorMessage(`Failed to read file: ${err.message}`);
+                return null;
+            }
+        } else {
+            if (!editor) {
+                vscode.window.showErrorMessage('No active text editor found.');
+                return null;
+            }
+            filepath = editor.document.uri.fsPath;
+            code = editor.document.getText();
+        }
     }
 
-    const filepath = editor.document.uri.fsPath;
-    const code = editor.document.getText();
-
-    const objective = await vscode.window.showInputBox({
-        prompt: `${workflow.mode}: adjust the objective if needed.`,
-        value: workflow.objective
-    });
-    if (!objective) return;
-
-    const packaged = packageContext(code, filepath);
-    await revealKarlPanel(sidebarProvider);
-    sidebarProvider.postMessageToWebview({
-        command: 'start_code_task',
-        data: {
-            mode: workflow.mode,
-            objective,
-            code: packaged.code,
-            context_meta: packaged.meta,
-            filepath,
-            workspace_path: currentWorkspacePath(filepath)
+    if (workflow.requiresGit) {
+        const workspacePath = currentWorkspacePath('');
+        if (!workspacePath) {
+            vscode.window.showWarningMessage('Open a workspace before using git workflows.');
+            return null;
         }
-    });
+        try {
+            if (workflow.id === 'reviewStagedDiff' || workflow.id === 'generateCommitMessage') {
+                code = await execGit(['diff', '--staged'], workspacePath);
+            } else if (workflow.id === 'reviewUnstagedDiff') {
+                code = await execGit(['diff'], workspacePath);
+            } else if (workflow.id === 'reviewCombinedDiff') {
+                code = await execGit(['diff', 'HEAD'], workspacePath);
+            } else if (workflow.id === 'branchSummary') {
+                const [branch, status, recent] = await Promise.all([
+                    execGit(['branch', '--show-current'], workspacePath),
+                    execGit(['status', '--short', '--branch'], workspacePath),
+                    execGit(['log', '--oneline', '--decorate', '-12'], workspacePath)
+                ]);
+                code = `Current branch: ${branch.trim() || '(detached)'}\n\nStatus:\n${status}\n\nRecent commits:\n${recent}`;
+            }
+        } catch (err) {
+            vscode.window.showErrorMessage(`Git execution failed: ${err.message}`);
+            return null;
+        }
+
+        if (workflow.id !== 'branchSummary' && !code.trim()) {
+            vscode.window.showInformationMessage('No git changes found.');
+            return null;
+        }
+    }
+
+    if (workflow.id === 'explainDiagnostics' || workflow.id === 'explainCurrentFileDiagnostics') {
+        const currentFileOnly = (workflow.id === 'explainCurrentFileDiagnostics');
+        const diagnostics = groupedDiagnostics(currentFileOnly);
+        if (!Object.keys(diagnostics.files).length) {
+            vscode.window.showInformationMessage(currentFileOnly ? 'No diagnostics found for the active file.' : 'No current diagnostics found.');
+            return null;
+        }
+        code = JSON.stringify(diagnostics, null, 2);
+    }
+
+    if (workflow.id === 'analyzeImage' || workflow.id === 'reviewScreenshotError') {
+        let pathFromUri = customUri && customUri.fsPath;
+        if (!pathFromUri && editor) {
+            pathFromUri = editor.document.uri.fsPath;
+        }
+        if (!pathFromUri) {
+            const uris = await vscode.window.showOpenDialog({
+                canSelectFiles: true,
+                canSelectFolders: false,
+                canSelectMany: false,
+                filters: {
+                    'Images': ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp']
+                },
+                title: 'Select an image for Karl Vision'
+            });
+            if (uris && uris[0]) {
+                pathFromUri = uris[0].fsPath;
+            }
+        }
+        if (!pathFromUri) return null;
+        filepath = pathFromUri;
+        code = `Image File: ${filepath}`;
+    }
+
+    // Prompt user for objective if required
+    const needsPrompt = [
+        'fixSelection', 'explainSelection', 'generateTests', 'reviewActiveFile',
+        'sendCurrentFileToSwarm', 'createImplementationPlan', 'askWorkspace',
+        'analyzeImage', 'reviewScreenshotError'
+    ].includes(workflow.id);
+
+    if (needsPrompt) {
+        let defaultValue = workflow.description;
+        if (workflow.id === 'generateTests') defaultValue = 'Generate focused tests for the active file. Preserve existing behavior.';
+        if (workflow.id === 'reviewActiveFile') defaultValue = 'Review the active file for bugs, regressions, missing tests, and concrete improvements.';
+        if (workflow.id === 'sendCurrentFileToSwarm') defaultValue = 'Implement the requested change in this file and verify behavior.';
+        if (workflow.id === 'analyzeImage') defaultValue = 'Describe this image, extract text (OCR), and identify any UI or visual issues.';
+        if (workflow.id === 'reviewScreenshotError') defaultValue = 'Review this screenshot for error messages, stack traces, and propose fixes.';
+
+        const userObjective = await vscode.window.showInputBox({
+            prompt: `${workflow.title}: What should Karl do?`,
+            value: defaultValue
+        });
+        if (userObjective === undefined) return null;
+        objective = userObjective.trim() || defaultValue;
+    }
+
+    return { code, filepath, objective };
 }
 
 function execGit(args, cwd) {
@@ -198,73 +435,46 @@ function execGit(args, cwd) {
     });
 }
 
-async function runGitDiffWorkflow(sidebarProvider, mode, args) {
-    const workspacePath = currentWorkspacePath('');
-    if (!workspacePath) {
-        vscode.window.showWarningMessage('Open a workspace before using git workflows.');
-        return;
-    }
-    let diff = '';
+async function getGitBranch(workspacePath) {
+    if (!workspacePath) return '';
     try {
-        diff = await execGit(args, workspacePath);
-    } catch (err) {
-        vscode.window.showErrorMessage(`Git workflow failed: ${err.message}`);
-        return;
+        const branch = await execGit(['branch', '--show-current'], workspacePath);
+        return branch.trim();
+    } catch {
+        return '';
     }
-    if (!diff.trim()) {
-        vscode.window.showInformationMessage(mode.includes('Staged') ? 'No staged git diff found.' : 'No unstaged git diff found.');
-        return;
-    }
-
-    const objective = mode === 'Generate Commit Message'
-        ? 'Generate a concise conventional commit message and a short body from this staged diff.'
-        : mode === 'Review Unstaged Diff'
-            ? 'Review this unstaged diff for bugs, regressions, missing tests, and risky changes.'
-        : 'Review this staged diff for bugs, regressions, missing tests, and risky changes.';
-
-    const packaged = packageContext(diff, mode);
-    await revealKarlPanel(sidebarProvider);
-    sidebarProvider.postMessageToWebview({
-        command: 'start_code_task',
-        data: {
-            mode,
-            objective,
-            code: packaged.code,
-            context_meta: packaged.meta,
-            filepath: mode.includes('Unstaged') ? 'git diff' : 'git diff --staged',
-            workspace_path: workspacePath
-        }
-    });
 }
 
-async function runBranchSummaryWorkflow(sidebarProvider) {
-    const workspacePath = currentWorkspacePath('');
-    if (!workspacePath) {
-        vscode.window.showWarningMessage('Open a workspace before using git workflows.');
-        return;
-    }
-    try {
-        const [branch, status, recent] = await Promise.all([
-            execGit(['branch', '--show-current'], workspacePath),
-            execGit(['status', '--short', '--branch'], workspacePath),
-            execGit(['log', '--oneline', '--decorate', '-12'], workspacePath)
-        ]);
-        const code = `Current branch: ${branch.trim() || '(detached)'}\n\nStatus:\n${status}\n\nRecent commits:\n${recent}`;
-        await revealKarlPanel(sidebarProvider);
-        sidebarProvider.postMessageToWebview({
-            command: 'start_code_task',
-            data: {
-                mode: 'Branch Summary',
-                objective: 'Summarize this branch state, likely intent, risks, and next useful actions.',
-                code,
-                context_meta: packageContext(code, 'branch summary').meta,
-                filepath: 'git branch summary',
-                workspace_path: workspacePath
-            }
+function getDiagnosticsStats() {
+    const severityName = ['error', 'warning', 'info', 'hint'];
+    const counts = { error: 0, warning: 0, info: 0, hint: 0 };
+    for (const [uri, items] of vscode.languages.getDiagnostics()) {
+        items.forEach(item => {
+            const severity = severityName[item.severity] || 'info';
+            counts[severity] += 1;
         });
-    } catch (err) {
-        vscode.window.showErrorMessage(`Git branch summary failed: ${err.message}`);
     }
+    return counts;
+}
+
+async function sendActiveStateToWebview(sidebarProvider) {
+    const workspacePath = currentWorkspacePath('');
+    const activeFile = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.document.uri.fsPath : '';
+    const gitBranch = await getGitBranch(workspacePath);
+    const diagnostics = getDiagnosticsStats();
+    const diagnosticsDetails = groupedDiagnostics(false);
+
+    sidebarProvider.postMessageToWebview({
+        command: 'cockpit_state_update',
+        state: {
+            workspacePath,
+            activeFile,
+            gitBranch,
+            diagnostics,
+            diagnosticsDetails,
+            pendingEditsCount: sidebarProvider.pendingEdits.size
+        }
+    });
 }
 
 function groupedDiagnostics(currentFileOnly = false) {
@@ -288,117 +498,6 @@ function groupedDiagnostics(currentFileOnly = false) {
         if (fileItems.length) groups.set(uri.fsPath, fileItems);
     }
     return { counts, files: Object.fromEntries(groups) };
-}
-
-async function runDiagnosticsWorkflow(sidebarProvider, currentFileOnly = false) {
-    const workspacePath = currentWorkspacePath('');
-    const diagnostics = groupedDiagnostics(currentFileOnly);
-
-    if (!Object.keys(diagnostics.files).length) {
-        vscode.window.showInformationMessage(currentFileOnly ? 'No diagnostics found for the active file.' : 'No current diagnostics found.');
-        return;
-    }
-
-    const label = currentFileOnly ? 'Current File Diagnostics' : 'Workspace Diagnostics';
-    const body = JSON.stringify(diagnostics, null, 2);
-    const packaged = packageContext(body, label);
-    await revealKarlPanel(sidebarProvider);
-    sidebarProvider.postMessageToWebview({
-        command: 'start_code_task',
-        data: {
-            mode: label,
-            objective: 'Explain these editor diagnostics, group likely root causes by file and severity, and propose a fix order.',
-            code: packaged.code,
-            context_meta: packaged.meta,
-            diagnostics_summary: diagnostics.counts,
-            filepath: label,
-            workspace_path: workspacePath
-        }
-    });
-}
-
-async function runImplementationPlanWorkflow(sidebarProvider, args) {
-    const workspacePath = currentWorkspacePath('');
-    const uris = args.flat().filter(item => item && item.fsPath);
-    const files = uris.length ? uris : (vscode.window.activeTextEditor ? [vscode.window.activeTextEditor.document.uri] : []);
-    if (!files.length) {
-        vscode.window.showWarningMessage('Select files or open an active file before asking for an implementation plan.');
-        return;
-    }
-
-    const chunks = [];
-    for (const uri of files.slice(0, 12)) {
-        try {
-            const stat = await fs.promises.stat(uri.fsPath);
-            if (!stat.isFile() || stat.size > 500000) continue;
-            const content = await fs.promises.readFile(uri.fsPath, 'utf8');
-            const packaged = packageContext(content, uri.fsPath);
-            chunks.push(`File: ${uri.fsPath}\n\n${packaged.code}`);
-        } catch {
-            // Ignore unreadable selected files.
-        }
-    }
-    if (!chunks.length) {
-        vscode.window.showWarningMessage('No readable selected files found for planning.');
-        return;
-    }
-
-    const objective = await vscode.window.showInputBox({
-        prompt: 'What should Karl plan across the selected files?',
-        placeHolder: 'Describe the implementation goal.'
-    });
-    if (!objective) return;
-
-    await revealKarlPanel(sidebarProvider);
-    sidebarProvider.postMessageToWebview({
-        command: 'start_code_task',
-        data: {
-            mode: 'Implementation Plan',
-                objective,
-                code: chunks.join('\n\n---\n\n'),
-                context_meta: packageContext(chunks.join('\n\n---\n\n'), 'selected files').meta,
-                filepath: `${chunks.length} selected file(s)`,
-            workspace_path: workspacePath
-        }
-    });
-}
-
-async function searchKbFromSelection(sidebarProvider) {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-        vscode.window.showInformationMessage('No active editor found.');
-        return;
-    }
-    const query = editor.document.getText(editor.selection).trim();
-    if (!query) {
-        vscode.window.showWarningMessage('Select text to search in Karl Knowledge Base.');
-        return;
-    }
-    await revealKarlPanel(sidebarProvider);
-    sidebarProvider.postMessageToWebview({
-        command: 'search_kb_text',
-        query
-    });
-}
-
-async function runWorkspaceWorkflow(sidebarProvider) {
-    const workspacePath = currentWorkspacePath('');
-    if (!workspacePath) {
-        vscode.window.showWarningMessage('Open a workspace before asking Karl about it.');
-        return;
-    }
-
-    const objective = await vscode.window.showInputBox({
-        prompt: 'Ask Karl about this workspace.',
-        placeHolder: 'Find risky areas, explain architecture, or plan a change.'
-    });
-    if (!objective) return;
-
-    await revealKarlPanel(sidebarProvider);
-    sidebarProvider.postMessageToWebview({
-        command: 'start_workspace_question',
-        data: { objective, workspace_path: workspacePath }
-    });
 }
 
 async function sendActiveFileToKb(sidebarProvider, uri) {
@@ -531,10 +630,22 @@ class KarlSidebarProvider {
                 case 'rollback_file':
                     await this.rollbackLegacyFile(message.filepath);
                     break;
+                case 'runWorkflow':
+                    await runWorkflowById(this, message.workflowId, message.payload);
+                    break;
+                case 'get_cockpit_state':
+                    await sendActiveStateToWebview(this);
+                    break;
+                case 'open_diagnostic_line':
+                    await this.openDiagnosticLine(message.filepath, message.line, message.character);
+                    break;
                 default:
                     break;
             }
         });
+
+        // Trigger cockpit refresh immediately
+        sendActiveStateToWebview(this);
     }
 
     postMessageToWebview(message) {
@@ -573,6 +684,7 @@ class KarlSidebarProvider {
                 status: 'proposed'
             }
         });
+        sendActiveStateToWebview(this);
     }
 
     async previewFile(editId) {
@@ -592,6 +704,7 @@ class KarlSidebarProvider {
         );
         edit.status = 'previewed';
         this.postMessageToWebview({ command: 'file_edit_previewed', editId });
+        sendActiveStateToWebview(this);
     }
 
     async previewAllFiles() {
@@ -629,6 +742,7 @@ class KarlSidebarProvider {
             this.postMessageToWebview({ command: 'file_edit_applied', editId, backupExists: fs.existsSync(backupPath) });
             vscode.window.showInformationMessage(`Karl applied changes to ${edit.filename}.`);
             await vscode.window.showTextDocument(vscode.Uri.file(edit.filepath), { preview: false });
+            sendActiveStateToWebview(this);
         } catch (err) {
             vscode.window.showErrorMessage(`Failed to apply Karl edit: ${err.message}`);
         }
@@ -645,6 +759,7 @@ class KarlSidebarProvider {
         if (edit) {
             vscode.window.showInformationMessage(`Rejected Karl edit for ${edit.filename}.`);
         }
+        sendActiveStateToWebview(this);
     }
 
     rejectAllFiles() {
@@ -654,6 +769,7 @@ class KarlSidebarProvider {
                 this.postMessageToWebview({ command: 'file_edit_rejected', editId });
             }
         }
+        sendActiveStateToWebview(this);
     }
 
     async openFile(editId) {
@@ -685,6 +801,7 @@ class KarlSidebarProvider {
         this.pendingEdits.set(editId, edit);
         this.postMessageToWebview({ command: 'file_edit_rolled_back', editId });
         vscode.window.showInformationMessage(`Rolled back ${edit.filename}.`);
+        sendActiveStateToWebview(this);
     }
 
     async acceptLegacyFile(filepath) {
@@ -736,6 +853,18 @@ class KarlSidebarProvider {
         }
     }
 
+    async openDiagnosticLine(filepath, line, character) {
+        try {
+            const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filepath));
+            const editor = await vscode.window.showTextDocument(document);
+            const pos = new vscode.Position(line - 1, character - 1);
+            editor.selection = new vscode.Selection(pos, pos);
+            editor.revealRange(new vscode.Range(pos, pos));
+        } catch (err) {
+            vscode.window.showErrorMessage(`Failed to open diagnostic line: ${err.message}`);
+        }
+    }
+
     getHtmlForWebview(webview, port, autoConnect, workspaceFolder, persisted) {
         const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl.css'));
         const themesUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'themes.js'));
@@ -771,23 +900,18 @@ class KarlSidebarProvider {
             </div>
         </header>
 
-        <section class="runtime-grid">
-            <div class="metric"><span>Model</span><strong id="runtimeModel">unknown</strong></div>
-            <div class="metric"><span>State</span><strong id="runtimeState">offline</strong></div>
-            <div class="metric"><span>Adapter</span><strong id="runtimeAdapter">none</strong></div>
-            <div class="metric"><span>RAM / Context</span><strong id="runtimeSystem">--</strong></div>
-        </section>
-
         <nav class="tabs" aria-label="Karl workspaces">
-            <button class="tab active" data-workspace="swarm">Workbench</button>
-            <button class="tab" data-workspace="kb">Knowledge Base</button>
-            <button class="tab" data-workspace="lab">Prompt Lab</button>
-            <button class="tab" data-workspace="training">Training</button>
-            <button class="tab" data-workspace="eval">Eval</button>
-            <button class="tab" data-workspace="system">System</button>
-            <button class="tab" data-workspace="codex">Codex</button>
-            <button class="tab" data-workspace="changes">Review Bay</button>
-            <button class="tab" data-workspace="appearance">Look</button>
+            <button class="tab active" data-workspace="cockpit">Cockpit</button>
+            <button class="tab" data-workspace="chat">Chat</button>
+            <button class="tab" data-workspace="swarm">Swarm</button>
+            <button class="tab" data-workspace="changes">Changes</button>
+            <button class="tab" data-workspace="git">Git</button>
+            <button class="tab" data-workspace="diagnostics">Diag</button>
+            <button class="tab" data-workspace="knowledge">Knowledge</button>
+            <button class="tab" data-workspace="vision">Vision</button>
+            <button class="tab" data-workspace="lab">Lab</button>
+            <button class="tab" data-workspace="settings">Settings</button>
+            <button class="tab" data-workspace="logs">Logs</button>
         </nav>
 
         <section id="offlinePanel" class="offline-panel glow-panel">
@@ -799,117 +923,225 @@ class KarlSidebarProvider {
             </div>
         </section>
 
-        <section class="connection-row glow-panel">
-            <label>Bridge Port <input id="bridgePort" type="number" min="1" max="65535" value="${port}"></label>
-            <button id="connectBtn" class="primary">Connect</button>
-            <button id="disconnectBtn">Disconnect</button>
-        </section>
-
-        <details class="settings glow-panel">
-            <summary>Generation Overrides</summary>
-            <div class="settings-grid">
-                <label>Temperature <input id="karlTemp" type="number" step="0.05" min="0" max="2" value="0.7"></label>
-                <label>Top-P <input id="karlTopP" type="number" step="0.05" min="0" max="1" value="0.95"></label>
-                <label>Max Tokens <input id="karlMaxTok" type="number" min="64" max="32768" value="2048"></label>
-                <label>RAG Top-K <input id="kbTopK" type="number" min="1" max="25" value="5"></label>
-                <label>RAG Threshold <input id="kbThreshold" type="number" min="0" max="100" step="0.05" value="0"></label>
-                <label class="check"><input id="karlRag" type="checkbox" checked> Use RAG</label>
-                <label class="check"><input id="karlLoop" type="checkbox"> Agentic loop</label>
-            </div>
-        </details>
-
         <main>
-            <section id="workspace-swarm" class="workspace active">
+            <section id="workspace-cockpit" class="workspace active">
                 <div class="section-head">
-                    <div><div class="eyebrow">Workbench</div><h2>Chat, Thought Stream, and Task Composer</h2></div>
-                    <button id="askWorkspaceBtn">Ask Workspace</button>
+                    <div><div class="eyebrow">Cockpit</div><h2>Home Control & Status</h2></div>
                 </div>
-                <div class="quick-actions" id="quickActions" aria-label="Karl quick actions"></div>
-                <div class="workbench-grid">
-                    <section class="subpanel">
-                        <div class="section-head mini-head"><div><div class="eyebrow">Direct</div><h2>Chat + Introspection</h2></div><button id="branchLatestBtn">Branch Latest</button></div>
-                        <div id="introspectionBox" class="thoughts"><div class="eyebrow">Thought Stream</div><pre id="introspectionThoughts"></pre></div>
-                        <div id="chatMessages" class="chat"></div>
-                        <div class="composer">
-                            <input id="chatInput" type="text" placeholder="Ask Karl about the current codebase...">
-                            <button id="chatSendBtn" class="primary">Send</button>
-                        </div>
-                    </section>
-                    <section class="subpanel">
-                        <div class="section-head mini-head"><div><div class="eyebrow">Branches</div><h2>Conversation Forks</h2></div><button id="newBranchBtn">New Branch</button></div>
-                        <div id="branchTree" class="branch-tree empty">No conversation branches yet.</div>
-                    </section>
+                <div class="cockpit-status-grid glow-panel">
+                    <div class="metric"><span>Bridge Port</span><strong id="cockpitPort">--</strong></div>
+                    <div class="metric"><span>Connection</span><strong id="cockpitConnection">offline</strong></div>
+                    <div class="metric"><span>Active Model</span><strong id="cockpitModel">unknown</strong></div>
+                    <div class="metric"><span>RAM / Context</span><strong id="cockpitSystem">--</strong></div>
+                    <div class="metric"><span>Active Workspace</span><strong id="cockpitWorkspace">--</strong></div>
+                    <div class="metric"><span>Active File</span><strong id="cockpitFile">none</strong></div>
+                    <div class="metric"><span>Git Branch</span><strong id="cockpitBranch">--</strong></div>
+                    <div class="metric"><span>Pending Changes</span><strong id="cockpitPendingChanges">0</strong></div>
+                    <div class="metric"><span>Diagnostics</span><strong id="cockpitDiagnostics">0 errors</strong></div>
+                    <div class="metric"><span>Last Heartbeat</span><strong id="cockpitHeartbeat">never</strong></div>
+                </div>
+                <div class="action-row">
+                    <button id="cockpitConnectBtn" class="primary">Connect</button>
+                    <button id="cockpitDisconnectBtn">Disconnect</button>
+                </div>
+                <div class="quick-actions-section">
+                    <div class="eyebrow">Quick Actions</div>
+                    <div class="quick-actions" id="quickActions"></div>
+                </div>
+                <div class="queue-panel">
+                    <div class="section-head mini-head"><div><div class="eyebrow">Tasks</div><h2>Recent Run History</h2></div><button id="clearRecentTasksBtn">Clear</button></div>
+                    <div id="recentTasksHistory" class="recent-list empty">No tasks run recently.</div>
+                </div>
+            </section>
+
+            <section id="workspace-chat" class="workspace">
+                <div class="section-head">
+                    <div><div class="eyebrow">Chat</div><h2>Direct Assistant Chat</h2></div>
+                    <button id="branchLatestBtn">Branch Latest</button>
+                </div>
+                <div id="introspectionBox" class="thoughts"><div class="eyebrow">Thought Stream</div><pre id="introspectionThoughts"></pre></div>
+                <div id="chatMessages" class="chat"></div>
+                <div class="composer">
+                    <input id="chatInput" type="text" placeholder="Ask Karl about the codebase...">
+                    <button id="chatSendBtn" class="primary">Send</button>
+                </div>
+                <div class="subpanel">
+                    <div class="section-head mini-head"><div><div class="eyebrow">Branches</div><h2>Conversation Forks</h2></div><button id="newBranchBtn">New Branch</button></div>
+                    <div id="branchTree" class="branch-tree empty">No conversation branches yet.</div>
+                </div>
+            </section>
+
+            <section id="workspace-swarm" class="workspace">
+                <div class="section-head">
+                    <div><div class="eyebrow">Swarm</div><h2>Task Execution Surface</h2></div>
+                    <button id="askWorkspaceBtn">Ask Workspace</button>
                 </div>
                 <div class="context-meter" id="contextMeter">Context package: none queued.</div>
                 <label>Workflow
                     <select id="taskMode">
-                        <option>Custom Task</option>
-                        <option>Refactor Selection</option>
-                        <option>Explain Selection</option>
-                        <option>Generate Tests</option>
-                        <option>Review Active File</option>
+                        <option value="Custom Task">Custom Task</option>
+                        <option value="fixSelection">Refactor Selection</option>
+                        <option value="explainSelection">Explain Selection</option>
+                        <option value="generateTests">Generate Tests</option>
+                        <option value="reviewActiveFile">Review Active File</option>
+                        <option value="sendCurrentFileToSwarm">Send File to Swarm</option>
+                        <option value="createImplementationPlan">Create Implementation Plan</option>
                     </select>
                 </label>
-                <label>Objective <textarea id="objective" rows="6" placeholder="Describe what Karl should do across the workspace..."></textarea></label>
+                <label>Objective <textarea id="objective" rows="5" placeholder="Describe what Karl should do..."></textarea></label>
                 <label>Workspace Path <input id="workspace" type="text" placeholder="/path/to/project"></label>
                 <label>Verification Command <input id="testCmd" type="text" value="python run_tests.py"></label>
                 <div class="action-row">
                     <button id="runBtn" class="primary">Deploy Swarm</button>
                     <button id="stopBtn" class="danger">Stop</button>
                 </div>
-                <div class="queue-panel">
-                    <div class="section-head mini-head"><div><div class="eyebrow">Queue</div><h2>Task Queue</h2></div><button id="clearTasksBtn">Clear Completed</button></div>
-                    <div id="taskQueue" class="task-queue empty">No Karl tasks queued.</div>
-                </div>
-                <div class="queue-panel">
-                    <div class="section-head mini-head"><div><div class="eyebrow">History</div><h2>Recent Objectives</h2></div><button id="clearHistoryBtn">Clear</button></div>
-                    <div id="recentObjectives" class="recent-list empty">No recent objectives yet.</div>
-                </div>
                 <div class="timeline" id="timeline"></div>
-                <pre id="terminal">--- Swarm Logs ---</pre>
+                <div class="queue-panel">
+                    <div class="section-head mini-head"><div><div class="eyebrow">Swarm Tasks</div><h2>Queue</h2></div><button id="clearTasksBtn">Clear Completed</button></div>
+                    <div id="taskQueue" class="task-queue empty">No tasks queued.</div>
+                </div>
             </section>
 
             <section id="workspace-changes" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Review</div><h2>Pending File Changes</h2></div><div class="action-row compact-actions"><button id="previewAllBtn">Preview All</button><button id="rejectAllBtn" class="danger">Reject All</button><button id="copySummaryBtn">Copy Summary</button></div></div>
+                <div class="section-head">
+                    <div><div class="eyebrow">Review</div><h2>Pending File Changes</h2></div>
+                    <div class="action-row compact-actions">
+                        <button id="previewAllBtn">Preview All</button>
+                        <button id="rejectAllBtn" class="danger">Reject All</button>
+                        <button id="copySummaryBtn">Copy Summary</button>
+                    </div>
+                </div>
                 <label>Filter <select id="changeFilter"><option value="">All</option><option value="proposed">Proposed</option><option value="previewed">Previewed</option><option value="applied">Applied</option><option value="rolled_back">Rolled Back</option></select></label>
                 <div id="changeQueue" class="queue empty">No pending Karl edits.</div>
             </section>
 
-            <section id="workspace-kb" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Context</div><h2>Knowledge Base</h2></div><button id="refreshKbBtn">Refresh</button></div>
-                <section class="runtime-grid">
-                    <div class="metric"><span>Sources</span><strong id="kbSourceCount">0</strong></div>
-                    <div class="metric"><span>Chunks</span><strong id="kbChunkCount">0</strong></div>
-                    <div class="metric"><span>Index</span><strong id="kbIngestState">Idle</strong></div>
-                </section>
-                <div id="kbSourceList" class="source-list"></div>
-                <label>File Or Folder <input id="kbPath" type="text" placeholder="/path/to/file-or-folder"></label>
-                <div class="action-row">
-                    <button id="activeFileKbBtn">Active File</button>
-                    <button id="chooseKbFileBtn">Choose File</button>
-                    <button id="chooseKbFolderBtn">Choose Folder</button>
+            <section id="workspace-git" class="workspace">
+                <div class="section-head">
+                    <div><div class="eyebrow">Git</div><h2>Diff & Commit Workspace</h2></div>
+                </div>
+                <div class="git-status-card glow-panel" style="padding: 10px;">
+                    <div>Current Branch: <strong id="gitBranchDisplay">--</strong></div>
                 </div>
                 <div class="action-row">
-                    <button id="kbQueueAddBtn">Add To Queue</button>
-                    <button id="kbQueueRunBtn" class="primary">Ingest Queue</button>
-                    <button id="kbQueueClearBtn">Clear Queue</button>
+                    <button id="gitReviewStagedBtn">Review Staged Diff</button>
+                    <button id="gitReviewUnstagedBtn">Review Unstaged Diff</button>
+                    <button id="gitReviewCombinedBtn">Review Combined Diff</button>
                 </div>
-                <div id="kbQueue" class="queue-list empty">No files queued for batch ingest.</div>
-                <div class="settings-grid">
-                    <label>Chunk Size <input id="kbChunkSize" type="number" min="50" max="2000" step="50" value="200"></label>
-                    <label>Overlap <input id="kbOverlap" type="number" min="0" max="1000" step="10" value="50"></label>
-                    <label class="check"><input id="kbRecursive" type="checkbox" checked> Recursive folders</label>
+                <div class="action-row">
+                    <button id="gitCommitMsgBtn" class="primary">Generate Commit Msg</button>
+                    <button id="gitCopyCommitBtn">Copy Commit Msg</button>
                 </div>
-                <button id="kbIngestBtn" class="primary">Ingest Path</button>
-                <label>Source Filter <select id="kbSourceFilter"><option value="">All sources</option></select></label>
-                <label>Retrieval Preview <textarea id="kbQuery" rows="3" placeholder="Search indexed project knowledge..."></textarea></label>
-                <div id="recentKbQueries" class="recent-list empty">No recent KB searches yet.</div>
-                <button id="kbSearchBtn">Search Knowledge Base</button>
-                <div id="kbResults" class="result-list"></div>
+                <div id="gitCommitOutput" class="result-card" style="display:none;">
+                    <div class="eyebrow">Generated Commit Message</div>
+                    <pre id="gitCommitText"></pre>
+                </div>
+                <div id="gitDiffContainer" class="result-card" style="display:none;">
+                    <div class="eyebrow">Active Diff Review</div>
+                    <pre id="gitDiffText"></pre>
+                </div>
+            </section>
+
+            <section id="workspace-diagnostics" class="workspace">
+                <div class="section-head">
+                    <div><div class="eyebrow">Diagnostics</div><h2>Problems & Explanations</h2></div>
+                </div>
+                <div class="diagnostics-summary-grid glow-panel">
+                    <div class="metric"><span>Errors</span><strong id="diagErrorsCount">0</strong></div>
+                    <div class="metric"><span>Warnings</span><strong id="diagWarningsCount">0</strong></div>
+                    <div class="metric"><span>Infos</span><strong id="diagInfosCount">0</strong></div>
+                    <div class="metric"><span>Hints</span><strong id="diagHintsCount">0</strong></div>
+                </div>
+                <div class="action-row">
+                    <button id="diagExplainFileBtn">Explain Active File Problems</button>
+                    <button id="diagExplainWorkspaceBtn">Explain Workspace Problems</button>
+                </div>
+                <div id="diagnosticsList" class="source-list" style="margin-top: 8px;"></div>
+                <div id="diagExplanation" class="result-card" style="display:none;">
+                    <div class="eyebrow">Problem Explanations</div>
+                    <pre id="diagExplanationText"></pre>
+                </div>
+            </section>
+
+            <section id="workspace-knowledge" class="workspace">
+                <div class="section-head">
+                    <div><div class="eyebrow">Knowledge</div><h2>KB RAG & Codex Library</h2></div>
+                </div>
+                <nav class="subtabs" aria-label="Knowledge Mode">
+                    <button class="subtab active" data-subworkspace="kb-rag">RAG Database</button>
+                    <button class="subtab" data-subworkspace="kb-codex">Codex Library</button>
+                </nav>
+                <div id="subworkspace-kb-rag" class="subworkspace active" style="margin-top: 8px;">
+                    <section class="runtime-grid">
+                        <div class="metric"><span>Sources</span><strong id="kbSourceCount">0</strong></div>
+                        <div class="metric"><span>Chunks</span><strong id="kbChunkCount">0</strong></div>
+                        <div class="metric"><span>Index</span><strong id="kbIngestState">Idle</strong></div>
+                    </section>
+                    <div id="kbSourceList" class="source-list"></div>
+                    <label>File Or Folder <input id="kbPath" type="text" placeholder="/path/to/file-or-folder"></label>
+                    <div class="action-row">
+                        <button id="activeFileKbBtn">Active File</button>
+                        <button id="chooseKbFileBtn">Choose File</button>
+                        <button id="chooseKbFolderBtn">Choose Folder</button>
+                    </div>
+                    <div class="action-row">
+                        <button id="kbQueueAddBtn">Add To Queue</button>
+                        <button id="kbQueueRunBtn" class="primary">Ingest Queue</button>
+                        <button id="kbQueueClearBtn">Clear Queue</button>
+                    </div>
+                    <div id="kbQueue" class="queue-list empty">No files queued for batch ingest.</div>
+                    <div class="settings-grid">
+                        <label>Chunk Size <input id="kbChunkSize" type="number" min="50" max="2000" step="50" value="200"></label>
+                        <label>Overlap <input id="kbOverlap" type="number" min="0" max="1000" step="10" value="50"></label>
+                        <label class="check"><input id="kbRecursive" type="checkbox" checked> Recursive folders</label>
+                    </div>
+                    <button id="kbIngestBtn" class="primary">Ingest Path</button>
+                    <label>Source Filter <select id="kbSourceFilter"><option value="">All sources</option></select></label>
+                    <label>Retrieval Preview <textarea id="kbQuery" rows="3" placeholder="Search indexed project knowledge..."></textarea></label>
+                    <div id="recentKbQueries" class="recent-list empty">No recent KB searches yet.</div>
+                    <button id="kbSearchBtn">Search Knowledge Base</button>
+                    <div id="kbResults" class="result-list"></div>
+                </div>
+                <div id="subworkspace-kb-codex" class="subworkspace" style="margin-top: 8px; display: none;">
+                    <input id="codexSearch" type="text" placeholder="Search references...">
+                    <div id="codexList" class="source-list" style="margin-top: 8px;"></div>
+                    <article id="codexViewer" class="codex-viewer" style="margin-top: 8px;">Select a chapter to read local reference material.</article>
+                </div>
+            </section>
+
+            <section id="workspace-vision" class="workspace">
+                <div class="section-head">
+                    <div><div class="eyebrow">Vision</div><h2>Karl Vision Desk</h2></div>
+                </div>
+                <div class="offline-panel active" id="visionBridgeWarning" style="margin-bottom: 8px;">
+                    <div class="eyebrow">Bridge Required</div>
+                    <p>Requires Karl Vision bridge support. Exposes local multimodal image understanding workflows.</p>
+                </div>
+                <label>Image File Path <input id="visionImagePath" type="text" placeholder="/path/to/image.png"></label>
+                <div class="action-row">
+                    <button id="visionSelectBtn">Select Image File</button>
+                    <button id="visionActiveBtn">Use Active Editor File</button>
+                </div>
+                <div class="action-row">
+                    <button id="visionAskBtn" class="primary">Ask About Image</button>
+                    <button id="visionErrBtn">Review Screenshot Error</button>
+                </div>
+                <div id="visionPreviewCard" class="result-card" style="display:none; margin-top: 8px;">
+                    <div class="eyebrow">Image Preview</div>
+                    <div id="visionImagePreview" style="max-height: 180px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.2); margin-top: 8px; border-radius: 6px;">
+                        <span>No image loaded</span>
+                    </div>
+                </div>
+                <div id="visionResult" class="result-card" style="display:none; margin-top: 8px;">
+                    <div class="eyebrow">OCR & Caption Analysis</div>
+                    <pre id="visionResultText"></pre>
+                </div>
             </section>
 
             <section id="workspace-lab" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Experiment</div><h2>Prompt Lab</h2></div><button id="loadPairsBtn">Refresh Pairs</button></div>
+                <div class="section-head">
+                    <div><div class="eyebrow">Experiment</div><h2>Prompt Lab</h2></div>
+                    <button id="loadPairsBtn">Refresh Pairs</button>
+                </div>
                 <label>Saved Pair <select id="promptPairSelect"><option value="">Saved prompt pairs...</option></select></label>
                 <label>Pair Name <input id="promptPairName" type="text" placeholder="name"></label>
                 <div class="action-row">
@@ -926,81 +1158,85 @@ class KarlSidebarProvider {
                 </div>
                 <div id="tokenPreview" class="token-preview">Tokenizer visualization requires Karl bridge tokenization support.</div>
                 <button id="labRunBtn" class="primary">Run A/B Comparison</button>
-                <div class="split">
+                <div class="split" style="margin-top: 8px;">
                     <pre id="labOutputA" class="lab-output">Output A will stream here...</pre>
                     <pre id="labOutputB" class="lab-output">Output B will stream here...</pre>
                 </div>
-                <button id="diffBtn">Recompute Diff</button>
-                <div id="labDiff" class="diff-view">Diff comparisons will render here.</div>
+                <button id="diffBtn" style="margin-top: 8px;">Recompute Diff</button>
+                <div id="labDiff" class="diff-view" style="margin-top: 8px;">Diff comparisons will render here.</div>
             </section>
 
-            <section id="workspace-training" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Training Studio</div><h2>Fine-Tuning Control Surface</h2></div><button id="trainingCheckBtn">Check Dependencies</button></div>
-                <section class="runtime-grid">
-                    <div class="metric"><span>Dataset</span><strong id="trainingDatasetState">not selected</strong></div>
-                    <div class="metric"><span>Examples</span><strong id="trainingExampleCount">--</strong></div>
-                    <div class="metric"><span>Adapter Path</span><strong id="trainingAdapterPath">data/adapters</strong></div>
-                    <div class="metric"><span>Status</span><strong id="trainingStatus">bridge required</strong></div>
-                </section>
-                <label>Dataset JSONL <input id="trainingDatasetPath" type="text" placeholder="data/training/curated.jsonl"></label>
-                <div class="settings-grid">
-                    <label>Adapter Name <input id="trainingAdapterName" type="text" value="karl-adapter"></label>
-                    <label>Epochs <input id="trainingEpochs" type="number" min="1" max="20" value="3"></label>
-                    <label>Learning Rate <input id="trainingLr" type="number" min="0" step="0.00001" value="0.0002"></label>
-                    <label>LoRA Rank <input id="trainingRank" type="number" min="1" max="256" value="16"></label>
-                    <label class="check"><input id="trainingQlorA" type="checkbox"> QLoRA 4-bit when available</label>
-                    <label class="check"><input id="trainingValidateOnly" type="checkbox" checked> Validate before run</label>
+            <section id="workspace-settings" class="workspace">
+                <div class="section-head">
+                    <div><div class="eyebrow">Settings</div><h2>Aesthetics & Configs</h2></div>
                 </div>
-                <div class="action-row"><button id="trainingValidateBtn">Validate Dataset</button><button id="trainingRunBtn" class="primary">Start Training</button><button id="trainingExportBtn">Export SFT/DPO</button></div>
-                <div class="loss-plot" id="trainingLossPlot"><span>Loss curve will render here when bridge training events are available.</span></div>
-                <pre id="trainingLog" class="studio-log">Training Studio is ready. Runtime training requires bridge methods for dependency checks, dataset validation, export, and training events.</pre>
+                <nav class="subtabs" aria-label="Settings Mode">
+                    <button class="subtab active" data-subworkspace="settings-look">Appearance</button>
+                    <button class="subtab" data-subworkspace="settings-runtime">System Config</button>
+                </nav>
+                <div id="subworkspace-settings-look" class="subworkspace active" style="margin-top: 8px;">
+                    <label>Theme Preset <select id="themeSelect"></select></label>
+                    <div id="themeDescription" class="theme-description"></div>
+                    <label>Custom Accent <input id="customAccent" type="color" value="#00c2ff"></label>
+                    <label>Layout Mode <select id="layoutSelect"></select></label>
+                    <div id="layoutDescription" class="theme-description"></div>
+                    
+                    <div class="look-options-grid glow-panel" style="padding: 10px; margin-top: 10px;">
+                        <label class="check"><input id="syncVsCodeTheme" type="checkbox" checked> Sync with VS Code theme</label>
+                        <label class="check"><input id="highContrastMode" type="checkbox"> High contrast layout</label>
+                        <label class="check"><input id="reducedMotion" type="checkbox"> Reduced motion effects</label>
+                        <label style="margin-top: 8px;">Animation Intensity
+                            <input id="animationIntensity" type="range" min="0" max="100" value="100" style="margin-top: 4px;">
+                        </label>
+                    </div>
+
+                    <div class="eyebrow" style="margin-top: 12px; margin-bottom: 6px;">Theme Catalog Previews</div>
+                    <div id="themeGrid" class="theme-grid"></div>
+                    
+                    <button id="resetAppearanceBtn" style="margin-top:12px;">Reset Appearance</button>
+                </div>
+                <div id="subworkspace-settings-runtime" class="subworkspace" style="margin-top: 8px; display: none;">
+                    <div class="section-head mini-head"><div><div class="eyebrow">Bridge</div><h2>Connection settings</h2></div></div>
+                    <section class="connection-row glow-panel">
+                        <label>Port <input id="bridgePort" type="number" min="1" max="65535" value="${port}"></label>
+                        <label class="check"><input id="autoConnect" type="checkbox" checked> Auto Connect</label>
+                    </section>
+                    <div class="action-row">
+                        <button id="connectBtn" class="primary">Connect</button>
+                        <button id="disconnectBtn">Disconnect</button>
+                    </div>
+                    
+                    <div class="section-head mini-head" style="margin-top: 12px;"><div><div class="eyebrow">Hyperparams</div><h2>Generation Overrides</h2></div></div>
+                    <div class="settings-grid glow-panel" style="padding: 10px;">
+                        <label>Temperature <input id="karlTemp" type="number" step="0.05" min="0" max="2" value="0.7"></label>
+                        <label>Top-P <input id="karlTopP" type="number" step="0.05" min="0" max="1" value="0.95"></label>
+                        <label>Max Tokens <input id="karlMaxTok" type="number" min="64" max="32768" value="2048"></label>
+                        <label>RAG Top-K <input id="kbTopK" type="number" min="1" max="25" value="5"></label>
+                        <label>RAG Threshold <input id="kbThreshold" type="number" min="0" max="100" step="0.05" value="0"></label>
+                        <label class="check"><input id="karlRag" type="checkbox" checked> Use RAG</label>
+                        <label class="check"><input id="karlLoop" type="checkbox"> Agentic loop</label>
+                    </div>
+
+                    <div class="section-head mini-head" style="margin-top: 12px;"><div><div class="eyebrow">Models</div><h2>Available GGUFs</h2></div><button id="loadModelsBtn">Refresh</button></div>
+                    <div id="modelList" class="model-list"></div>
+                    <div class="section-head mini-head" style="margin-top: 12px;"><div><div class="eyebrow">Registry</div><h2>Download Tiers</h2></div></div>
+                    <div id="downloadRegistry" class="model-list"></div>
+                </div>
             </section>
 
-            <section id="workspace-eval" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Eval Suite</div><h2>Benchmark Harness</h2></div><button id="evalRefreshBtn">Refresh Status</button></div>
-                <section class="runtime-grid">
-                    <div class="metric"><span>Dataset</span><strong id="evalDatasetState">not selected</strong></div>
-                    <div class="metric"><span>Elapsed</span><strong id="evalElapsed">00:00</strong></div>
-                    <div class="metric"><span>ETA</span><strong id="evalEta">--</strong></div>
-                    <div class="metric"><span>Pass Rate</span><strong id="evalPassRate">--</strong></div>
-                </section>
-                <label>Dataset Path <input id="evalDatasetPath" type="text" placeholder="eval/datasets/grounded_answer.jsonl"></label>
-                <label>Benchmark Mode <select id="evalMode"><option>grounded_answer</option><option>code_review</option><option>json_valid</option><option>exact_match</option></select></label>
-                <div class="meter"><span id="evalProgressBar"></span></div>
-                <div class="action-row"><button id="evalRunBtn" class="primary">Run Eval</button><button id="evalStopBtn" class="danger">Stop</button><button id="evalExportBtn">Export Summary</button></div>
-                <label>Log Filter <select id="evalFilter"><option value="">All</option><option value="pass">PASS</option><option value="fail">FAIL</option></select></label>
-                <div id="evalLog" class="eval-log">Eval execution requires Karl bridge harness support. This workspace is prepared for async progress, ETA, PASS/FAIL filtering, and summary export.</div>
-            </section>
-
-            <section id="workspace-system" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">System Config</div><h2>Runtime, Models, and Adapters</h2></div><button id="loadModelsBtn">Refresh</button></div>
-                <section class="runtime-grid">
-                    <div class="metric"><span>Active Model</span><strong id="systemActiveModel">unknown</strong></div>
-                    <div class="metric"><span>Context</span><strong id="systemContext">--</strong></div>
-                    <div class="metric"><span>RAM Check</span><strong id="systemRamCheck">waiting</strong></div>
-                    <div class="metric"><span>Adapter Warning</span><strong id="systemAdapterWarning">none</strong></div>
-                </section>
-                <div id="modelList" class="model-list"></div>
-                <div class="section-head mini-head"><div><div class="eyebrow">Registry</div><h2>Download Tiers</h2></div></div>
-                <div id="downloadRegistry" class="model-list"></div>
-            </section>
-
-            <section id="workspace-codex" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Reference</div><h2>Codex Library</h2></div></div>
-                <input id="codexSearch" type="text" placeholder="Search references...">
-                <div id="codexList" class="source-list"></div>
-                <article id="codexViewer" class="codex-viewer">Select a chapter to read local reference material.</article>
-            </section>
-
-            <section id="workspace-appearance" class="workspace">
-                <div class="section-head"><div><div class="eyebrow">Personalize</div><h2>Appearance System</h2></div></div>
-                <label>Theme Preset <select id="themeSelect"></select></label>
-                <div id="themeDescription" class="theme-description"></div>
-                <label>Custom Accent <input id="customAccent" type="color" value="#00c2ff"></label>
-                <label>Layout Mode <select id="layoutSelect"></select></label>
-                <div id="layoutDescription" class="theme-description"></div>
-                <div class="swatch-grid" id="themeSwatches"></div>
-                <button id="resetAppearanceBtn">Reset Appearance</button>
+            <section id="workspace-logs" class="workspace">
+                <div class="section-head">
+                    <div><div class="eyebrow">Logs</div><h2>Swarm Logs & Runtimes</h2></div>
+                    <button id="clearLogsBtn">Clear logs</button>
+                </div>
+                <div class="action-row">
+                    <button id="copyLogsBtn">Copy All logs</button>
+                </div>
+                <pre id="terminal">--- Swarm Logs ---</pre>
+                <div class="eyebrow" style="margin-top:12px;">Fine-Tuning Loss/Logs</div>
+                <pre id="trainingLog" class="studio-log">No training logs recorded.</pre>
+                <div class="eyebrow" style="margin-top:12px;">Eval Harness Status</div>
+                <pre id="evalLog" class="eval-log">No eval execution logs.</pre>
             </section>
         </main>
     </div>

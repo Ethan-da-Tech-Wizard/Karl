@@ -190,15 +190,21 @@ class SystemConfigWorkspace(QWidget):
         desc.setStyleSheet("font-size: 8.5pt; margin-bottom: 6px; padding-left: 2px;")
         root.addWidget(desc)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_model_tab(), "Model")
-        tabs.addTab(self._build_registry_tab(), "Registry")
-        tabs.addTab(self._build_params_tab(), "Defaults")
-        tabs.addTab(self._build_identity_tab(), "Identity")
-        tabs.addTab(self._build_vision_tab(), "Vision")
-        tabs.addTab(self._build_theme_tab(), "Theme")
-        tabs.addTab(self._build_hardware_tab(), "Hardware")
-        root.addWidget(tabs, 1)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_model_tab(), "Model")
+        self._tabs.addTab(self._build_registry_tab(), "Registry")
+        self._tabs.addTab(self._build_params_tab(), "Defaults")
+        self._tabs.addTab(self._build_identity_tab(), "Identity")
+        self._tabs.addTab(self._build_vision_tab(), "Vision")
+        self._theme_tab = self._build_theme_tab()
+        self._tabs.addTab(self._theme_tab, "Theme")
+        self._tabs.addTab(self._build_hardware_tab(), "Hardware")
+        root.addWidget(self._tabs, 1)
+
+    def show_theme_tab(self):
+        if hasattr(self, "_tabs") and hasattr(self, "_theme_tab"):
+            self._sync_appearance_controls_from_state()
+            self._tabs.setCurrentWidget(self._theme_tab)
 
     # ── model tab ─────────────────────────────────────────────────────────────
 
@@ -1419,9 +1425,15 @@ class SystemConfigWorkspace(QWidget):
         ctrl_layout.addWidget(_hline())
         ctrl_layout.addWidget(_section("THEME GALLERY"))
 
-        self._theme_gallery = QTextBrowser()
-        self._theme_gallery.setMinimumHeight(260)
-        self._theme_gallery.setOpenExternalLinks(False)
+        self._theme_gallery = QScrollArea()
+        self._theme_gallery.setWidgetResizable(True)
+        self._theme_gallery.setFrameShape(QFrame.Shape.NoFrame)
+        self._theme_gallery.setMinimumHeight(320)
+        self._theme_gallery_content = QWidget()
+        self._theme_gallery_layout = QVBoxLayout(self._theme_gallery_content)
+        self._theme_gallery_layout.setContentsMargins(0, 0, 0, 0)
+        self._theme_gallery_layout.setSpacing(8)
+        self._theme_gallery.setWidget(self._theme_gallery_content)
         ctrl_layout.addWidget(self._theme_gallery)
 
         ctrl_layout.addWidget(_hline())
@@ -1714,6 +1726,51 @@ class SystemConfigWorkspace(QWidget):
         self._update_accent_button_text()
         self._on_preset_changed()
 
+    def _sync_appearance_controls_from_state(self):
+        theme_preset = getattr(self.state, "theme_preset", "Karl Obsidian Core")
+        layout_preset = getattr(self.state, "layout_preset", "Focused Workbench")
+        custom_accent = getattr(self.state, "custom_accent", None)
+        reduced_motion = getattr(self.state, "reduced_motion", False)
+        glow_enabled = getattr(self.state, "glow_enabled", True)
+        animation_intensity = float(getattr(self.state, "animation_intensity", 1.0))
+        glow_strength = float(getattr(self.state, "glow_strength", 1.0))
+
+        self._theme_preset_combo.blockSignals(True)
+        idx = self._theme_preset_combo.findText(theme_preset)
+        if idx >= 0:
+            self._theme_preset_combo.setCurrentIndex(idx)
+        self._theme_preset_combo.blockSignals(False)
+
+        self._layout_preset_combo.blockSignals(True)
+        idx = self._layout_preset_combo.findText(layout_preset)
+        if idx >= 0:
+            self._layout_preset_combo.setCurrentIndex(idx)
+        self._layout_preset_combo.blockSignals(False)
+
+        self._glow_enabled_check.blockSignals(True)
+        self._glow_enabled_check.setChecked(glow_enabled)
+        self._glow_enabled_check.blockSignals(False)
+
+        self._reduced_motion_check_app.blockSignals(True)
+        self._reduced_motion_check_app.setChecked(reduced_motion)
+        self._reduced_motion_check_app.blockSignals(False)
+
+        self._glow_strength_slider.blockSignals(True)
+        self._glow_strength_slider.setValue(int(glow_strength * 10))
+        self._glow_strength_slider.blockSignals(False)
+        self._glow_strength_val_lbl.setText(f"{glow_strength:.1f}x")
+
+        self._animation_intensity_slider.blockSignals(True)
+        self._animation_intensity_slider.setValue(int(animation_intensity * 10))
+        self._animation_intensity_slider.blockSignals(False)
+        self._animation_intensity_val_lbl.setText(f"{animation_intensity:.1f}x")
+
+        self._active_custom_accent = custom_accent
+        self._update_accent_button_text()
+        self._preset_desc_lbl.setText(THEMES.get(theme_preset, {}).get("description", ""))
+        self._update_swatches()
+        self._update_theme_gallery()
+
     def _update_accent_button_text(self):
         if self._active_custom_accent:
             self._custom_accent_btn.setText(f"Accent: {self._active_custom_accent}")
@@ -1838,10 +1895,15 @@ class SystemConfigWorkspace(QWidget):
             self._swatches_layout.addWidget(swatch_unit)
 
     def _update_theme_gallery(self):
-        if not hasattr(self, "_theme_gallery"):
+        if not hasattr(self, "_theme_gallery_layout"):
             return
+        while self._theme_gallery_layout.count():
+            item = self._theme_gallery_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
         selected = self._theme_preset_combo.currentText()
-        rows = []
         for name, data in THEMES.items():
             border = data.get("border_hi", "#35356E")
             accent = data.get("accent", "#00E5FF")
@@ -1851,27 +1913,60 @@ class SystemConfigWorkspace(QWidget):
             bg_raised = data.get("bg_raised", "#14142D")
             text_hi = data.get("text_hi", "#F0F5FF")
             text_mid = data.get("text_mid", "#A0AEC0")
-            selected_badge = " ACTIVE" if name == selected else ""
-            rows.append(
-                "<div style='"
-                f"background:{bg_surface}; color:{text_hi}; border:1px solid {border}; "
-                "border-radius:4px; padding:8px; margin-bottom:8px;'>"
-                f"<div style='font-weight:bold; color:{accent};'>{html.escape(name)}{selected_badge}</div>"
-                f"<div style='color:{text_mid}; margin:4px 0 7px 0;'>{html.escape(data.get('description', ''))}</div>"
-                "<div>"
-                f"<span style='display:inline-block; width:34px; height:14px; background:{accent}; border:1px solid {border};'></span> "
-                f"<span style='display:inline-block; width:34px; height:14px; background:{accent_alt}; border:1px solid {border};'></span> "
-                f"<span style='display:inline-block; width:34px; height:14px; background:{bg_deep}; border:1px solid {border};'></span> "
-                f"<span style='display:inline-block; width:34px; height:14px; background:{bg_surface}; border:1px solid {border};'></span> "
-                f"<span style='display:inline-block; width:34px; height:14px; background:{bg_raised}; border:1px solid {border};'></span>"
-                "</div>"
-                "</div>"
+
+            card = QWidget()
+            card.setObjectName("panel")
+            card.setStyleSheet(
+                f"QWidget#panel {{ background-color: {bg_surface}; border: 1px solid {border}; border-radius: 6px; }}"
             )
-        self._theme_gallery.setHtml(
-            f"<div style='font-family:{MONO}; font-size:8.5pt; line-height:1.35;'>"
-            + "".join(rows)
-            + "</div>"
-        )
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(10, 8, 10, 8)
+            cl.setSpacing(6)
+
+            header = QWidget()
+            hl = QHBoxLayout(header)
+            hl.setContentsMargins(0, 0, 0, 0)
+            title = QLabel(name + ("  ACTIVE" if name == selected else ""))
+            title.setStyleSheet(f"color: {accent}; font-weight: bold; font-size: 9.5pt;")
+            hl.addWidget(title, 1)
+            apply_btn = QPushButton("Apply")
+            apply_btn.setObjectName("btn-primary" if name == selected else "btn-secondary")
+            apply_btn.clicked.connect(lambda _checked=False, n=name: self._apply_theme_preset_from_gallery(n))
+            hl.addWidget(apply_btn)
+            cl.addWidget(header)
+
+            desc = QLabel(data.get("description", ""))
+            desc.setWordWrap(True)
+            desc.setStyleSheet(f"color: {text_mid}; font-size: 8.2pt;")
+            cl.addWidget(desc)
+
+            swatch_row = QWidget()
+            sl = QHBoxLayout(swatch_row)
+            sl.setContentsMargins(0, 0, 0, 0)
+            sl.setSpacing(5)
+            for value, label in (
+                (accent, "accent"),
+                (accent_alt, "alt"),
+                (bg_deep, "deep"),
+                (bg_surface, "surface"),
+                (bg_raised, "raised"),
+                (text_hi, "text"),
+            ):
+                box = QLabel()
+                box.setFixedSize(34, 16)
+                box.setToolTip(f"{label}: {value}")
+                box.setStyleSheet(f"background-color: {value}; border: 1px solid {border}; border-radius: 3px;")
+                sl.addWidget(box)
+            sl.addStretch()
+            cl.addWidget(swatch_row)
+            self._theme_gallery_layout.addWidget(card)
+
+        self._theme_gallery_layout.addStretch(1)
+
+    def _apply_theme_preset_from_gallery(self, name: str):
+        idx = self._theme_preset_combo.findText(name)
+        if idx >= 0:
+            self._theme_preset_combo.setCurrentIndex(idx)
 
     def _save_appearance_config_silent(self):
         config = {

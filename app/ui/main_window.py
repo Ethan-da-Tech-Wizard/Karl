@@ -147,6 +147,7 @@ class MainWindow(QMainWindow):
         self._workbench.model_changed.connect(self._status_bar.set_model)
         self._workbench.adapter_changed.connect(self._status_bar.set_adapter)
         self._workbench.adapter_changed.connect(self._on_adapter_changed)
+        self._workbench.appearance_requested.connect(self._open_appearance_controls)
         self._system.adapter_changed.connect(self._status_bar.set_adapter)
         self._system.adapter_changed.connect(self._on_adapter_changed)
         self._system.appearance_changed.connect(self._apply_theme_from_state)
@@ -177,6 +178,11 @@ class MainWindow(QMainWindow):
 
     def _on_adapter_changed(self, name: str):
         self._state.adapter_name = name if name else None
+
+    def _open_appearance_controls(self):
+        self._sidebar.select(6)
+        if hasattr(self._system, "show_theme_tab"):
+            self._system.show_theme_tab()
 
     def _load_theme_config(self):
         import json
