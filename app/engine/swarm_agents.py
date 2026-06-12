@@ -184,9 +184,7 @@ class CoderAgent(BaseSwarmAgent):
             try:
                 ast.parse(cleaned)
             except SyntaxError as e:
-                # Append a comment with syntax error and return current content so test fails
-                error_msg = f"# SYNTAX ERROR GENERATED: Line {e.lineno}: {e.msg}\n"
-                return error_msg + cleaned
+                return f"# SYNTAX ERROR: Line {e.lineno}: {e.msg}\n"
 
         return cleaned
 

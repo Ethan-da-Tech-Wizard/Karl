@@ -29,15 +29,13 @@ class StatusBar(QWidget):
         self._model_lbl   = _lbl("● no model", self)
         self._adapter_lbl = _lbl("", self)
         self._state_lbl   = _lbl("idle", self)
-        self._vscode_lbl  = _lbl("⇄ VS Code: offline", self)
-        self._bridge_lbl  = _lbl("Bridge: offline", self)
         self._ram_lbl     = _lbl("", self)
+        self._bridge_lbl  = _lbl("⇄ Bridge: offline", self)
 
         for w in (
             self._model_lbl, _sep(self),
             self._adapter_lbl, _sep(self),
-            self._state_lbl, _sep(self),
-            self._vscode_lbl,
+            self._state_lbl,
         ):
             layout.addWidget(w)
 
@@ -54,37 +52,11 @@ class StatusBar(QWidget):
     # ── internal ──────────────────────────────────────────────────────────────
 
     def _tick(self):
-        self._update_ram()
-        self._update_bridge()
-
-    def _update_ram(self):
         try:
             mb = psutil.Process(os.getpid()).memory_info().rss / 1_048_576
             self._ram_lbl.setText(f"{mb:.0f} MB")
         except Exception:
             pass
-
-    def _update_bridge(self):
-        try:
-            from app.engine.websocket_server import WebSocketServerManager
-            ws_mgr = WebSocketServerManager._instance
-            if ws_mgr is not None and ws_mgr.server is not None:
-                if len(ws_mgr.clients) > 0:
-                    self._vscode_lbl.setText("⇄ VS Code: connected")
-                    self._vscode_lbl.setObjectName("lbl-accent")
-                else:
-                    self._vscode_lbl.setText("⇄ VS Code: listening")
-                    self._vscode_lbl.setObjectName("lbl-muted")
-            else:
-                self._vscode_lbl.setText("⇄ VS Code: offline")
-                self._vscode_lbl.setObjectName("lbl-muted")
-            self._vscode_lbl.style().unpolish(self._vscode_lbl)
-            self._vscode_lbl.style().polish(self._vscode_lbl)
-        except Exception:
-            self._vscode_lbl.setText("⇄ VS Code: offline")
-            self._vscode_lbl.setObjectName("lbl-muted")
-            self._vscode_lbl.style().unpolish(self._vscode_lbl)
-            self._vscode_lbl.style().polish(self._vscode_lbl)
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -105,10 +77,7 @@ class StatusBar(QWidget):
         self._state_lbl.style().polish(self._state_lbl)
 
     def set_bridge_status(self, state: str, clients: int = 0):
-        """Explicitly update the bridge indicator.
-
-        state: 'connected' | 'listening' | 'offline' | 'error'
-        """
+        """Update the bridge indicator. state: 'connected' | 'listening' | 'offline' | 'error'"""
         if state == "connected":
             text = f"⇄ Bridge: {clients} client{'s' if clients != 1 else ''}"
             obj = "lbl-accent"

@@ -774,13 +774,13 @@ class WebSocketServerManager:
                             Qt.ConnectionType.DirectConnection
                         )
 
-                        def make_on_finished(ws, hist, is_agentic):
+                        def make_on_finished(ws, hist, is_agentic, thread_ref):
                             def on_finished(*args):
                                 response_text = ""
                                 if not is_agentic and len(args) >= 2:
                                     response_text = args[1]
-                                elif is_agentic and self.chat_thread:
-                                    th = getattr(self.chat_thread, "chat_history", [])
+                                elif is_agentic and thread_ref is not None:
+                                    th = getattr(thread_ref, "chat_history", [])
                                     if th and th[-1].get("role") == "assistant":
                                         response_text = th[-1].get("content", "")
 
@@ -792,12 +792,12 @@ class WebSocketServerManager:
 
                         if agentic:
                             chat_thread.loop_finished.connect(
-                                make_on_finished(websocket, history, True),
+                                make_on_finished(websocket, history, True, chat_thread),
                                 Qt.ConnectionType.DirectConnection
                             )
                         else:
                             chat_thread.generation_finished.connect(
-                                make_on_finished(websocket, history, False),
+                                make_on_finished(websocket, history, False, chat_thread),
                                 Qt.ConnectionType.DirectConnection
                             )
 

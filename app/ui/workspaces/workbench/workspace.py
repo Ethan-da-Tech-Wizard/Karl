@@ -225,13 +225,6 @@ class WorkbenchWorkspace(QMainWindow):
         self._command_header = self._build_command_header()
         layout.addWidget(self._command_header)
 
-        # reload notice banner
-        self._reload_notice_lbl = QLabel("")
-        self._reload_notice_lbl.setObjectName("reload-notice")
-        self._reload_notice_lbl.setVisible(False)
-        self._reload_notice_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._reload_notice_lbl)
-
         # chat display
         self._chat_view = ChatView(w)
         self._chat_view.anchorClicked.connect(self._on_chat_link_clicked)
