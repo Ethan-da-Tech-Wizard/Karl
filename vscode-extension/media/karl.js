@@ -30,6 +30,8 @@ let currentConversationInput = '';
 let responseThinkActive = false;
 let currentResponseText = '';
 let nextReconnectSec = 5;
+let lastKbSnapshot = {};
+let lastKbResults = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -284,6 +286,144 @@ function bindEvents() {
         $('reducedMotion').checked = false;
         $('animationIntensity').value = 100;
         applyAppearance();
+    });
+
+    // Delegated Event Listeners to prevent memory/event-listener leaks
+    $('changeQueue').addEventListener('click', event => {
+        const btn = event.target.closest('button');
+        if (!btn) return;
+        if (btn.dataset.preview) {
+            vscode.postMessage({ command: 'preview_file', editId: btn.dataset.preview });
+        } else if (btn.dataset.apply) {
+            vscode.postMessage({ command: 'apply_file', editId: btn.dataset.apply });
+        } else if (btn.dataset.reject) {
+            vscode.postMessage({ command: 'reject_file', editId: btn.dataset.reject });
+        } else if (btn.dataset.open) {
+            vscode.postMessage({ command: 'open_file', editId: btn.dataset.open });
+        } else if (btn.dataset.copyPath) {
+            vscode.postMessage({ command: 'copy_file_path', editId: btn.dataset.copyPath });
+        } else if (btn.dataset.rollback) {
+            vscode.postMessage({ command: 'rollback_applied_file', editId: btn.dataset.rollback });
+        }
+    });
+
+    $('diagnosticsList').addEventListener('click', event => {
+        const el = event.target.closest('[data-diag-file]');
+        if (!el) return;
+        vscode.postMessage({
+            command: 'open_diagnostic_line',
+            filepath: el.dataset.diagFile,
+            line: Number(el.dataset.diagLine),
+            character: Number(el.dataset.diagChar)
+        });
+    });
+
+    $('themeGrid').addEventListener('click', event => {
+        const card = event.target.closest('[data-theme-id]');
+        if (!card) return;
+        $('themeSelect').value = card.dataset.themeId;
+        applyAppearance();
+    });
+
+    $('kbSourceList').addEventListener('click', event => {
+        const row = event.target.closest('[data-source]');
+        if (!row) return;
+        kbSelectedSource = row.dataset.source || '';
+        $('kbSourceFilter').value = kbSelectedSource;
+        renderKbSnapshot(lastKbSnapshot);
+    });
+
+    $('kbQueue').addEventListener('click', event => {
+        const btn = event.target.closest('[data-remove-kb]');
+        if (!btn) return;
+        kbQueue.splice(Number(btn.dataset.removeKb), 1);
+        renderKbQueue();
+    });
+
+    $('quickActions').addEventListener('click', event => {
+        const btn = event.target.closest('[data-workflow]');
+        if (!btn) return;
+        vscode.postMessage({
+            command: 'runWorkflow',
+            workflowId: btn.dataset.workflow,
+            payload: {}
+        });
+    });
+
+    $('recentTasksHistory').addEventListener('click', event => {
+        const btn = event.target.closest('[data-task-idx]');
+        if (!btn) return;
+        const task = recentTasks[Number(btn.dataset.taskIdx)];
+        if (task) {
+            vscode.postMessage({
+                command: 'runWorkflow',
+                workflowId: task.workflowId,
+                payload: {
+                    objective: task.objective,
+                    filepath: task.filepath
+                }
+            });
+        }
+    });
+
+    $('recentKbQueries').addEventListener('click', event => {
+        const btn = event.target.closest('[data-kb-query]');
+        if (!btn) return;
+        $('kbQuery').value = recentKbQueries[Number(btn.dataset.kbQuery)] || '';
+        searchKb();
+    });
+
+    $('kbResults').addEventListener('click', event => {
+        const btn = event.target.closest('button');
+        if (!btn) return;
+        if (btn.dataset.sendChat !== undefined) {
+            const res = lastKbResults[Number(btn.dataset.sendChat)];
+            if (res) {
+                $('chatInput').value = `Reference: ${res.source_file} (Chunk ${res.chunk_id})\n\n${res.text}\n\n`;
+                switchWorkspace('chat');
+            }
+        } else if (btn.dataset.sendSwarm !== undefined) {
+            const res = lastKbResults[Number(btn.dataset.sendSwarm)];
+            if (res) {
+                $('objective').value = `Reference: ${res.source_file} (Chunk ${res.chunk_id})\n\n${res.text}\n\n${$('objective').value}`;
+                switchWorkspace('swarm');
+            }
+        }
+    });
+
+    $('modelList').addEventListener('click', event => {
+        const btn = event.target.closest('[data-model]');
+        if (!btn) return;
+        rpc(32, 'set_active_model', { filename: btn.dataset.model });
+    });
+
+    $('codexList').addEventListener('click', event => {
+        const row = event.target.closest('[data-topic]');
+        if (!row) return;
+        $('codexViewer').innerHTML = 'Loading reference...';
+        rpc(21, 'get_codex_content', { topic: row.dataset.topic });
+    });
+
+    $('branchTree').addEventListener('click', event => {
+        const btn = event.target.closest('[data-branch]');
+        if (!btn) return;
+        activeBranchId = btn.dataset.branch;
+        renderBranches();
+        persist();
+    });
+
+    $('codexViewer').addEventListener('click', event => {
+        const btn = event.target.closest('button');
+        if (!btn) return;
+        if (btn.id === 'codexSendChatBtn') {
+            const txt = $('codexViewer').querySelector('.codex-content').innerText;
+            $('chatInput').value = `Codex Reference:\n\n${txt}\n\n`;
+            switchWorkspace('chat');
+        } else if (btn.id === 'codexSendSwarmBtn') {
+            const txt = $('codexViewer').querySelector('.codex-content').innerText;
+            $('objective').value = `Codex Reference:\n\n${txt}\n\n${$('objective').value}`;
+            switchWorkspace('swarm');
+        }
     });
 }
 
@@ -814,13 +954,6 @@ function renderBranches() {
             <strong>${branch.turns.length} turn${branch.turns.length === 1 ? '' : 's'}</strong>
         </button>
     `).join('');
-    panel.querySelectorAll('[data-branch]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            activeBranchId = btn.dataset.branch;
-            renderBranches();
-            persist();
-        });
-    });
 }
 
 function appendMessageBubble(role, text) {
@@ -923,25 +1056,6 @@ function renderPendingEdits() {
             </div>
         </div>
     `).join('');
-
-    queue.querySelectorAll('[data-preview]').forEach(btn => btn.addEventListener('click', () => {
-        vscode.postMessage({ command: 'preview_file', editId: btn.dataset.preview });
-    }));
-    queue.querySelectorAll('[data-apply]').forEach(btn => btn.addEventListener('click', () => {
-        vscode.postMessage({ command: 'apply_file', editId: btn.dataset.apply });
-    }));
-    queue.querySelectorAll('[data-reject]').forEach(btn => btn.addEventListener('click', () => {
-        vscode.postMessage({ command: 'reject_file', editId: btn.dataset.reject });
-    }));
-    queue.querySelectorAll('[data-open]').forEach(btn => btn.addEventListener('click', () => {
-        vscode.postMessage({ command: 'open_file', editId: btn.dataset.open });
-    }));
-    queue.querySelectorAll('[data-copy-path]').forEach(btn => btn.addEventListener('click', () => {
-        vscode.postMessage({ command: 'copy_file_path', editId: btn.dataset.copyPath });
-    }));
-    queue.querySelectorAll('[data-rollback]').forEach(btn => btn.addEventListener('click', () => {
-        vscode.postMessage({ command: 'rollback_applied_file', editId: btn.dataset.rollback });
-    }));
 }
 
 function formatLineDelta(edit) {
@@ -1154,12 +1268,15 @@ function applyAppearance() {
 function renderThemeCatalog() {
     const grid = $('themeGrid');
     if (!grid) return;
-    grid.innerHTML = window.KARL_THEMES.map(theme => {
+    const themes = Array.isArray(window.KARL_THEMES) ? window.KARL_THEMES : [];
+    grid.innerHTML = themes.map(theme => {
+        if (!theme) return '';
+        const vars = theme.vars || {};
         const active = $('themeSelect').value === theme.id;
-        const bg = theme.vars['--karl-bg'];
-        const panel = theme.vars['--karl-panel'];
-        const border = theme.vars['--karl-border'];
-        const accent = theme.vars['--karl-accent'];
+        const bg = vars['--karl-bg'] || '';
+        const panel = vars['--karl-panel'] || '';
+        const border = vars['--karl-border'] || '';
+        const accent = vars['--karl-accent'] || '';
         return `
             <div class="theme-card ${active ? 'active' : ''}" data-theme-id="${escapeHtml(theme.id)}">
                 <div class="theme-card-title">${escapeHtml(theme.name)}</div>
@@ -1173,17 +1290,11 @@ function renderThemeCatalog() {
             </div>
         `;
     }).join('');
-
-    grid.querySelectorAll('[data-theme-id]').forEach(card => {
-        card.addEventListener('click', () => {
-            $('themeSelect').value = card.dataset.themeId;
-            applyAppearance();
-        });
-    });
 }
 
 function renderKbSnapshot(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') snapshot = {};
+    lastKbSnapshot = snapshot;
     const sources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
     $('kbSourceCount').innerText = snapshot.total_sources ?? sources.length ?? 0;
     $('kbChunkCount').innerText = snapshot.total_chunks ?? 0;
@@ -1195,16 +1306,8 @@ function renderKbSnapshot(snapshot) {
         </div>
     `).join('') : '<div class="source-item">No indexed sources yet.</div>';
 
-    $('kbSourceList').querySelectorAll('[data-source]').forEach(row => {
-        row.addEventListener('click', () => {
-            kbSelectedSource = row.dataset.source || '';
-            $('kbSourceFilter').value = kbSelectedSource;
-            renderKbSnapshot(snapshot);
-        });
-    });
-
     $('kbSourceFilter').innerHTML = '<option value="">All sources</option>' + sources.map(source => {
-        return `<option value="${escapeHtml(source.name)}">${escapeHtml(source.name)}</option>`;
+        return `<option value="${escapeHtml(source ? source.name : '')}">${escapeHtml(source ? source.name : 'unknown')}</option>`;
     }).join('');
     if (kbSelectedSource) $('kbSourceFilter').value = kbSelectedSource;
 }
@@ -1234,12 +1337,6 @@ function renderKbQueue() {
             <button data-remove-kb="${index}">Remove</button>
         </div>
     `).join('');
-    panel.querySelectorAll('[data-remove-kb]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            kbQueue.splice(Number(btn.dataset.removeKb), 1);
-            renderKbQueue();
-        });
-    });
 }
 
 function markCurrentKbQueueDone(status) {
@@ -1356,15 +1453,6 @@ function renderQuickActions() {
     $('quickActions').innerHTML = actions.map(([label, workflowId]) => {
         return `<button class="quick-action" data-workflow="${escapeHtml(workflowId)}">${escapeHtml(label)}</button>`;
     }).join('');
-    $('quickActions').querySelectorAll('[data-workflow]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            vscode.postMessage({
-                command: 'runWorkflow',
-                workflowId: btn.dataset.workflow,
-                payload: {}
-            });
-        });
-    });
 }
 
 function rememberTask(workflowId, title, objective, filepath) {
@@ -1394,20 +1482,6 @@ function renderRecentTasks() {
             <small style="font-size: 8px; color: var(--karl-muted); display: block; margin-top: 2px;">Target: ${escapeHtml(task.filepath || 'unknown')}</small>
         </button>
     `).join('');
-    
-    panel.querySelectorAll('[data-task-idx]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const task = recentTasks[Number(btn.dataset.taskIdx)];
-            vscode.postMessage({
-                command: 'runWorkflow',
-                workflowId: task.workflowId,
-                payload: {
-                    objective: task.objective,
-                    filepath: task.filepath
-                }
-            });
-        });
-    });
 }
 
 function rememberKbQuery(query) {
@@ -1431,12 +1505,6 @@ function renderRecentKbQueries() {
             <span>${escapeHtml(query)}</span>
         </button>
     `).join('');
-    panel.querySelectorAll('[data-kb-query]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            $('kbQuery').value = recentKbQueries[Number(btn.dataset.kbQuery)] || '';
-            searchKb();
-        });
-    });
 }
 
 function addTask(mode, objective) {
@@ -1498,6 +1566,7 @@ function renderKbSearch(payload) {
     if (!payload || typeof payload !== 'object') payload = {};
     renderKbSnapshot(payload.snapshot || {});
     const results = Array.isArray(payload.results) ? payload.results : [];
+    lastKbResults = results;
     $('kbResults').innerHTML = results.length ? results.map((result, index) => {
         if (!result) result = {};
         return `
@@ -1510,22 +1579,6 @@ function renderKbSearch(payload) {
             </div>
         </div>
     `; }).join('') : '<div class="result-card">No chunks matched the current query and threshold.</div>';
-
-    $('kbResults').querySelectorAll('[data-send-chat]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const res = results[Number(btn.dataset.sendChat)];
-            $('chatInput').value = `Reference: ${res.source_file} (Chunk ${res.chunk_id})\n\n${res.text}\n\n`;
-            switchWorkspace('chat');
-        });
-    });
-
-    $('kbResults').querySelectorAll('[data-send-swarm]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const res = results[Number(btn.dataset.sendSwarm)];
-            $('objective').value = `Reference: ${res.source_file} (Chunk ${res.chunk_id})\n\n${res.text}\n\n${$('objective').value}`;
-            switchWorkspace('swarm');
-        });
-    });
 }
 
 function loadModels() {
@@ -1537,7 +1590,9 @@ function loadModels() {
 }
 
 function renderModels(models) {
+    if (!Array.isArray(models)) models = [];
     $('modelList').innerHTML = models.length ? models.map(model => {
+        if (!model) return '';
         const action = model.active
             ? '<button disabled>Active</button>'
             : model.installed
@@ -1549,10 +1604,6 @@ function renderModels(models) {
             ${action}
         </div>`;
     }).join('') : '<div class="model-card"><div class="model-meta">No model registry entries found.</div></div>';
-
-    $('modelList').querySelectorAll('[data-model]').forEach(btn => {
-        btn.addEventListener('click', () => rpc(32, 'set_active_model', { filename: btn.dataset.model }));
-    });
 }
 
 function renderDownloadRegistry(models) {
@@ -1580,15 +1631,10 @@ function loadCodexTopics() {
 }
 
 function renderCodexTopics(topics) {
+    if (!Array.isArray(topics)) topics = [];
     $('codexList').innerHTML = topics.length ? topics.map(topic => {
         return `<div class="source-item" data-topic="${escapeHtml(topic)}"><span>${escapeHtml(topic)}</span></div>`;
     }).join('') : '<div class="source-item">No chapters loaded.</div>';
-    $('codexList').querySelectorAll('[data-topic]').forEach(row => {
-        row.addEventListener('click', () => {
-            $('codexViewer').innerHTML = 'Loading reference...';
-            rpc(21, 'get_codex_content', { topic: row.dataset.topic });
-        });
-    });
 }
 
 function filterCodex() {
@@ -1691,15 +1737,4 @@ function renderDiagnosticsList(diagDetails) {
         });
     });
     listPanel.innerHTML = html;
-
-    listPanel.querySelectorAll('[data-diag-file]').forEach(el => {
-        el.addEventListener('click', () => {
-            vscode.postMessage({
-                command: 'open_diagnostic_line',
-                filepath: el.dataset.diagFile,
-                line: Number(el.dataset.diagLine),
-                character: Number(el.dataset.diagChar)
-            });
-        });
-    });
 }
