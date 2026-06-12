@@ -92,9 +92,15 @@ function hydrate() {
     $('reducedMotion').checked = !!persisted.reducedMotion;
     $('animationIntensity').value = persisted.animationIntensity !== undefined ? persisted.animationIntensity : 100;
 
-    recentTasks = Array.isArray(persisted.recentTasks) ? persisted.recentTasks.slice(0, 15) : [];
-    recentKbQueries = Array.isArray(persisted.recentKbQueries) ? persisted.recentKbQueries.slice(0, 12) : [];
-    conversationBranches = Array.isArray(persisted.conversationBranches) ? persisted.conversationBranches.slice(0, 20) : [];
+    const rawTasks = Array.isArray(persisted.recentTasks) ? persisted.recentTasks : [];
+    recentTasks = rawTasks.filter(t => t && typeof t.workflowId === 'string' && typeof t.title === 'string' && typeof t.objective === 'string').slice(0, 15);
+
+    const rawQueries = Array.isArray(persisted.recentKbQueries) ? persisted.recentKbQueries : [];
+    recentKbQueries = rawQueries.filter(q => typeof q === 'string').slice(0, 12);
+
+    const rawBranches = Array.isArray(persisted.conversationBranches) ? persisted.conversationBranches : [];
+    conversationBranches = rawBranches.filter(b => b && typeof b.id === 'string' && typeof b.title === 'string' && Array.isArray(b.turns)).slice(0, 20);
+    
     activeBranchId = persisted.activeBranchId || (conversationBranches[0] && conversationBranches[0].id) || '';
     
     applyAppearance();
@@ -335,7 +341,16 @@ function connect() {
         persist();
     };
 
-    socket.onmessage = event => handleSocketMessage(JSON.parse(event.data));
+    socket.onmessage = event => {
+        try {
+            const data = JSON.parse(event.data);
+            handleSocketMessage(data);
+        } catch (err) {
+            lastBridgeError = 'Malformed frame: ' + err.message;
+            log(`[Bridge Error] Malformed JSON: ${err.message}`);
+            updateBridgeMeta();
+        }
+    };
     socket.onerror = () => {
         lastBridgeError = 'Connection failed';
         setConnectionState('offline', 'Error');
@@ -451,6 +466,7 @@ function handleSocketMessage(data) {
 }
 
 function handleRpcResult(id, result) {
+    if (!result || typeof result !== 'object') result = {};
     if (id === 12) {
         renderLabDiff(labOutputA, labOutputB);
         labRunning = false;
@@ -484,7 +500,7 @@ function handleRpcResult(id, result) {
     } else if (id === 51) {
         $('kbIngestBtn').disabled = true;
         $('kbIngestState').innerText = 'Running';
-        log(`[KB] Ingestion started for ${result.file_count} file(s).`);
+        log(`[KB] Ingestion started for ${result.file_count || 0} file(s).`);
     } else if (id === 52) {
         renderKbSearch(result);
     } else if (id === 20) {
@@ -496,7 +512,7 @@ function handleRpcResult(id, result) {
                 <button id="codexSendChatBtn">Send to Chat</button>
                 <button id="codexSendSwarmBtn">Send to Swarm</button>
             </div>
-            <div class="codex-content">${cleanText}</div>
+            <div class="codex-content">${escapeHtml(cleanText)}</div>
         `;
         
         $('codexSendChatBtn').addEventListener('click', () => {
@@ -518,6 +534,7 @@ function requestRuntimeStatus() {
 }
 
 function renderRuntimeStatus(status) {
+    if (!status || typeof status !== 'object') status = {};
     const model = status.model || {};
     const adapter = status.adapter || {};
     const runtime = status.runtime || {};
@@ -1023,6 +1040,7 @@ function loadSelectedPromptPair() {
 }
 
 function applyPromptPair(pair) {
+    if (!pair || typeof pair !== 'object') pair = {};
     $('promptPairName').value = pair.name || '';
     $('promptPairSelect').value = pair.name || '';
     $('labSysA').value = pair.system_a || '';
@@ -1082,26 +1100,29 @@ function initializeAppearance() {
 }
 
 function themeById(id) {
-    return window.KARL_THEMES.find(theme => theme.id === id) || window.KARL_THEMES[0];
+    const themes = Array.isArray(window.KARL_THEMES) ? window.KARL_THEMES : [];
+    return themes.find(theme => theme && theme.id === id) || themes[0] || { id: 'obsidian-core', vars: { '--karl-accent': '#00c2ff' }, name: 'Obsidian Core', description: '' };
 }
 
 function layoutById(id) {
-    return window.KARL_LAYOUTS.find(layout => layout.id === id) || window.KARL_LAYOUTS[0];
+    const layouts = Array.isArray(window.KARL_LAYOUTS) ? window.KARL_LAYOUTS : [];
+    return layouts.find(layout => layout && layout.id === id) || layouts[0] || { id: 'cockpit', name: 'Cockpit', description: '' };
 }
 
 function applyAppearance() {
     const theme = themeById($('themeSelect').value);
     const layout = layoutById($('layoutSelect').value);
-    const customAccent = $('customAccent').value || theme.vars['--karl-accent'];
+    const vars = theme.vars || {};
+    const customAccent = $('customAccent').value || vars['--karl-accent'] || '#00c2ff';
     
-    Object.entries(theme.vars).forEach(([key, value]) => {
+    Object.entries(vars).forEach(([key, value]) => {
         document.documentElement.style.setProperty(key, value);
     });
     
     document.documentElement.style.setProperty('--karl-accent', customAccent);
     document.body.dataset.layout = layout.id;
-    $('themeDescription').innerText = theme.description;
-    $('layoutDescription').innerText = layout.description;
+    $('themeDescription').innerText = theme.description || '';
+    $('layoutDescription').innerText = layout.description || '';
 
     // Presets variables modifications
     if ($('syncVsCodeTheme').checked) {
@@ -1162,14 +1183,15 @@ function renderThemeCatalog() {
 }
 
 function renderKbSnapshot(snapshot) {
-    const sources = snapshot.sources || [];
-    $('kbSourceCount').innerText = snapshot.total_sources || sources.length || 0;
-    $('kbChunkCount').innerText = snapshot.total_chunks || 0;
+    if (!snapshot || typeof snapshot !== 'object') snapshot = {};
+    const sources = Array.isArray(snapshot.sources) ? snapshot.sources : [];
+    $('kbSourceCount').innerText = snapshot.total_sources ?? sources.length ?? 0;
+    $('kbChunkCount').innerText = snapshot.total_chunks ?? 0;
     $('kbIngestState').innerText = snapshot.ingesting ? 'Running' : 'Ready';
     $('kbSourceList').innerHTML = sources.length ? sources.map(source => `
-        <div class="source-item ${source.name === kbSelectedSource ? 'active' : ''}" data-source="${escapeHtml(source.name)}">
-            <span class="source-name">${escapeHtml(source.name)}</span>
-            <span>${Number(source.chunks || 0)} chunks</span>
+        <div class="source-item ${source && source.name === kbSelectedSource ? 'active' : ''}" data-source="${escapeHtml(source ? source.name : '')}">
+            <span class="source-name">${escapeHtml(source ? source.name : 'unknown')}</span>
+            <span>${Number(source ? source.chunks : 0)} chunks</span>
         </div>
     `).join('') : '<div class="source-item">No indexed sources yet.</div>';
 
@@ -1473,18 +1495,21 @@ function updateBridgeMeta(status) {
 }
 
 function renderKbSearch(payload) {
+    if (!payload || typeof payload !== 'object') payload = {};
     renderKbSnapshot(payload.snapshot || {});
-    const results = payload.results || [];
-    $('kbResults').innerHTML = results.length ? results.map((result, index) => `
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    $('kbResults').innerHTML = results.length ? results.map((result, index) => {
+        if (!result) result = {};
+        return `
         <div class="result-card">
-            <div class="result-meta">Rank ${escapeHtml(result.rank ?? index)} · ${escapeHtml(result.source_file || 'unknown')} · Chunk ${escapeHtml(result.chunk_id)} · dist=${Number(result.distance || 0).toFixed(4)}</div>
+            <div class="result-meta">Rank ${escapeHtml(result.rank ?? index)} · ${escapeHtml(result.source_file || 'unknown')} · Chunk ${escapeHtml(result.chunk_id || '0')} · dist=${Number(result.distance || 0).toFixed(4)}</div>
             <pre>${escapeHtml(result.text || '').slice(0, 1800)}</pre>
             <div class="action-row compact-actions" style="margin-top:6px;">
                 <button data-send-chat="${index}">Send to Chat</button>
                 <button data-send-swarm="${index}">Send to Swarm</button>
             </div>
         </div>
-    `).join('') : '<div class="result-card">No chunks matched the current query and threshold.</div>';
+    `; }).join('') : '<div class="result-card">No chunks matched the current query and threshold.</div>';
 
     $('kbResults').querySelectorAll('[data-send-chat]').forEach(btn => {
         btn.addEventListener('click', () => {
