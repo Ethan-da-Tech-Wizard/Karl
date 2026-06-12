@@ -28,7 +28,7 @@ Karl is a PyQt6 application with a sidebar-based multi-workspace layout.
 MainWindow
 ├── Sidebar (fixed 56px)          app/ui/sidebar.py
 ├── QStackedWidget                 ← one child per workspace
-│   ├── [0] WorkbenchWorkspace     app/ui/workspaces/workbench.py
+│   ├── [0] WorkbenchWorkspace     app/ui/workspaces/workbench/workspace.py
 │   ├── [1] PromptLabWorkspace     app/ui/workspaces/prompt_lab.py
 │   ├── [2] KnowledgeBaseWorkspace app/ui/workspaces/knowledge_base.py
 │   ├── [3] TrainingStudioWorkspace app/ui/workspaces/training_studio.py
@@ -187,7 +187,7 @@ training curator export.
 | AppState container | `app/state.py` |
 | Status bar (model, state, RAM) | `app/ui/widgets/status_bar.py` |
 | Main window shell | `app/ui/main_window.py` |
-| WorkbenchWorkspace — chat, streaming, RAG toggle, loop toggle, Ctrl+Enter, feedback | `app/ui/workspaces/workbench.py` |
+| WorkbenchWorkspace — chat, streaming, RAG toggle, loop toggle, Ctrl+Enter, feedback | `app/ui/workspaces/workbench/workspace.py` |
 | KnowledgeBaseWorkspace — ingest, source list, chunk inspector, search tester | `app/ui/workspaces/knowledge_base.py` |
 | PromptLabWorkspace — A/B side-by-side streaming | `app/ui/workspaces/prompt_lab.py` |
 | TrainingStudioWorkspace — dataset browser, SFT/DPO export UI, LoRA config UI | `app/ui/workspaces/training_studio.py` |
@@ -211,16 +211,16 @@ training curator export.
 | Same issue in agentic loop | `app/engine/agentic_thread.py` line 204 | Same missing fields; also passes synthetic `rag_context=[f"agentic_iteration_{n}"]` |
 | Context budget ignores model registry | `app/engine/llm_thread.py` line 11, `app/engine/agentic_thread.py` line 15, `app/engine/model_loader.py` line 39 | `_CONTEXT_BUDGET = 4096` and `n_ctx=4096` are hardcoded; `data/model_registry.json` defines 4 tiers with contexts 4096→32768 but is never read |
 | `<think>` blocks saved in sessions | `app/utils/memory_manager.py` | `save_session()` dumps raw `chat_history` including think tokens; on reload, model re-reasons already-completed thoughts |
-| RAG threshold not wired to Workbench | `app/ui/workspaces/knowledge_base.py` threshold control, `app/ui/workspaces/workbench.py` | The threshold spinbox in KB workspace sets nothing on `AppState`; `retrieve()` in Workbench always uses no threshold |
-| Workbench has no params drawer | `app/ui/workspaces/workbench.py` | temperature / top-p / max-tokens only accessible via System Config; no per-session override in Workbench UI |
-| Session save/load not connected | `app/ui/workspaces/workbench.py` | `MemoryManager` exists in `AppState` but Workbench never calls `save_session()` or `load_session()` |
+| RAG threshold not wired to Workbench | `app/ui/workspaces/knowledge_base.py` threshold control, `app/ui/workspaces/workbench/workspace.py` | The threshold spinbox in KB workspace sets nothing on `AppState`; `retrieve()` in Workbench always uses no threshold |
+| Workbench has no params drawer | `app/ui/workspaces/workbench/workspace.py` | temperature / top-p / max-tokens only accessible via System Config; no per-session override in Workbench UI |
+| Session save/load not connected | `app/ui/workspaces/workbench/workspace.py` | `MemoryManager` exists in `AppState` but Workbench never calls `save_session()` or `load_session()` |
 | Eval harness no model guard | `eval/harness.py` | `run()` proceeds unconditionally; `FileNotFoundError` surfaces inside the case loop instead of at entry |
 | Eval progress callback not implemented | `eval/harness.py` | `progress_cb` parameter exists in signature but `harness.run()` doesn't call it |
 | LoRA training stubbed | `app/ui/workspaces/training_studio.py` | Train button logs a message explaining HF model path requirements; no training executes |
 | Prompt Lab no diff view | `app/ui/workspaces/prompt_lab.py` | A/B streaming works; diff render after both complete is not implemented |
 | System Config no model registry browser | `app/ui/workspaces/system_config.py` | Shows files in `data/models/` but doesn't read `data/model_registry.json` for tier info or download |
 | KB workspace chunk controls absent | `app/ui/workspaces/knowledge_base.py` | `ingest_file()` always uses default chunk_size=200, overlap=50 |
-| DPO export needs thumbs-down | `app/ui/workspaces/workbench.py` | No thumbs-down button; DPO export in Training Studio attempts pairing but has no rejected examples to pair |
+| DPO export needs thumbs-down | `app/ui/workspaces/workbench/workspace.py` | No thumbs-down button; DPO export in Training Studio attempts pairing but has no rejected examples to pair |
 | `training_curator.export_unsloth()` return | `app/utils/training_curator.py` | Returns `(path, count)` tuple; Training Studio only assigns to `out_path`, discards count silently |
 
 ### ❌ Not Yet Built
@@ -229,18 +229,18 @@ training curator export.
 |---------|----------------|-------|
 | Model-aware context budgeting | `model_loader.py`, both threads | Phase 1 |
 | `<think>` stripping in session save | `memory_manager.py` | Phase 1 |
-| Workbench params drawer | `workbench.py` | Phase 1 |
-| Session save/load UI | `workbench.py` | Phase 2 |
-| Thumbs-down + DPO pairing | `workbench.py`, `training_curator.py` | Phase 2 |
-| RAG threshold wired to AppState | `knowledge_base.py`, `workbench.py`, `state.py` | Phase 2 |
+| Workbench params drawer | `workbench/workspace.py` | Phase 1 |
+| Session save/load UI | `workbench/workspace.py` | Phase 2 |
+| Thumbs-down + DPO pairing | `workbench/workspace.py`, `training_curator.py` | Phase 2 |
+| RAG threshold wired to AppState | `knowledge_base.py`, `workbench/workspace.py`, `state.py` | Phase 2 |
 | Eval harness model guard + progress | `eval/harness.py` | Phase 2 |
 | KB chunk size/overlap controls | `knowledge_base.py` | Phase 3 |
 | Prompt diff view | `prompt_lab.py` | Phase 3 |
 | Prompt pair save/load | `prompt_lab.py` | Phase 3 |
 | LoRA/QLoRA actual training | `training_studio.py` | Phase 3 |
 | Model registry browser + download | `system_config.py` | Phase 3 |
-| Session branching | `workbench.py` | Phase 4 |
-| Tokenizer visualization | `prompt_lab.py` or `workbench.py` | Phase 4 |
+| Session branching | `workbench/workspace.py` | Phase 4 |
+| Tokenizer visualization | `prompt_lab.py` or `workbench/workspace.py` | Phase 4 |
 | DPO export complete | `training_studio.py`, `training_curator.py` | Phase 4 |
 | README rewrite for Linux/Arch | `README.md` | Phase 5 |
 | All 7 docs rewritten to match current arch | `docs/` | Phase 5 |
