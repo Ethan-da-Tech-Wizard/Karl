@@ -488,6 +488,9 @@ class KnowledgeBaseWorkspace(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             self._ingest_status.setText("Rebuilding index...")
             self._progress.setVisible(True)
+            # Disable the trigger so a second click cannot re-enter while
+            # processEvents pumps the queue during the rebuild.
+            self._rebuild_btn.setEnabled(False)
             from PyQt6.QtWidgets import QApplication
             QApplication.processEvents()
             try:
@@ -498,6 +501,7 @@ class KnowledgeBaseWorkspace(QWidget):
                 self._ingest_status.setText(f"Rebuild error: {e}")
             finally:
                 self._progress.setVisible(False)
+                self._rebuild_btn.setEnabled(True)
 
     def _send_query_to_workbench(self):
         query = self._search_input.text().strip()

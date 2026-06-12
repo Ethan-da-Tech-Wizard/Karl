@@ -1346,8 +1346,19 @@ class WorkbenchWorkspace(QMainWindow):
         from PyQt6.QtWidgets import QApplication
         import os
 
-        # Disable inputs temporarily during model swap
+        # Disable inputs temporarily during model swap. The model combos are
+        # disabled explicitly so a second selection cannot re-enter this
+        # method while processEvents pumps the queue mid-load.
         self._set_busy(True)
+        swap_controls = [
+            c for c in (
+                getattr(self, "_model_combo", None),
+                getattr(self, "_header_model_combo", None),
+                getattr(self, "_header_reload_model_btn", None),
+            ) if c is not None
+        ]
+        for control in swap_controls:
+            control.setEnabled(False)
         loading_text = f"Loading {filename} (adapter: {adapter_name})..." if adapter_name else f"Loading {filename}..."
         self.status_changed.emit(loading_text, True)
         QApplication.processEvents()
@@ -1381,6 +1392,8 @@ class WorkbenchWorkspace(QMainWindow):
             self._chat_view.append_system_note(f"[Error switching model: {str(e)}]")
             self._update_header_model_status(error=str(e))
         finally:
+            for control in swap_controls:
+                control.setEnabled(True)
             self._set_busy(False)
             self.status_changed.emit("idle", False)
 

@@ -55,6 +55,9 @@ class WebSocketServerManager:
         self.loop_thread: Optional[threading.Thread] = None
         self.orchestrator: Optional[SwarmOrchestratorThread] = None
         self.chat_thread = None
+        # Guards orchestrator/chat_thread hand-off: the asyncio handler
+        # (loop thread) and stop() (Qt thread) both stop/replace them.
+        self._threads_lock = threading.Lock()
         self.kb_ingest_thread: Optional[threading.Thread] = None
         self.rag = RAGPipeline()
         self._seed_codex()
@@ -502,16 +505,17 @@ class WebSocketServerManager:
     def stop(self):
         """Synchronously shuts down the server and joins the background thread."""
         if self.loop and self.loop.is_running():
-            # Stop the orchestrator if running
-            if self.orchestrator and self.orchestrator.isRunning():
-                self.orchestrator.request_stop()
-                self.orchestrator.wait()
+            with self._threads_lock:
+                # Stop the orchestrator if running
+                if self.orchestrator and self.orchestrator.isRunning():
+                    self.orchestrator.request_stop()
+                    self.orchestrator.wait()
 
-            # Stop chat thread if running
-            if self.chat_thread and self.chat_thread.isRunning():
-                if hasattr(self.chat_thread, "request_stop"):
-                    self.chat_thread.request_stop()
-                self.chat_thread.wait()
+                # Stop chat thread if running
+                if self.chat_thread and self.chat_thread.isRunning():
+                    if hasattr(self.chat_thread, "request_stop"):
+                        self.chat_thread.request_stop()
+                    self.chat_thread.wait()
 
             # Stop websockets server
             future = asyncio.run_coroutine_threadsafe(self._stop_server(), self.loop)
@@ -637,49 +641,50 @@ class WebSocketServerManager:
                             }))
                             continue
 
-                        # If there is an active orchestrator, request stop and wait
-                        if self.orchestrator and self.orchestrator.isRunning():
-                            self.orchestrator.request_stop()
-                            self.orchestrator.wait()
+                        with self._threads_lock:
+                            # If there is an active orchestrator, request stop and wait
+                            if self.orchestrator and self.orchestrator.isRunning():
+                                self.orchestrator.request_stop()
+                                self.orchestrator.wait()
 
-                        # Start orchestrator QThread
-                        hyperparams = params.get("hyperparams", {})
-                        self.orchestrator = SwarmOrchestratorThread(
-                            workspace_path=workspace_path,
-                            objective=objective,
-                            test_command=test_command,
-                            hyperparams=hyperparams
-                        )
+                            # Start orchestrator QThread
+                            hyperparams = params.get("hyperparams", {})
+                            self.orchestrator = SwarmOrchestratorThread(
+                                workspace_path=workspace_path,
+                                objective=objective,
+                                test_command=test_command,
+                                hyperparams=hyperparams
+                            )
 
-                        # Bind PyQt signals with DirectConnection to bypass thread event loop queues
-                        self.orchestrator.status_update.connect(
-                            lambda msg: self._send_notification("status_update", {"message": msg}),
-                            Qt.ConnectionType.DirectConnection
-                        )
-                        self.orchestrator.task_plan_created.connect(
-                            lambda plan: self._send_notification("task_plan_created", {"plan": plan}),
-                            Qt.ConnectionType.DirectConnection
-                        )
-                        self.orchestrator.file_edited.connect(
-                            lambda path, content: self._send_notification(
-                                "file_edited", {"filepath": path, "content": content}
-                            ),
-                            Qt.ConnectionType.DirectConnection
-                        )
-                        self.orchestrator.test_result.connect(
-                            lambda passed, trace: self._send_notification(
-                                "test_result", {"passed": passed, "error_trace": trace}
-                            ),
-                            Qt.ConnectionType.DirectConnection
-                        )
-                        self.orchestrator.finished_swarm.connect(
-                            lambda success, summary: self._send_notification(
-                                "finished_swarm", {"success": success, "summary": summary}
-                            ),
-                            Qt.ConnectionType.DirectConnection
-                        )
+                            # Bind PyQt signals with DirectConnection to bypass thread event loop queues
+                            self.orchestrator.status_update.connect(
+                                lambda msg: self._send_notification("status_update", {"message": msg}),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.task_plan_created.connect(
+                                lambda plan: self._send_notification("task_plan_created", {"plan": plan}),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.file_edited.connect(
+                                lambda path, content: self._send_notification(
+                                    "file_edited", {"filepath": path, "content": content}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.test_result.connect(
+                                lambda passed, trace: self._send_notification(
+                                    "test_result", {"passed": passed, "error_trace": trace}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.finished_swarm.connect(
+                                lambda success, summary: self._send_notification(
+                                    "finished_swarm", {"success": success, "summary": summary}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
 
-                        self.orchestrator.start()
+                            self.orchestrator.start()
                         await websocket.send(json.dumps({
                             "jsonrpc": "2.0",
                             "id": req_id,
@@ -702,16 +707,17 @@ class WebSocketServerManager:
                             }))
                             continue
 
-                        # Stop orchestrator if running
-                        if self.orchestrator and self.orchestrator.isRunning():
-                            self.orchestrator.request_stop()
-                            self.orchestrator.wait()
+                        with self._threads_lock:
+                            # Stop orchestrator if running
+                            if self.orchestrator and self.orchestrator.isRunning():
+                                self.orchestrator.request_stop()
+                                self.orchestrator.wait()
 
-                        # Stop chat thread if running
-                        if self.chat_thread and self.chat_thread.isRunning():
-                            if hasattr(self.chat_thread, "request_stop"):
-                                self.chat_thread.request_stop()
-                            self.chat_thread.wait()
+                            # Stop chat thread if running
+                            if self.chat_thread and self.chat_thread.isRunning():
+                                if hasattr(self.chat_thread, "request_stop"):
+                                    self.chat_thread.request_stop()
+                                self.chat_thread.wait()
 
                         # Get client history
                         history = self.client_histories.setdefault(websocket, [])
@@ -744,14 +750,14 @@ class WebSocketServerManager:
 
                         agentic = hyperparams.get("agentic_loop_enabled", False)
                         if agentic:
-                            self.chat_thread = AgenticThread(
+                            chat_thread = AgenticThread(
                                 system_prompt=system_prompt,
                                 initial_history=history,
                                 hyperparams=hyperparams,
                                 retrieved_chunks=retrieved_chunks
                             )
                         else:
-                            self.chat_thread = LLMThread(
+                            chat_thread = LLMThread(
                                 system_prompt=system_prompt,
                                 chat_history=history,
                                 hyperparams=hyperparams,
@@ -759,11 +765,11 @@ class WebSocketServerManager:
                             )
 
                         # Wire signals to broadcast methods (DirectConnection)
-                        self.chat_thread.new_thought_token.connect(
+                        chat_thread.new_thought_token.connect(
                             lambda token: self._send_notification("chat_thought_token", {"token": token}),
                             Qt.ConnectionType.DirectConnection
                         )
-                        self.chat_thread.new_chat_token.connect(
+                        chat_thread.new_chat_token.connect(
                             lambda token: self._send_notification("chat_response_token", {"token": token}),
                             Qt.ConnectionType.DirectConnection
                         )
@@ -785,22 +791,24 @@ class WebSocketServerManager:
                             return on_finished
 
                         if agentic:
-                            self.chat_thread.loop_finished.connect(
+                            chat_thread.loop_finished.connect(
                                 make_on_finished(websocket, history, True),
                                 Qt.ConnectionType.DirectConnection
                             )
                         else:
-                            self.chat_thread.generation_finished.connect(
+                            chat_thread.generation_finished.connect(
                                 make_on_finished(websocket, history, False),
                                 Qt.ConnectionType.DirectConnection
                             )
 
-                        self.chat_thread.error_occurred.connect(
+                        chat_thread.error_occurred.connect(
                             lambda err: self._send_notification("status_update", {"message": f"[Error] {err}"}),
                             Qt.ConnectionType.DirectConnection
                         )
 
-                        self.chat_thread.start()
+                        with self._threads_lock:
+                            self.chat_thread = chat_thread
+                            self.chat_thread.start()
                         await websocket.send(json.dumps({
                             "jsonrpc": "2.0",
                             "id": req_id,
@@ -850,27 +858,20 @@ class WebSocketServerManager:
                         }))
 
                     elif method == "stop_task":
-                        if self.orchestrator and self.orchestrator.isRunning():
-                            self.orchestrator.request_stop()
-                            await websocket.send(json.dumps({
-                                "jsonrpc": "2.0",
-                                "id": req_id,
-                                "result": {"status": "stopping"}
-                            }))
-                        elif self.chat_thread and self.chat_thread.isRunning():
-                            if hasattr(self.chat_thread, "request_stop"):
-                                self.chat_thread.request_stop()
-                            await websocket.send(json.dumps({
-                                "jsonrpc": "2.0",
-                                "id": req_id,
-                                "result": {"status": "stopping"}
-                            }))
-                        else:
-                            await websocket.send(json.dumps({
-                                "jsonrpc": "2.0",
-                                "id": req_id,
-                                "result": {"status": "idle"}
-                            }))
+                        with self._threads_lock:
+                            status = "idle"
+                            if self.orchestrator and self.orchestrator.isRunning():
+                                self.orchestrator.request_stop()
+                                status = "stopping"
+                            elif self.chat_thread and self.chat_thread.isRunning():
+                                if hasattr(self.chat_thread, "request_stop"):
+                                    self.chat_thread.request_stop()
+                                status = "stopping"
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {"status": status}
+                        }))
 
                     else:
                         await websocket.send(json.dumps({
