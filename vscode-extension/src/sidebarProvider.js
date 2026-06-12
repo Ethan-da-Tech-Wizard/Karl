@@ -240,16 +240,18 @@ class KarlSidebarProvider {
                 // Intercept auto-train log notifications
                 if (data && data.method === 'auto_train_log') {
                     const msg = data.params.message;
-                    if (this.autoTrainChannel) {
-                        this.autoTrainChannel.appendLine(msg);
+                    if (!this.autoTrainChannel) {
+                        this.autoTrainChannel = vscode.window.createOutputChannel("Karl Auto-Train Logs");
                     }
+                    this.autoTrainChannel.appendLine(msg);
                 }
                 if (data && data.method === 'auto_train_finished') {
                     const success = data.params.success;
                     const msg = data.params.message;
-                    if (this.autoTrainChannel) {
-                        this.autoTrainChannel.appendLine(`\n--- Auto-Training Finished. Success: ${success}. ${msg} ---`);
+                    if (!this.autoTrainChannel) {
+                        this.autoTrainChannel = vscode.window.createOutputChannel("Karl Auto-Train Logs");
                     }
+                    this.autoTrainChannel.appendLine(`\n--- Auto-Training Finished. Success: ${success}. ${msg} ---`);
                     if (success) {
                         vscode.window.showInformationMessage(`Karl: Auto-training finished successfully for adapter "${data.params.adapter_name}"!`);
                     } else {
