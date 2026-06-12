@@ -1,3 +1,4 @@
+import logging
 import os
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QTextBrowser,
@@ -7,6 +8,9 @@ from PyQt6.QtCore import Qt
 
 from app.ui.themes import MONO
 from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
+
+logger = logging.getLogger("karl.codex")
+
 
 def _section(text: str) -> QLabel:
     l = QLabel(text)
@@ -62,14 +66,14 @@ class DocsWorkspace(QWidget):
                     with open(filepath, "w", encoding="utf-8") as f:
                         f.write(content)
                 except Exception as e:
-                    print(f"[Codex] Error seeding topic {topic}: {e}")
+                    logger.warning(f"Error seeding topic {topic}: {e}")
                     
             # Write new version file
             try:
                 with open(version_filepath, "w", encoding="utf-8") as vf:
                     vf.write(current_version)
             except Exception as e:
-                print(f"[Codex] Error writing version: {e}")
+                logger.warning(f"Error writing version: {e}")
             
         # Re-scan to build cache
         self._cache = {}
@@ -85,7 +89,7 @@ class DocsWorkspace(QWidget):
                         "content": content
                     }
                 except Exception as e:
-                    print(f"[Codex] Error reading {f}: {e}")
+                    logger.warning(f"Error reading {f}: {e}")
 
         # Auto-ingest Codex files into codex_rag index if it is empty.
         # Ingestion needs the embedding model; if it is unavailable (offline
@@ -96,7 +100,7 @@ class DocsWorkspace(QWidget):
                 try:
                     self.state.codex_rag.ingest_file(item["filepath"])
                 except Exception as e:
-                    print(f"[Codex] Could not ingest {topic_name} into codex RAG index: {e}")
+                    logger.warning(f"Could not ingest {topic_name} into codex RAG index: {e}")
                     break
 
     def _build_ui(self):

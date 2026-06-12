@@ -68,6 +68,16 @@ try:
 except Exception:
     pass
 
+# ── 4b. Karl's own logger ──────────────────────────────────────────────────────
+# Every module logs through a child of the "karl" logger
+# (logging.getLogger("karl.<module>")). Set KARL_DEBUG=1 for verbose output.
+_karl_log = logging.getLogger("karl")
+_karl_log.setLevel(logging.DEBUG if os.environ.get("KARL_DEBUG") else logging.INFO)
+_karl_handler = logging.StreamHandler()
+_karl_handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s %(message)s"))
+_karl_log.addHandler(_karl_handler)
+_karl_log.propagate = False
+
 # ── 5. Application ────────────────────────────────────────────────────────────
 from PyQt6.QtWidgets import QApplication
 from app.ui.main_window import MainWindow

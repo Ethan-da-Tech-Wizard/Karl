@@ -5,6 +5,7 @@ Hosts a local WebSocket server to bridge communication between Karl's Multi-Agen
 and editor extensions (such as VS Code/Code OSS).
 """
 
+import logging
 import os
 import json
 import asyncio
@@ -22,6 +23,9 @@ from app.engine.model_loader import ModelLoader
 from app.utils.rag_pipeline import RAGPipeline
 from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
 from app.ui.workspaces.prompt_lab import generate_char_diff_html
+
+
+logger = logging.getLogger("karl.websocket")
 
 
 class WebSocketServerManager:
@@ -70,8 +74,8 @@ class WebSocketServerManager:
                 with open(version_filepath, "r", encoding="utf-8") as vf:
                     if vf.read().strip() == current_version:
                         needs_upgrade = False
-            except Exception:
-                pass
+            except OSError as exc:
+                logger.warning("could not read codex version file %s: %s", version_filepath, exc)
 
         if needs_upgrade or not [f for f in os.listdir(library_dir) if f.endswith((".html", ".md"))]:
             for topic, content in DEFAULT_LIBRARY.items():
@@ -80,13 +84,13 @@ class WebSocketServerManager:
                 try:
                     with open(filepath, "w", encoding="utf-8") as f:
                         f.write(content)
-                except Exception:
-                    pass
+                except OSError as exc:
+                    logger.warning("could not seed codex topic %r to %s: %s", topic, filepath, exc)
             try:
                 with open(version_filepath, "w", encoding="utf-8") as vf:
                     vf.write(current_version)
-            except Exception:
-                pass
+            except OSError as exc:
+                logger.warning("could not write codex version file %s: %s", version_filepath, exc)
 
     def _active_model_config(self) -> dict:
         return config_store.get_active_model()
@@ -112,8 +116,8 @@ class WebSocketServerManager:
             if installed:
                 try:
                     size_gb = round(os.path.getsize(path) / (1024 ** 3), 2)
-                except Exception:
-                    pass
+                except OSError as exc:
+                    logger.debug("could not stat model file %s: %s", path, exc)
             models.append({
                 "name": entry.get("name", filename),
                 "filename": filename,
@@ -136,7 +140,8 @@ class WebSocketServerManager:
                     path = os.path.join(models_dir, filename)
                     try:
                         size_gb = round(os.path.getsize(path) / (1024 ** 3), 2)
-                    except Exception:
+                    except OSError as exc:
+                        logger.debug("could not stat model file %s: %s", path, exc)
                         size_gb = None
                     models.append({
                         "name": filename,
@@ -151,8 +156,8 @@ class WebSocketServerManager:
                         "size_gb": size_gb,
                         "source": "local",
                     })
-            except Exception:
-                pass
+            except OSError as exc:
+                logger.warning("could not scan models directory %s: %s", models_dir, exc)
 
         return {
             "active": active,
@@ -206,7 +211,8 @@ class WebSocketServerManager:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-            except Exception:
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("could not read prompt pair %s: %s", path, exc)
                 data = {}
             pairs.append({
                 "name": name,
@@ -487,9 +493,9 @@ class WebSocketServerManager:
     async def _start_server(self):
         try:
             self.server = await websockets.serve(self._handler, "localhost", self.port)
-            print(f"[WebSocket] Server running on ws://localhost:{self.port}")
+            logger.info(f"Server running on ws://localhost:{self.port}")
         except Exception as e:
-            print(f"[WebSocket] Failed to start server: {e}")
+            logger.warning(f"Failed to start server: {e}")
         finally:
             self.started_event.set()
 
@@ -512,7 +518,7 @@ class WebSocketServerManager:
             try:
                 future.result(timeout=5.0)
             except Exception as e:
-                print(f"[WebSocket] Error closing server connection: {e}")
+                logger.warning(f"Error closing server connection: {e}")
 
             # Stop the loop and join thread
             self.loop.call_soon_threadsafe(self.loop.stop)
@@ -524,12 +530,12 @@ class WebSocketServerManager:
         if self.server:
             self.server.close()
             await self.server.wait_closed()
-            print("[WebSocket] Server stopped.")
+            logger.info("Server stopped.")
 
     async def _handler(self, websocket, path=None):
         self.clients.add(websocket)
         self.client_histories[websocket] = []
-        print(f"[WebSocket] Client connected: {websocket.remote_address}")
+        logger.info(f"Client connected: {websocket.remote_address}")
         try:
             async for message in websocket:
                 try:
@@ -724,7 +730,7 @@ class WebSocketServerManager:
                                     threshold=rag_threshold,
                                 )
                             except Exception as re:
-                                print(f"[WebSocket] RAG retrieval error: {re}")
+                                logger.warning(f"RAG retrieval error: {re}")
 
                         system_prompt = hyperparams.get("system_prompt")
                         if not system_prompt:
@@ -877,7 +883,7 @@ class WebSocketServerManager:
                         }))
 
                 except Exception as inner_e:
-                    print(f"[WebSocket] Error handling method '{method}': {inner_e}")
+                    logger.warning(f"Error handling method '{method}': {inner_e}")
                     await websocket.send(json.dumps({
                         "jsonrpc": "2.0",
                         "id": req_id,
@@ -892,7 +898,7 @@ class WebSocketServerManager:
         finally:
             self.clients.discard(websocket)
             self.client_histories.pop(websocket, None)
-            print(f"[WebSocket] Client disconnected: {websocket.remote_address}")
+            logger.info(f"Client disconnected: {websocket.remote_address}")
 
     def _send_notification(self, method: str, params: dict):
         """Dispatches notification thread-safely into the background event loop."""

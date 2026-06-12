@@ -4,6 +4,8 @@ System — hardware info, model management, generation defaults, about.
 
 from __future__ import annotations
 
+import logging
+
 import json
 import os
 import html
@@ -26,6 +28,9 @@ from app.vision.vision_model_loader import (
     installed_vision_models,
     set_active_vision_model,
 )
+
+
+logger = logging.getLogger("karl.system_config")
 
 
 def _section(text: str) -> QLabel:
@@ -988,7 +993,7 @@ class SystemConfigWorkspace(QWidget):
             total_gb = total / 1_073_741_824
             self._disk_progress.setFormat(f"{free_gb:.1f} GB free ({free_percent:.1f}%)")
         except Exception as e:
-            print(f"[SystemConfig] Error updating live hardware meters: {e}")
+            logger.warning(f"Error updating live hardware meters: {e}")
 
     def _refresh_hardware(self):
         from core.hardware_scout import get_hardware_profile
@@ -1125,7 +1130,7 @@ class SystemConfigWorkspace(QWidget):
                             if any(f.endswith(".gguf") for f in files):
                                 cached.append(d)
                 except Exception as e:
-                    print(f"[SystemConfig] Error scanning adapters: {e}")
+                    logger.warning(f"Error scanning adapters: {e}")
             self._cached_adapters_list = cached
 
         self._adapter_combo.clear()

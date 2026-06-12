@@ -1,7 +1,11 @@
+import logging
 import os
 import json
 import uuid
 from datetime import datetime, timezone
+
+logger = logging.getLogger("karl.trace_logger")
+
 
 _MAX_BYTES = 50 * 1024 * 1024  # 50 MB per file before rotation
 
@@ -125,5 +129,5 @@ class TraceLogger:
             with open(self._log_file, "w", encoding="utf-8") as f:
                 f.writelines(lines)
         except Exception as e:
-            print(f"[TraceLogger] Error updating feedback: {e}")
+            logger.warning(f"Error updating feedback: {e}")
 

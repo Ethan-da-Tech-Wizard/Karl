@@ -5,6 +5,8 @@ All heavy logic lives in the individual workspace widgets.
 
 from __future__ import annotations
 
+import logging
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget,
@@ -22,6 +24,9 @@ from app.ui.workspaces.training_studio import TrainingStudioWorkspace
 from app.ui.workspaces.eval_suite import EvalSuiteWorkspace
 from app.ui.workspaces.system_config import SystemConfigWorkspace
 from app.ui.workspaces.docs import DocsWorkspace
+
+
+logger = logging.getLogger("karl.main_window")
 
 
 class MainWindow(QMainWindow):
@@ -253,7 +258,7 @@ class MainWindow(QMainWindow):
         try:
             self._ws_server = WebSocketServerManager.get_instance(port=8080)
         except Exception as e:
-            print(f"[WebSocket] Failed to start WebSocket server on boot: {e}")
+            logger.warning(f"Failed to start WebSocket server on boot: {e}")
 
     def closeEvent(self, event):
         self._workbench.on_close()
@@ -263,6 +268,6 @@ class MainWindow(QMainWindow):
         try:
             WebSocketServerManager.reset_instance()
         except Exception as e:
-            print(f"[WebSocket] Error during exit teardown: {e}")
+            logger.warning(f"Error during exit teardown: {e}")
             
         event.accept()

@@ -1,6 +1,10 @@
+import logging
 import subprocess
 import os
 from typing import List, Dict, Any
+
+logger = logging.getLogger("karl.codebase_search")
+
 
 def codebase_search(query: str, workspace_path: str) -> List[Dict[str, Any]]:
     """
@@ -39,5 +43,5 @@ def codebase_search(query: str, workspace_path: str) -> List[Dict[str, Any]]:
                 })
         return results
     except Exception as e:
-        print(f"[CodebaseSearch] Error calling ripgrep: {e}")
+        logger.warning(f"Error calling ripgrep: {e}")
         return []

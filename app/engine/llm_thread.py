@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import importlib
@@ -13,6 +14,9 @@ _MAX_MSG_CHARS = 100000   # Truncate any single message to this length before it
 
 _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
 _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
+
+
+logger = logging.getLogger("karl.llm_thread")
 
 
 class LLMThread(QThread):
@@ -227,7 +231,7 @@ class LLMThread(QThread):
                             in_thought = True # Resume in thought mode
                             self.new_thought_token.emit(f"\n[Compressed state: {parsed_thought}]\n")
                         except Exception as ce:
-                            print(f"[LLMThread] Cognitive compression failed: {ce}")
+                            logger.warning(f"Cognitive compression failed: {ce}")
                             self.new_thought_token.emit("\n[continuing...]\n")
                     else:
                         self.new_thought_token.emit("\n[continuing...]\n")

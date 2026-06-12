@@ -9,6 +9,7 @@ Changes from original:
   - Retrieval eval metrics: hit@k and reciprocal rank
 """
 
+import logging
 import json
 import os
 import time
@@ -18,6 +19,9 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 import fitz   # PyMuPDF
 import docx
+
+
+logger = logging.getLogger("karl.rag")
 
 
 class RAGPipeline:
@@ -88,9 +92,9 @@ class RAGPipeline:
                 self.index = faiss.read_index(self.INDEX_FILE)
                 with open(self.META_FILE, "r", encoding="utf-8") as f:
                     self.documents = json.load(f)
-                print(f"[RAG] Loaded {self.index.ntotal} vectors from {self.INDEX_FILE}")
+                logger.info(f"Loaded {self.index.ntotal} vectors from {self.INDEX_FILE}")
             except Exception as e:
-                print(f"[RAG] WARNING: Could not load persisted index: {e}. Starting fresh.")
+                logger.warning(f"WARNING: Could not load persisted index: {e}. Starting fresh.")
                 self.index = faiss.IndexFlatL2(self.dimension)
                 self.documents = []
 
@@ -101,7 +105,7 @@ class RAGPipeline:
             with open(self.META_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.documents, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"[RAG] WARNING: Could not persist index: {e}")
+            logger.warning(f"WARNING: Could not persist index: {e}")
 
     def clear_index(self):
         """Wipe the in-memory index and delete persisted files."""
@@ -110,7 +114,7 @@ class RAGPipeline:
         for path in (self.INDEX_FILE, self.META_FILE):
             if os.path.exists(path):
                 os.remove(path)
-        print("[RAG] Index cleared.")
+        logger.info("Index cleared.")
 
     # ── Text Extraction ───────────────────────────────────────────────────────
 
@@ -130,7 +134,7 @@ class RAGPipeline:
                 with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                     text = f.read()
         except Exception as e:
-            print(f"[RAG] Error reading {filepath}: {e}")
+            logger.warning(f"Error reading {filepath}: {e}")
         return text
 
     # ── Chunking ──────────────────────────────────────────────────────────────
@@ -173,7 +177,7 @@ class RAGPipeline:
                         else:
                             chunks.append(", ".join(f"{h}: {v}" for h, v in zip(header, row) if v) if header else ", ".join(row))
             except Exception as e:
-                print(f"[RAG] Error reading CSV {filepath}: {e}")
+                logger.warning(f"Error reading CSV {filepath}: {e}")
                 return 0
         else:
             text = self.extract_text(filepath)
@@ -200,7 +204,7 @@ class RAGPipeline:
             })
 
         self.save_index()
-        print(f"[RAG] Added {len(chunks)} chunks from {source_file}")
+        logger.info(f"Added {len(chunks)} chunks from {source_file}")
         return len(chunks)
 
     def ingest_text(self, text: str, source_name: str = "inline", chunk_size: int = 200, overlap: int = 50) -> int:
@@ -503,7 +507,7 @@ class RAGPipeline:
                 self.documents.append(doc)
                 
         self.save_index()
-        print(f"[RAG] Source '{source_name}' removed. Rebuilt index with {len(self.documents)} remaining chunks.")
+        logger.info(f"Source '{source_name}' removed. Rebuilt index with {len(self.documents)} remaining chunks.")
 
     def rebuild_index(self):
         """Re-encode all chunks currently in metadata and rebuild the FAISS index."""
@@ -517,4 +521,4 @@ class RAGPipeline:
         embeddings = self.encoder.encode(texts)
         self.index.add(np.array(embeddings).astype("float32"))
         self.save_index()
-        print(f"[RAG] Rebuilt index by re-encoding all {len(self.documents)} current chunks.")
+        logger.info(f"Rebuilt index by re-encoding all {len(self.documents)} current chunks.")

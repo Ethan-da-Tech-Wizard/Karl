@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import importlib
@@ -13,6 +14,9 @@ RAW_LOG_DIR = "data/logs/raw"
 # Reserve this many tokens for the next generation's output.
 # The rest of the budget is used for history.
 _RESPONSE_RESERVE = 1024  # max_tokens headroom
+
+logger = logging.getLogger("karl.agentic_thread")
+
 
 class AgenticThread(QThread):
     """
@@ -210,7 +214,7 @@ class AgenticThread(QThread):
                     in_thought = True # Resume in thought mode
                     self.new_thought_token.emit(f"\n[Compressed state: {parsed_thought}]\n")
                 except Exception as ce:
-                    print(f"[AgenticThread] Cognitive compression failed: {ce}")
+                    logger.warning(f"Cognitive compression failed: {ce}")
                     self.new_thought_token.emit("\n[continuing...]\n")
             else:
                 self.new_thought_token.emit("\n[continuing...]\n")

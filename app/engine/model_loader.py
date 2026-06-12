@@ -1,8 +1,12 @@
+import logging
 import os
 import threading
 from llama_cpp import Llama
 
 from app.engine import config_store
+
+
+logger = logging.getLogger("karl.model_loader")
 
 
 class ModelLoader:
@@ -35,10 +39,10 @@ class ModelLoader:
             if needs_reload:
                 if cls._instance is not None:
                     try:
-                        print("[ModelLoader] Closing existing Llama instance to free VRAM")
+                        logger.info("Closing existing Llama instance to free VRAM")
                         cls._instance.close()
                     except Exception as e:
-                        print(f"[ModelLoader] Error closing existing Llama instance: {e}")
+                        logger.warning(f"Error closing existing Llama instance: {e}")
                     cls._instance = None
                 
                 import gc
@@ -53,7 +57,7 @@ class ModelLoader:
                 if not os.path.exists(model_path):
                     fallback = "data/models/deepseek-r1-1.5b.gguf"
                     if os.path.exists(fallback):
-                        print(f"[ModelLoader] {model_path} not found — using {fallback}")
+                        logger.warning(f"{model_path} not found — using {fallback}")
                         model_path = fallback
                     else:
                         raise FileNotFoundError(
@@ -83,7 +87,7 @@ class ModelLoader:
                             break
 
                 if lora_path:
-                    print(f"[ModelLoader] Loading {model_path} with LoRA adapter {lora_path} (n_ctx={cls._n_ctx})")
+                    logger.info(f"Loading {model_path} with LoRA adapter {lora_path} (n_ctx={cls._n_ctx})")
                     cls._instance = Llama(
                         model_path=model_path,
                         n_ctx=cls._n_ctx,
@@ -92,14 +96,14 @@ class ModelLoader:
                         verbose=False
                     )
                 else:
-                    print(f"[ModelLoader] Loading {model_path} (n_ctx={cls._n_ctx})")
+                    logger.info(f"Loading {model_path} (n_ctx={cls._n_ctx})")
                     cls._instance = Llama(
                         model_path=model_path,
                         n_ctx=cls._n_ctx,
                         n_gpu_layers=-1,
                         verbose=False
                     )
-                print("[ModelLoader] Ready.")
+                logger.info("Ready.")
             return cls._instance
 
     @classmethod

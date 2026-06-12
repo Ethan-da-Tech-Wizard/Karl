@@ -13,6 +13,8 @@ Layout:
 
 from __future__ import annotations
 
+import logging
+
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -39,6 +41,9 @@ from app.ui.widgets.symbolic_icon import IconBtn, GearIcon, HamburgerIcon, Brain
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
+logger = logging.getLogger("karl.workbench")
+
 
 AGENT_PROFILES = {
     "karl": {
@@ -1006,7 +1011,9 @@ class WorkbenchWorkspace(QMainWindow):
                 continue
             try:
                 record = self.state.image_store.get(attachment["id"])
-            except Exception:
+            except Exception as exc:
+                logger.warning("dropping image attachment %s from prompt context: %s",
+                               attachment.get("id", "?"), exc)
                 continue
             blocks.append(
                 "\n".join([
@@ -1236,7 +1243,7 @@ class WorkbenchWorkspace(QMainWindow):
                         if any(f.endswith(".gguf") or f.endswith(".bin") for f in files_in_dir):
                             adapters.append(d)
             except Exception as e:
-                print(f"[Workbench] Error scanning adapters: {e}")
+                logger.warning(f"Error scanning adapters: {e}")
 
         models_dir = "data/models"
         files = []

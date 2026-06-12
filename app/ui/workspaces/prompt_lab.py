@@ -7,6 +7,8 @@ All runs are logged to trace.
 
 from __future__ import annotations
 
+import logging
+
 import json
 import os
 import re
@@ -22,6 +24,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 
 from app.ui.themes import MONO
+
+
+logger = logging.getLogger("karl.prompt_lab")
 
 
 def _section(text: str) -> QLabel:
@@ -132,7 +137,7 @@ class _RunThread(QThread):
                     system_prompt += "\n\nRetrieved Context:\n" + context_str
 
             prompt  = core.interaction_loop.build_prompt(system_prompt, history)
-            print(f"[PromptLab DEBUG] system_prompt={repr(self.system_prompt)} model={repr(ModelLoader.model_name())} active_adapter={repr(getattr(ModelLoader, '_active_adapter', None))} prompt={repr(prompt)}")
+            logger.debug(f"system_prompt={repr(self.system_prompt)} model={repr(ModelLoader.model_name())} active_adapter={repr(getattr(ModelLoader, '_active_adapter', None))} prompt={repr(prompt)}")
 
             # Tokenize prompt to get accurate prompt token count
             prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
@@ -320,7 +325,7 @@ class _PromptColumn(QWidget):
                         if any(f.endswith(".gguf") or f.endswith(".bin") for f in files_in_dir):
                             adapters.append(d)
             except Exception as e:
-                print(f"[PromptLab] Error scanning adapters for Column {self.label}: {e}")
+                logger.warning(f"Error scanning adapters for Column {self.label}: {e}")
 
         models_dir = "data/models"
         files = []
@@ -773,7 +778,7 @@ class PromptLabWorkspace(QWidget):
                 self._col_b._output.setPlainText(data.get("output_b_display", ""))
                 self._update_diff()
             except Exception as e:
-                print(f"[PromptLab] Error loading pair '{name}': {e}")
+                logger.warning(f"Error loading pair '{name}': {e}")
 
     def _save_pair(self):
         name = self._pair_name_input.text().strip()

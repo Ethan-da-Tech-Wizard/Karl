@@ -2,12 +2,16 @@
 # Modify this file to change how the application interacts with the LLM.
 # Hot-reloaded before every generation -- save and click Generate, no restart needed.
 
+import logging
 import os
 import re
 from app.engine.model_loader import ModelLoader
 
 # System prompt used when the custom_greeting adapter (or any adapter) is active.
 # This matches the training data, so the adapter fires correctly.
+logger = logging.getLogger("karl.codex_injector")
+
+
 _ADAPTER_SYSTEM_PROMPT = "Always respond in English."
 _RECENCY_INSTRUCTION = (
     "Treat the latest user message as the active request; "
@@ -129,7 +133,7 @@ def _get_codex_context(chat_history):
                 topic = os.path.splitext(filename)[0]
                 context_parts.append(f"[{topic}]\n{stripped}")
             except Exception as e:
-                print(f"[Codex Injector] Error reading {filename}: {e}")
+                logger.warning(f"Error reading {filename}: {e}")
 
     if not context_parts:
         return ""

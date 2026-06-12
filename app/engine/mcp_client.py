@@ -6,6 +6,7 @@ configured in data/mcp_config.json. Exposes synchronous and asynchronous methods
 to list tools and invoke them from sync codebases (like QThreads).
 """
 
+import logging
 import os
 import json
 import asyncio
@@ -13,6 +14,9 @@ import threading
 from typing import Dict, Any, List, Optional
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+
+logger = logging.getLogger("karl.mcp")
 
 
 class MCPClientManager:
@@ -67,7 +71,7 @@ class MCPClientManager:
             try:
                 future.result(timeout=5.0)
             except Exception as e:
-                print(f"[MCP] Error waiting for servers to stop: {e}")
+                logger.warning(f"Error waiting for servers to stop: {e}")
             
             # Stop the loop and join the thread
             self.loop.call_soon_threadsafe(self.loop.stop)
@@ -96,14 +100,14 @@ class MCPClientManager:
     async def async_start(self):
         """Loads configuration and initiates server connections."""
         if not os.path.exists(self.config_path):
-            print(f"[MCP] Config file not found: {self.config_path}")
+            logger.warning(f"Config file not found: {self.config_path}")
             return
 
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
         except Exception as e:
-            print(f"[MCP] Error loading config: {e}")
+            logger.warning(f"Error loading config: {e}")
             return
 
         servers_config = config.get("mcpServers", {})
@@ -113,13 +117,13 @@ class MCPClientManager:
             env = cfg.get("env")
 
             if not command:
-                print(f"[MCP] Server '{name}' configuration missing command.")
+                logger.warning(f"Server '{name}' configuration missing command.")
                 continue
 
             try:
                 await self.async_connect_server(name, command, args, env)
             except Exception as e:
-                print(f"[MCP] Failed to connect to server '{name}': {e}")
+                logger.warning(f"Failed to connect to server '{name}': {e}")
 
     async def async_connect_server(self, name: str, command: str, args: List[str], env: Optional[Dict[str, str]] = None):
         """Spawns stdio process for a server and performs MCP initialization."""
@@ -160,12 +164,12 @@ class MCPClientManager:
                         "args": args,
                         "stop_event": stop_event,
                     }
-                    print(f"[MCP] Successfully connected to server: {name}")
+                    logger.info(f"Successfully connected to server: {name}")
                     
                     # Yield execution until stop is explicitly requested
                     await stop_event.wait()
         except Exception as e:
-            print(f"[MCP] Server '{name}' lifecycle terminated: {e}")
+            logger.warning(f"Server '{name}' lifecycle terminated: {e}")
         finally:
             self.servers.pop(name, None)
 
@@ -181,7 +185,7 @@ class MCPClientManager:
             if not self.servers:
                 break
             await asyncio.sleep(0.05)
-        print("[MCP] All MCP servers stopped.")
+        logger.info("All MCP servers stopped.")
 
     async def async_list_tools(self) -> List[Dict[str, Any]]:
         """Collects tools across all active servers."""
@@ -198,7 +202,7 @@ class MCPClientManager:
                         "input_schema": tool.inputSchema or {},
                     })
             except Exception as e:
-                print(f"[MCP] Error listing tools for server '{server_name}': {e}")
+                logger.warning(f"Error listing tools for server '{server_name}': {e}")
         return all_tools
 
     async def async_call_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:

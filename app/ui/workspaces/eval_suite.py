@@ -4,6 +4,8 @@ Eval Suite — run the harness, view results.
 
 from __future__ import annotations
 
+import logging
+
 import json
 import os
 import html
@@ -19,6 +21,9 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 
 from app.ui.themes import MONO
+
+
+logger = logging.getLogger("karl.eval_suite")
 
 
 def _section(text: str) -> QLabel:
@@ -683,7 +688,7 @@ class EvalSuiteWorkspace(QWidget):
                         if any(f.endswith(".gguf") or f.endswith(".bin") for f in files_in_dir):
                             adapters.append(d)
             except Exception as e:
-                print(f"[EvalSuite] Error scanning adapters: {e}")
+                logger.warning(f"Error scanning adapters: {e}")
 
         models_dir = "data/models"
         files = []
@@ -750,7 +755,7 @@ class EvalSuiteWorkspace(QWidget):
                     try:
                         self._loaded_cases.append(json.loads(line))
                     except Exception as e:
-                        print(f"[EvalSuite] Error decoding case line: {e}")
+                        logger.warning(f"Error decoding case line: {e}")
             
             # Populate the list widget
             for case in self._loaded_cases:
@@ -759,7 +764,7 @@ class EvalSuiteWorkspace(QWidget):
             if self._edit_cases_list.count() > 0:
                 self._edit_cases_list.setCurrentRow(0)
         except Exception as e:
-            print(f"[EvalSuite] Error loading dataset: {e}")
+            logger.warning(f"Error loading dataset: {e}")
         finally:
             self._edit_cases_list.blockSignals(False)
 
