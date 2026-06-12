@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget,
 )
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 from app.state import AppState
@@ -29,6 +30,25 @@ from app.ui.workspaces.docs import DocsWorkspace
 logger = logging.getLogger("karl.main_window")
 
 
+class _ModelInitThread(QThread):
+    """Loads the active model off the UI thread at startup."""
+
+    loaded = pyqtSignal(str, object)   # model name, adapter name or None
+    failed = pyqtSignal(str)
+
+    def run(self):
+        from app.engine.model_loader import ModelLoader
+        try:
+            ModelLoader.get_instance()
+            adapter = getattr(ModelLoader, "_active_adapter", None)
+            self.loaded.emit(ModelLoader.model_name(), adapter)
+        except FileNotFoundError:
+            self.failed.emit("no model — run download_test_model.py")
+        except Exception as exc:
+            logger.error("startup model load failed: %s", exc)
+            self.failed.emit(f"model load failed: {exc}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -39,13 +59,16 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._load_theme_config()
         self._connect_signals()
-        self._init_model()
 
         # Keyboard Navigation Shortcuts
         self._setup_shortcuts()
 
-        # Start WebSocket Server to bridge editor/VS Code extensions
-        self._init_websocket_server()
+        # Heavy startup work is deferred so the window paints first: the
+        # model loads on a worker thread (multi-second under VRAM/disk
+        # pressure) and the WebSocket bridge starts after the first paint.
+        self._model_init_thread = None
+        QTimer.singleShot(0, self._init_model)
+        QTimer.singleShot(0, self._init_websocket_server)
 
     def _setup_shortcuts(self):
         # Open Command Palette
@@ -158,23 +181,29 @@ class MainWindow(QMainWindow):
         self._system.appearance_changed.connect(self._apply_theme_from_state)
 
     def _init_model(self):
-        from app.engine.model_loader import ModelLoader
-        try:
-            ModelLoader.get_instance()
-            name = ModelLoader.model_name()
-            self._state.model_name = name
-            self._status_bar.set_model(name)
+        if self._model_init_thread is not None and self._model_init_thread.isRunning():
+            return
+        self._status_bar.set_state("loading model…", True)
+        self._model_init_thread = _ModelInitThread(self)
+        self._model_init_thread.loaded.connect(self._on_startup_model_loaded)
+        self._model_init_thread.failed.connect(self._on_startup_model_failed)
+        self._model_init_thread.start()
 
-            # Sync active adapter on load
-            adapter = getattr(ModelLoader, "_active_adapter", None)
-            self._state.adapter_name = adapter
-            self._status_bar.set_adapter(adapter)
+    def _on_startup_model_loaded(self, name: str, adapter: object):
+        self._state.model_name = name
+        self._status_bar.set_model(name)
 
-            # Sync workspace dropdowns
-            self._workbench._refresh_model_combo()
-            self._system._scan_adapters()
-        except FileNotFoundError:
-            self._status_bar.set_state("no model — run download_test_model.py", False)
+        # Sync active adapter on load
+        self._state.adapter_name = adapter
+        self._status_bar.set_adapter(adapter)
+
+        # Sync workspace dropdowns
+        self._workbench._refresh_model_combo()
+        self._system._scan_adapters()
+        self._status_bar.set_state("idle", False)
+
+    def _on_startup_model_failed(self, message: str):
+        self._status_bar.set_state(message, False)
 
     # ── slots ─────────────────────────────────────────────────────────────────
 
@@ -262,12 +291,17 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._workbench.on_close()
-        
+
+        # The llama load cannot be interrupted; wait for it so the process
+        # does not tear down Qt objects under a running thread.
+        if self._model_init_thread is not None and self._model_init_thread.isRunning():
+            self._model_init_thread.wait()
+
         # Safely shut down the WebSocket server connection bridge on exit
         from app.engine.websocket_server import WebSocketServerManager
         try:
             WebSocketServerManager.reset_instance()
         except Exception as e:
             logger.warning(f"Error during exit teardown: {e}")
-            
+
         event.accept()
