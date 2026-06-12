@@ -11,12 +11,17 @@ import os
 import json
 import asyncio
 import threading
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Dict, Any, List, Optional
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
 logger = logging.getLogger("karl.mcp")
+
+_SYNC_TIMEOUT_SECONDS = 8.0
+_CONNECT_TIMEOUT_SECONDS = 5.0
+_INITIALIZE_TIMEOUT_SECONDS = 5.0
 
 
 class MCPClientManager:
@@ -57,12 +62,19 @@ class MCPClientManager:
 
     # ── Synchronous Entrypoints ───────────────────────────────────────────────
 
+    def _await_future(self, future):
+        try:
+            return future.result(timeout=_SYNC_TIMEOUT_SECONDS)
+        except FutureTimeoutError:
+            future.cancel()
+            raise
+
     def start(self):
         """Synchronously starts all configured MCP servers."""
         if not self.loop:
             raise RuntimeError("Event loop not initialized.")
         future = asyncio.run_coroutine_threadsafe(self.async_start(), self.loop)
-        return future.result()
+        return self._await_future(future)
 
     def stop(self):
         """Synchronously stops all running MCP servers and shuts down the loop."""
@@ -84,7 +96,7 @@ class MCPClientManager:
         if not self.loop:
             return []
         future = asyncio.run_coroutine_threadsafe(self.async_list_tools(), self.loop)
-        return future.result()
+        return self._await_future(future)
 
     def call_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Synchronously invokes a tool and returns the response dictionary."""
@@ -93,7 +105,7 @@ class MCPClientManager:
         future = asyncio.run_coroutine_threadsafe(
             self.async_call_tool(server_name, tool_name, arguments), self.loop
         )
-        return future.result()
+        return self._await_future(future)
 
     # ── Asynchronous Implementation ───────────────────────────────────────────
 
@@ -133,14 +145,23 @@ class MCPClientManager:
         # Start the task context manager thread safely
         task = asyncio.create_task(self._run_server_lifecycle(name, command, args, env))
         
-        # Poll until the connection registers in self.servers or task throws/finishes
+        try:
+            await asyncio.wait_for(
+                self._wait_for_server_registration(name, task),
+                timeout=_CONNECT_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            task.cancel()
+            raise
+
+    async def _wait_for_server_registration(self, name: str, task: asyncio.Task):
+        """Wait until a lifecycle task registers a server or exits."""
         while name not in self.servers:
             if task.done():
                 exc = task.exception()
                 if exc:
                     raise exc
-                else:
-                    raise RuntimeError("Server lifecycle task exited before registering.")
+                raise RuntimeError("Server lifecycle task exited before registering.")
             await asyncio.sleep(0.01)
 
     async def _run_server_lifecycle(self, name: str, command: str, args: List[str], env: Optional[Dict[str, str]]):
@@ -154,7 +175,10 @@ class MCPClientManager:
         try:
             async with stdio_client(server_params) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
+                    await asyncio.wait_for(
+                        session.initialize(),
+                        timeout=_INITIALIZE_TIMEOUT_SECONDS,
+                    )
                     
                     # Set up stop signal and record server session
                     stop_event = asyncio.Event()

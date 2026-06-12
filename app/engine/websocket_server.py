@@ -533,9 +533,17 @@ class WebSocketServerManager:
         self.clients.clear()
 
     async def _stop_server(self):
+        if self.clients:
+            await asyncio.gather(
+                *[client.close() for client in list(self.clients)],
+                return_exceptions=True,
+            )
+            self.clients.clear()
+
         if self.server:
             self.server.close()
             await self.server.wait_closed()
+            self.server = None
             logger.info("Server stopped.")
 
     async def _handler(self, websocket, path=None):
