@@ -4,6 +4,7 @@ const boot = window.KARL_BOOTSTRAP || {};
 let socket = null;
 let reconnectTimer = null;
 let runtimeStatusTimer = null;
+let bridgeMetaTimer = null;
 let chatFinished = true;
 let labRunning = false;
 let currentLabTarget = '';
@@ -46,9 +47,38 @@ window.addEventListener('DOMContentLoaded', () => {
     renderKbQueue();
     renderBranches();
     renderDownloadRegistry([]);
-    setInterval(() => updateBridgeMeta(), 1000);
+    bridgeMetaTimer = setInterval(() => updateBridgeMeta(), 1000);
     appendMessageBubble('assistant', 'Karl command cockpit ready. Connect to the local backend to execute agentic workflows.');
+    
+    // Post ready handshake
+    vscode.postMessage({ command: 'ready' });
+
     if (boot.autoConnect) connect();
+});
+
+window.addEventListener('unload', () => {
+    if (bridgeMetaTimer) {
+        clearInterval(bridgeMetaTimer);
+        bridgeMetaTimer = null;
+    }
+    if (reconnectTimer) {
+        clearInterval(reconnectTimer);
+        reconnectTimer = null;
+    }
+    if (runtimeStatusTimer) {
+        clearInterval(runtimeStatusTimer);
+        runtimeStatusTimer = null;
+    }
+    if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        try {
+            socket.close();
+        } catch {}
+        socket = null;
+    }
 });
 
 window.addEventListener('message', event => {
@@ -459,14 +489,62 @@ function setConnectionState(state, label) {
     updateBridgeMeta();
 }
 
+function teardownSocket(isError = false) {
+    if (runtimeStatusTimer) {
+        clearInterval(runtimeStatusTimer);
+        runtimeStatusTimer = null;
+    }
+    if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        try {
+            if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+                socket.close();
+            }
+        } catch {}
+        socket = null;
+    }
+    setConnectionState('offline', isError ? 'Error' : 'Offline');
+    renderRuntimeOffline();
+}
+
+function handleDisconnect(isError = false) {
+    teardownSocket(isError);
+
+    if (boot.autoConnect && !manualDisconnect && !reconnectTimer) {
+        nextReconnectSec = 5;
+        log(`[Bridge] Connection lost. Retrying in ${nextReconnectSec}s.`);
+        updateBridgeMeta();
+        reconnectTimer = setInterval(() => {
+            nextReconnectSec--;
+            updateBridgeMeta();
+            if (nextReconnectSec <= 0) {
+                clearInterval(reconnectTimer);
+                reconnectTimer = null;
+                connect();
+            }
+        }, 1000);
+    }
+}
+
 function connect() {
-    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        teardownSocket(false);
+    }
     manualDisconnect = false;
     const port = Number($('bridgePort').value) || boot.port || 8080;
     $('cockpitPort').innerText = port;
     setConnectionState('connecting', 'Connecting');
     log(`[Bridge] Connecting to ws://localhost:${port}`);
-    socket = new WebSocket(`ws://localhost:${port}`);
+    try {
+        socket = new WebSocket(`ws://localhost:${port}`);
+    } catch (err) {
+        lastBridgeError = err.message;
+        handleDisconnect(true);
+        return;
+    }
 
     socket.onopen = () => {
         lastConnectedAt = new Date();
@@ -493,29 +571,10 @@ function connect() {
     };
     socket.onerror = () => {
         lastBridgeError = 'Connection failed';
-        setConnectionState('offline', 'Error');
         vscode.postMessage({ command: 'show_error', text: 'Karl bridge connection failed. Start Karl and verify the WebSocket port.' });
     };
     socket.onclose = () => {
-        setConnectionState('offline', 'Offline');
-        renderRuntimeOffline();
-        if (runtimeStatusTimer) {
-            clearInterval(runtimeStatusTimer);
-            runtimeStatusTimer = null;
-        }
-        if (boot.autoConnect && !manualDisconnect && !reconnectTimer) {
-            nextReconnectSec = 5;
-            log(`[Bridge] Connection lost. Retrying in ${nextReconnectSec}s.`);
-            reconnectTimer = setInterval(() => {
-                nextReconnectSec--;
-                updateBridgeMeta();
-                if (nextReconnectSec <= 0) {
-                    clearInterval(reconnectTimer);
-                    reconnectTimer = null;
-                    connect();
-                }
-            }, 1000);
-        }
+        handleDisconnect(false);
     };
 }
 
@@ -525,13 +584,7 @@ function disconnect() {
         clearInterval(reconnectTimer);
         reconnectTimer = null;
     }
-    if (runtimeStatusTimer) {
-        clearInterval(runtimeStatusTimer);
-        runtimeStatusTimer = null;
-    }
-    if (socket) socket.close();
-    socket = null;
-    setConnectionState('offline', 'Offline');
+    teardownSocket(false);
 }
 
 function handleSocketMessage(data) {
@@ -1556,6 +1609,13 @@ function updateBridgeMeta(status) {
     let reconnectStr = '';
     if (reconnectTimer && nextReconnectSec > 0) {
         reconnectStr = ` · Retrying in ${nextReconnectSec}s`;
+        const label = `Reconnecting in ${nextReconnectSec}s`;
+        $('statusText').innerText = label;
+        $('cockpitConnection').innerText = label.toLowerCase();
+    } else if (connectionState === 'offline' || connectionState === 'error') {
+        const label = 'Karl app not running';
+        $('statusText').innerText = label;
+        $('cockpitConnection').innerText = label.toLowerCase();
     }
     const error = lastBridgeError ? ` · Last error: ${lastBridgeError}` : '';
     $('bridgeMeta').innerText = `Heartbeat: ${heartbeat} · Last connect: ${connected} · Version: ${version}${reconnectStr}${error}`;

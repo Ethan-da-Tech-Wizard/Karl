@@ -535,22 +535,20 @@ class KarlSidebarProvider {
         this.webviewView = null;
         this.pendingEdits = new Map();
         this._resolveWebview = null;
+        this.isReady = false;
+        this.messageQueue = [];
     }
 
     waitForWebview() {
-        if (this.webviewView) return Promise.resolve();
+        if (this.isReady) return Promise.resolve();
         return new Promise(resolve => {
             this._resolveWebview = resolve;
-            setTimeout(resolve, 1200);
         });
     }
 
     resolveWebviewView(webviewView) {
         this.webviewView = webviewView;
-        if (this._resolveWebview) {
-            this._resolveWebview();
-            this._resolveWebview = null;
-        }
+        this.isReady = false;
 
         webviewView.webview.options = {
             enableScripts: true,
@@ -573,6 +571,19 @@ class KarlSidebarProvider {
 
         webviewView.webview.onDidReceiveMessage(async message => {
             switch (message.command) {
+                case 'ready':
+                    this.isReady = true;
+                    while (this.messageQueue.length > 0) {
+                        const msg = this.messageQueue.shift();
+                        if (this.webviewView) {
+                            this.webviewView.webview.postMessage(msg);
+                        }
+                    }
+                    if (this._resolveWebview) {
+                        this._resolveWebview();
+                        this._resolveWebview = null;
+                    }
+                    break;
                 case 'persist_state':
                     await this.context.workspaceState.update('karl.sidebarState', message.state || {});
                     break;
@@ -649,8 +660,10 @@ class KarlSidebarProvider {
     }
 
     postMessageToWebview(message) {
-        if (this.webviewView) {
+        if (this.isReady && this.webviewView) {
             this.webviewView.webview.postMessage(message);
+        } else {
+            this.messageQueue.push(message);
         }
     }
 
