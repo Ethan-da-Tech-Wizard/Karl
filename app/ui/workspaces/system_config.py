@@ -173,6 +173,20 @@ class SystemConfigWorkspace(QWidget):
         super().showEvent(event)
         self._scan_models(force=False)
         self._scan_adapters(force=False)
+
+        from app.engine import config_store as _cs
+        draft_cfg = _cs.get_active_draft_model()
+        if draft_cfg["filename"]:
+            draft_path = os.path.join("data", "models", draft_cfg["filename"])
+            self._draft_model_input.setText(draft_path)
+            from app.engine.model_loader import ModelLoader
+            if ModelLoader.is_speculative():
+                self._draft_status.setText(
+                    f"<span style='color:#2DD4A0;'>Speculative decoding active — draft: "
+                    f"{draft_cfg['filename']}</span>"
+                )
+                self._draft_status.setTextFormat(Qt.TextFormat.RichText)
+
         self._refresh_hardware()
         self._run_model_preflight_checks()
 
@@ -265,6 +279,54 @@ class SystemConfigWorkspace(QWidget):
         load_adapter_btn.clicked.connect(self._load_adapter)
         adr.addWidget(load_adapter_btn)
         ap_layout.addWidget(adapter_row)
+
+        ap_layout.addWidget(_hline())
+        ap_layout.addWidget(_section("SPECULATIVE DECODING"))
+
+        spec_desc = QLabel(
+            "Load a small draft model (e.g. Qwen-0.5B, 1.5B) alongside the base model "
+            "to accelerate token generation via speculative decoding."
+        )
+        spec_desc.setObjectName("lbl-muted")
+        spec_desc.setWordWrap(True)
+        ap_layout.addWidget(spec_desc)
+
+        draft_row = QWidget()
+        dr = QHBoxLayout(draft_row)
+        dr.setContentsMargins(0, 0, 0, 0)
+        dr.setSpacing(8)
+        self._draft_model_input = QLineEdit()
+        self._draft_model_input.setPlaceholderText("path to draft .gguf file (e.g. qwen-0.5b.gguf)...")
+        self._draft_model_input.setToolTip("Small draft GGUF for speculative decoding — must share vocabulary with base model")
+        dr.addWidget(self._draft_model_input, 1)
+        draft_browse = QPushButton("browse")
+        draft_browse.setToolTip("Browse for a draft GGUF file")
+        draft_browse.clicked.connect(self._browse_draft_model)
+        dr.addWidget(draft_browse)
+        ap_layout.addWidget(draft_row)
+
+        self._load_speculative_btn = QPushButton("load with speculative decode")
+        self._load_speculative_btn.setObjectName("btn-primary")
+        self._load_speculative_btn.setToolTip("Reload the active base model with the draft model attached")
+        self._load_speculative_btn.clicked.connect(self._load_speculative)
+
+        clear_draft_btn = QPushButton("clear draft")
+        clear_draft_btn.setObjectName("btn-ghost")
+        clear_draft_btn.setToolTip("Remove draft model and reload base model normally")
+        clear_draft_btn.clicked.connect(self._clear_draft_model)
+
+        spec_btn_row = QWidget()
+        sbl = QHBoxLayout(spec_btn_row)
+        sbl.setContentsMargins(0, 0, 0, 0)
+        sbl.setSpacing(8)
+        sbl.addWidget(self._load_speculative_btn)
+        sbl.addWidget(clear_draft_btn)
+        ap_layout.addWidget(spec_btn_row)
+
+        self._draft_status = QLabel("")
+        self._draft_status.setObjectName("lbl-muted")
+        self._draft_status.setWordWrap(True)
+        ap_layout.addWidget(self._draft_status)
 
         self._model_status = QLabel("")
         self._model_status.setObjectName("lbl-muted")
@@ -1103,6 +1165,61 @@ class SystemConfigWorkspace(QWidget):
             self._run_model_preflight_checks()
         except Exception as e:
             self._model_status.setText(f"error: {e}")
+
+    def _browse_draft_model(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Draft GGUF model", "data/models", "GGUF (*.gguf);;All Files (*)"
+        )
+        if path:
+            self._draft_model_input.setText(path)
+
+    def _load_speculative(self):
+        draft_path = self._draft_model_input.text().strip()
+        if not draft_path:
+            self._draft_status.setText("Enter a draft model path first.")
+            return
+        if not os.path.exists(draft_path):
+            self._draft_status.setText(f"File not found: {draft_path}")
+            return
+
+        base_path = self._model_path_input.text().strip()
+        if not base_path or not os.path.exists(base_path):
+            from app.engine import config_store as _cs
+            active = _cs.get_active_model()
+            base_path = os.path.join("data", "models", active["filename"])
+
+        from app.engine.model_loader import ModelLoader
+        ModelLoader.reset_instance()
+        try:
+            ModelLoader.get_instance(model_path=base_path, draft_model_path=draft_path)
+            draft_name = os.path.basename(draft_path)
+            from app.engine import config_store as _cs
+            _cs.set_active_draft_model(draft_name)
+            speculative_on = ModelLoader.is_speculative()
+            if speculative_on:
+                self._draft_status.setText(
+                    f"<span style='color:#2DD4A0;'>Speculative decoding active — draft: "
+                    f"{draft_name}</span>"
+                )
+            else:
+                self._draft_status.setText(
+                    "<span style='color:#FFD800;'>Draft model loaded but speculative kwarg "
+                    "unsupported by this llama-cpp-python version. Standard inference active.</span>"
+                )
+            self._draft_status.setTextFormat(Qt.TextFormat.RichText)
+            self._run_model_preflight_checks()
+        except Exception as e:
+            self._draft_status.setText(f"<span style='color:#FF5C7A;'>Error: {e}</span>")
+            self._draft_status.setTextFormat(Qt.TextFormat.RichText)
+
+    def _clear_draft_model(self):
+        from app.engine.model_loader import ModelLoader
+        from app.engine import config_store as _cs
+        ModelLoader.reset_instance()
+        _cs.set_active_draft_model(None)
+        self._draft_model_input.clear()
+        self._draft_status.setText("Draft model cleared. Standard inference active.")
+        self._run_model_preflight_checks()
 
     def _scan_models(self, force=False):
         models_dir = "data/models"

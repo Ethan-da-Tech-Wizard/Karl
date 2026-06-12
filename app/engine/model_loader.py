@@ -21,6 +21,8 @@ class ModelMemoryError(RuntimeError):
 class ModelLoader:
     _instance = None
     _lock = threading.Lock()
+    _draft_model_path: str | None = None
+    _draft_instance = None
     _MEMORY_SAFETY_MARGIN = 0.92
 
     @classmethod
@@ -177,7 +179,8 @@ class ModelLoader:
         return plan
 
     @classmethod
-    def get_instance(cls, model_path: str | None = None, adapter_name: str | None = None) -> Llama:
+    def get_instance(cls, model_path: str | None = None, adapter_name: str | None = None,
+                     draft_model_path: str | None = None) -> Llama:
         with cls._lock:
             if model_path is None:
                 active = config_store.get_active_model()
@@ -187,6 +190,8 @@ class ModelLoader:
 
             current_model_path = getattr(cls, "_model_path", None)
             current_adapter = getattr(cls, "_active_adapter", None)
+
+            needs_draft_reload = (draft_model_path != getattr(cls, '_draft_model_path', None))
 
             needs_reload = (
                 cls._instance is None or
@@ -242,6 +247,54 @@ class ModelLoader:
                         verbose=False
                     )
                 logger.info("Ready.")
+
+                if needs_draft_reload or needs_reload:
+                    # Tear down existing draft
+                    if cls._draft_instance is not None:
+                        try:
+                            cls._draft_instance.close()
+                        except Exception:
+                            pass
+                        cls._draft_instance = None
+
+                    if draft_model_path and os.path.exists(draft_model_path):
+                        try:
+                            from llama_cpp import Llama as _LlamaInner
+                            cls._draft_instance = _LlamaInner(
+                                model_path=draft_model_path,
+                                n_ctx=cls._n_ctx,
+                                n_gpu_layers=-1,
+                                verbose=False,
+                            )
+                            # Re-instantiate primary model wired to the draft instance.
+                            # llama-cpp-python exposes speculative decoding via the draft_model kwarg
+                            # (available since 0.2.77). If the installed version lacks this kwarg,
+                            # catch TypeError and continue without speculative support.
+                            try:
+                                cls._instance.close()
+                                cls._instance = Llama(
+                                    model_path=cls._model_path,
+                                    n_ctx=cls._n_ctx,
+                                    n_gpu_layers=-1,
+                                    verbose=False,
+                                    draft_model=cls._draft_instance,
+                                )
+                                logger.info(
+                                    f"Speculative decoding active: target={cls._model_name} "
+                                    f"draft={os.path.basename(draft_model_path)}"
+                                )
+                            except TypeError:
+                                logger.warning(
+                                    "Installed llama-cpp-python does not support draft_model kwarg. "
+                                    "Falling back to standard inference without speculative decoding."
+                                )
+                                cls._draft_instance.close()
+                                cls._draft_instance = None
+                        except Exception as e:
+                            logger.warning(f"Failed to load draft model {draft_model_path}: {e}")
+                            cls._draft_instance = None
+
+                    cls._draft_model_path = draft_model_path
             return cls._instance
 
     @classmethod
@@ -252,6 +305,13 @@ class ModelLoader:
                     cls._instance.close()
                 except Exception:
                     pass
+            if cls._draft_instance is not None:
+                try:
+                    cls._draft_instance.close()
+                except Exception:
+                    pass
+                cls._draft_instance = None
+            cls._draft_model_path = None
             cls._instance = None
             cls._active_adapter = None
             cls._model_path = None
@@ -278,3 +338,9 @@ class ModelLoader:
     def is_loaded(cls) -> bool:
         with cls._lock:
             return cls._instance is not None
+
+    @classmethod
+    def is_speculative(cls) -> bool:
+        """True when a draft model is attached and speculative decoding is active."""
+        with cls._lock:
+            return cls._draft_instance is not None

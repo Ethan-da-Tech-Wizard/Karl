@@ -3,11 +3,15 @@ from __future__ import annotations
 import os
 import time
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QFrame,
+    QGraphicsLineItem,
+    QGraphicsRectItem,
+    QGraphicsScene,
+    QGraphicsView,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -45,6 +49,8 @@ class SwarmStudioWorkspace(QWidget):
         self._file_contents: dict[str, str] = {}
         self._tracebacks: dict[str, str] = {}
         self._history = []
+        self._task_nodes: dict[str, QGraphicsRectItem] = {}
+        self._graph_scene: QGraphicsScene | None = None
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -145,9 +151,9 @@ class SwarmStudioWorkspace(QWidget):
 
     def _build_center_panel(self) -> QWidget:
         panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 0, 8, 0)
-        layout.setSpacing(8)
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(8, 0, 8, 0)
+        outer.setSpacing(8)
 
         self._summary_frame = QFrame()
         self._summary_frame.setObjectName("panel")
@@ -164,12 +170,40 @@ class SwarmStudioWorkspace(QWidget):
         self._progress.setTextVisible(False)
         self._progress.setRange(0, 100)
         sl.addWidget(self._progress, 1, 0, 1, 3)
-        layout.addWidget(self._summary_frame)
+        outer.addWidget(self._summary_frame)
+
+        vsplit = QSplitter(Qt.Orientation.Vertical)
+        vsplit.setHandleWidth(1)
+
+        graph_container = QWidget()
+        gc_layout = QVBoxLayout(graph_container)
+        gc_layout.setContentsMargins(0, 0, 0, 0)
+        gc_layout.setSpacing(4)
+
+        graph_lbl = QLabel("Task Dependency Graph")
+        graph_lbl.setObjectName("section-header")
+        gc_layout.addWidget(graph_lbl)
+
+        self._graph_scene = QGraphicsScene(self)
+        self._graph_view = QGraphicsView(self._graph_scene)
+        self._graph_view.setMinimumHeight(180)
+        self._graph_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._graph_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self._graph_view.setStyleSheet(
+            "background: #0D0D16; border: 1px solid #252535; border-radius: 4px;"
+        )
+        gc_layout.addWidget(self._graph_view, 1)
+        vsplit.addWidget(graph_container)
+
+        bottom = QWidget()
+        bl = QVBoxLayout(bottom)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(8)
 
         self._layers_tree = QTreeWidget()
         self._layers_tree.setHeaderLabels(["Dependency Layers"])
-        self._layers_tree.setMinimumHeight(120)
-        layout.addWidget(self._layers_tree, 1)
+        self._layers_tree.setMinimumHeight(80)
+        bl.addWidget(self._layers_tree, 1)
 
         self._task_table = QTableWidget(0, 4)
         self._task_table.setHorizontalHeaderLabels(["File", "Status", "Layer", "Detail"])
@@ -177,13 +211,18 @@ class SwarmStudioWorkspace(QWidget):
         self._task_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._task_table.itemSelectionChanged.connect(self._sync_selection_preview)
         self._task_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self._task_table, 2)
+        bl.addWidget(self._task_table, 2)
 
         self._status_log = QTextEdit()
         self._status_log.setReadOnly(True)
         self._status_log.setFont(QFont("Monospace", 9))
         self._status_log.setPlaceholderText("Swarm status stream.")
-        layout.addWidget(self._status_log, 2)
+        bl.addWidget(self._status_log, 2)
+
+        vsplit.addWidget(bottom)
+        vsplit.setStretchFactor(0, 2)
+        vsplit.setStretchFactor(1, 3)
+        outer.addWidget(vsplit, 1)
         return panel
 
     def _build_right_panel(self) -> QWidget:
@@ -287,6 +326,9 @@ class SwarmStudioWorkspace(QWidget):
         self._file_contents.clear()
         self._tracebacks.clear()
         self._layers_tree.clear()
+        if self._graph_scene is not None:
+            self._graph_scene.clear()
+        self._task_nodes.clear()
         self._task_table.setRowCount(0)
         self._status_log.clear()
         self._preview.clear()
@@ -331,6 +373,7 @@ class SwarmStudioWorkspace(QWidget):
                 child.setText(0, task.get("filepath", "unknown"))
                 child.setToolTip(0, task.get("instructions", ""))
             parent.setExpanded(True)
+        self._render_dependency_graph(layers)
 
     def _on_layer_started(self, index: int, total: int, tasks: list):
         self._verify_lbl.setText(f"Layer {index}/{total}: coding")
@@ -350,6 +393,7 @@ class SwarmStudioWorkspace(QWidget):
             if item and item.text() in {"completed", "failed"}:
                 completed += 1
         self._progress.setValue(int((completed / total) * 100))
+        self._update_graph_node_status(filepath, status)
 
     def _on_verification_started(self, layer_index: int, command: str):
         self._verify_lbl.setText(f"Layer {layer_index}: verifying")
@@ -401,6 +445,108 @@ class SwarmStudioWorkspace(QWidget):
             self._task_table.item(row, 2).setText(layer)
             self._task_table.item(row, 3).setText(detail)
         self._task_table.resizeColumnsToContents()
+
+    def _render_dependency_graph(self, layers: list[list[dict]]) -> None:
+        """Build a node-link graph from dependency layers into _graph_scene."""
+        if self._graph_scene is None:
+            return
+        self._graph_scene.clear()
+        self._task_nodes.clear()
+
+        node_w, node_h = 160, 36
+        h_gap, v_gap = 60, 14
+        layer_step = node_w + h_gap
+
+        status_colors = {
+            "planned": QColor("#1E1E3C"),
+            "in_progress": QColor("#7A4800"),
+            "written": QColor("#005A4A"),
+            "completed": QColor("#174430"),
+            "failed": QColor("#5A0020"),
+        }
+        border_colors = {
+            "planned": QColor("#35356E"),
+            "in_progress": QColor("#FFB400"),
+            "written": QColor("#00C2A0"),
+            "completed": QColor("#2DD4A0"),
+            "failed": QColor("#FF3366"),
+        }
+        text_color = QColor("#C8C8E0")
+        layer_centers: list[list[tuple[str, float, float]]] = []
+
+        for layer_idx, layer_tasks in enumerate(layers):
+            x = layer_idx * layer_step
+            centers = []
+            total_h = len(layer_tasks) * (node_h + v_gap) - v_gap
+            y_start = -total_h / 2
+
+            for task_idx, task in enumerate(layer_tasks):
+                filepath = task.get("filepath", "")
+                if not filepath:
+                    continue
+                label = filepath.split("/")[-1] if "/" in filepath else filepath
+                y = y_start + task_idx * (node_h + v_gap)
+
+                rect = QGraphicsRectItem(QRectF(x, y, node_w, node_h))
+                rect.setBrush(QBrush(status_colors["planned"]))
+                rect.setPen(QPen(border_colors["planned"], 1.5))
+                rect.setToolTip(filepath)
+                self._graph_scene.addItem(rect)
+                self._task_nodes[filepath] = rect
+
+                text = self._graph_scene.addText(
+                    label if len(label) <= 20 else label[:18] + "...",
+                    QFont("Monospace", 7),
+                )
+                text.setDefaultTextColor(text_color)
+                text_rect = text.boundingRect()
+                text.setPos(
+                    x + (node_w - text_rect.width()) / 2,
+                    y + (node_h - text_rect.height()) / 2,
+                )
+                text.setZValue(1)
+
+                centers.append((filepath, x + node_w / 2, y + node_h / 2))
+
+            layer_centers.append(centers)
+
+        edge_pen = QPen(QColor("#2A2A50"), 1, Qt.PenStyle.DashLine)
+        for i in range(1, len(layer_centers)):
+            src_x_right = (i - 1) * layer_step + node_w
+            dst_x_left = i * layer_step
+            for _a, _cx_a, cy_a in layer_centers[i - 1]:
+                for _b, _cx_b, cy_b in layer_centers[i]:
+                    line = QGraphicsLineItem(src_x_right, cy_a, dst_x_left, cy_b)
+                    line.setPen(edge_pen)
+                    line.setZValue(-1)
+                    self._graph_scene.addItem(line)
+
+        if self._graph_scene.items():
+            self._graph_view.fitInView(
+                self._graph_scene.itemsBoundingRect(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+            )
+
+    def _update_graph_node_status(self, filepath: str, status: str) -> None:
+        node = self._task_nodes.get(filepath)
+        if node is None:
+            return
+        status_fill = {
+            "planned": QColor("#1E1E3C"),
+            "in_progress": QColor("#7A4800"),
+            "written": QColor("#005A4A"),
+            "completed": QColor("#174430"),
+            "failed": QColor("#5A0020"),
+        }
+        status_border = {
+            "planned": QColor("#35356E"),
+            "in_progress": QColor("#FFB400"),
+            "written": QColor("#00C2A0"),
+            "completed": QColor("#2DD4A0"),
+            "failed": QColor("#FF3366"),
+        }
+        node.setBrush(QBrush(status_fill.get(status, status_fill["planned"])))
+        node.setPen(QPen(status_border.get(status, status_border["planned"]), 1.5))
 
     def _layer_for_file(self, filepath: str) -> str:
         for idx in range(self._layers_tree.topLevelItemCount()):

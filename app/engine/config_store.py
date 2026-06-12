@@ -108,6 +108,22 @@ def set_active_model(filename: str, adapter: str | None = None) -> bool:
     return write_json_atomic(ACTIVE_MODEL_PATH, active)
 
 
+DRAFT_MODEL_PATH = os.path.join("data", "draft_model.json")
+
+
+def get_active_draft_model() -> dict:
+    """Return {"filename": str | None} for the speculative draft model, or None if unconfigured."""
+    data = read_json(DRAFT_MODEL_PATH, default={})
+    if not isinstance(data, dict):
+        data = {}
+    return {"filename": data.get("filename") or None}
+
+
+def set_active_draft_model(filename: str | None) -> bool:
+    """Persist or clear the draft model. Pass None to disable speculative decoding."""
+    return write_json_atomic(DRAFT_MODEL_PATH, {"filename": filename})
+
+
 # ── model registry ───────────────────────────────────────────────────────────
 
 def get_model_registry() -> list[dict]:
