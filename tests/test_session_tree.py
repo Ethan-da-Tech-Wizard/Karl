@@ -233,6 +233,25 @@ def test_tree_nodes_map_consistency():
         assert nid in tree.nodes_map, f"Node {nid} missing from nodes_map"
 
 
+def test_tree_stats_and_branch_label():
+    tree = SessionTree()
+    user = tree.add_message("user", "base")
+    tree.add_message("assistant", "branch A")
+    tree.branch_from(user.id, "assistant", "branch B")
+
+    stats = tree.stats()
+    assert stats.message_nodes == 3
+    assert stats.leaf_count == 2
+    assert stats.max_depth == 2
+    assert tree.active_branch_label().startswith("assistant:")
+
+
+def test_branch_from_missing_returns_none():
+    tree = SessionTree()
+    assert tree.branch_from("missing", "user", "nope") is None
+    assert len(tree) == 0
+
+
 if __name__ == "__main__":
     test_node_defaults()
     test_node_add_child()

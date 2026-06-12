@@ -179,12 +179,14 @@ class TestSwarmOrchestrator(unittest.TestCase):
         signals = {
             "status_messages": [],
             "plan": None,
+            "layers": None,
             "edited_files": {},
             "finished": None
         }
 
         orchestrator.status_update.connect(lambda msg: signals["status_messages"].append(msg))
         orchestrator.task_plan_created.connect(lambda plan: signals.update({"plan": plan}))
+        orchestrator.dependency_layers_built.connect(lambda layers: signals.update({"layers": layers}))
         orchestrator.file_edited.connect(lambda path, content: signals["edited_files"].update({path: content}))
         orchestrator.finished_swarm.connect(lambda success, summary: signals.update({"finished": (success, summary)}))
 
@@ -193,6 +195,9 @@ class TestSwarmOrchestrator(unittest.TestCase):
         # Check that we parsed imports and sorted into 1 layer of 2 parallel tasks
         self.assertIsNotNone(signals["plan"])
         self.assertEqual(len(signals["plan"]["tasks"]), 2)
+        self.assertIsNotNone(signals["layers"])
+        self.assertEqual(len(signals["layers"]), 1)
+        self.assertEqual(len(signals["layers"][0]), 2)
         self.assertIn("math_utils.py", signals["edited_files"])
         self.assertIn("string_utils.py", signals["edited_files"])
         self.assertIsNotNone(signals["finished"])

@@ -97,6 +97,20 @@ class TestUIImprovements(unittest.TestCase):
         self.assertTrue(hasattr(workbench, "_reasoning_dock"))
         self.assertTrue(isinstance(workbench._sessions_dock, QDockWidget))
         self.assertTrue(isinstance(workbench._reasoning_dock, QDockWidget))
+        self.assertTrue(hasattr(workbench, "_branch_stats_lbl"))
+        self.assertTrue(hasattr(workbench, "_token_remaining_lbl"))
+
+    def test_swarm_studio_constructs(self):
+        from app.state import AppState
+        from app.ui.workspaces.swarm_studio import SwarmStudioWorkspace
+
+        state = AppState()
+        workspace = SwarmStudioWorkspace(state)
+
+        self.assertIsNotNone(workspace)
+        self.assertTrue(hasattr(workspace, "_layers_tree"))
+        self.assertTrue(hasattr(workspace, "_task_table"))
+        self.assertTrue(hasattr(workspace, "_traceback"))
 
     def test_agentic_loop_persists_only_final_assistant_answer(self):
         from app.state import AppState

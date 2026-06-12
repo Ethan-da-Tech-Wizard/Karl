@@ -25,7 +25,7 @@ from app.ui.workspaces.training_studio import TrainingStudioWorkspace
 from app.ui.workspaces.eval_suite import EvalSuiteWorkspace
 from app.ui.workspaces.system_config import SystemConfigWorkspace
 from app.ui.workspaces.docs import DocsWorkspace
-from app.ui.workspaces.swarm_workspace import SwarmWorkspace
+from app.ui.workspaces.swarm_studio import SwarmStudioWorkspace
 
 
 logger = logging.getLogger("karl.main_window")
@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         self._vision         = VisionWorkbench(self._state, self._workbench)
         self._training       = TrainingStudioWorkspace(self._state)
         self._eval           = EvalSuiteWorkspace(self._state)
-        self._swarm          = SwarmWorkspace(self._state)
+        self._swarm          = SwarmStudioWorkspace(self._state)
         self._system         = SystemConfigWorkspace(self._state)
         self._system.set_workbench(self._workbench)
         self._docs           = DocsWorkspace(self._state)

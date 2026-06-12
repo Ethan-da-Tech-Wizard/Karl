@@ -180,6 +180,15 @@ class WorkbenchWorkspace(QMainWindow):
         bl = QVBoxLayout(branches_tab)
         bl.setContentsMargins(4, 4, 4, 4)
         bl.setSpacing(4)
+        self._branch_stats_lbl = QLabel("Branches: 0 · Depth: 0 · Active: root")
+        self._branch_stats_lbl.setObjectName("lbl-muted")
+        self._branch_stats_lbl.setWordWrap(True)
+        bl.addWidget(self._branch_stats_lbl)
+        self._branch_focus_btn = QPushButton("Fork From Selected")
+        self._branch_focus_btn.setObjectName("btn-ghost")
+        self._branch_focus_btn.setToolTip("Move the active conversation cursor to the selected message and continue a new branch from there.")
+        self._branch_focus_btn.clicked.connect(self._branch_from_selected_tree_item)
+        bl.addWidget(self._branch_focus_btn)
         self._branches_tree = QTreeWidget()
         self._branches_tree.setHeaderHidden(True)
         self._branches_tree.itemClicked.connect(self._on_branch_clicked)
@@ -304,6 +313,9 @@ class WorkbenchWorkspace(QMainWindow):
         self._token_lbl = QLabel("0 / 4,096 tokens")
         self._token_lbl.setObjectName("lbl-muted")
         self._token_lbl.setStyleSheet("font-size: 8pt;")
+        self._token_remaining_lbl = QLabel("free 4,096")
+        self._token_remaining_lbl.setObjectName("lbl-muted")
+        self._token_remaining_lbl.setStyleSheet("font-size: 8pt;")
 
         from PyQt6.QtWidgets import QProgressBar
         self._token_bar = QProgressBar()
@@ -315,6 +327,7 @@ class WorkbenchWorkspace(QMainWindow):
 
         token_layout.addWidget(self._token_bar, 1)
         token_layout.addWidget(self._token_lbl)
+        token_layout.addWidget(self._token_remaining_lbl)
 
         ic_layout.addWidget(token_row)
 
@@ -526,9 +539,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._maxtok_spin.setValue(self._hyperparams["max_tokens"])
         self._maxtok_spin.setFixedWidth(80)
         self._maxtok_spin.setToolTip("Maximum number of tokens to generate.")
-        self._maxtok_spin.valueChanged.connect(
-            lambda v: self._hyperparams.__setitem__("max_tokens", v)
-        )
+        self._maxtok_spin.valueChanged.connect(self._on_max_tokens_changed)
         dl.addWidget(self._maxtok_spin)
 
         dl.addStretch()
@@ -788,23 +799,49 @@ class WorkbenchWorkspace(QMainWindow):
 
     def _update_token_budget(self):
         from app.engine.model_loader import ModelLoader
-        
-        total_words = 0
-        if self.chat_history:
-            for msg in self.chat_history:
-                total_words += len(msg.get("content", "").split())
-                
+
+        def _count_tokens(text: str) -> int:
+            if not text:
+                return 0
+            if ModelLoader.is_loaded():
+                try:
+                    llm = ModelLoader.get_instance()
+                    return len(llm.tokenize(text.encode("utf-8"), add_bos=False))
+                except TypeError:
+                    return len(llm.tokenize(text.encode("utf-8")))
+                except Exception as exc:
+                    logger.debug("Workbench token HUD tokenizer fallback: %s", exc)
+            return max(1, len(text.encode("utf-8")) // 3)
+
+        history = list(self.chat_history) if self.chat_history else []
         if hasattr(self, "_input"):
-            total_words += len(self._input.toPlainText().split())
-            
-        estimated = int(total_words * 1.3)
+            pending = self._input.toPlainText().strip()
+            if pending:
+                history.append({"role": "user", "content": pending})
+
+        prompt_parts = [f"<|im_start|>system\n{self._active_system_prompt()}<|im_end|>\n"]
+        for msg in history:
+            prompt_parts.append(
+                f"<|im_start|>{msg.get('role', 'user')}\n"
+                f"{msg.get('content', '')}<|im_end|>\n"
+            )
+        estimated = _count_tokens("".join(prompt_parts))
         n_ctx = ModelLoader.n_ctx()
+        reserve = int(self._hyperparams.get("max_tokens", 2048))
+        remaining = max(0, n_ctx - estimated - reserve)
         
-        pct = int((estimated / n_ctx) * 100) if n_ctx > 0 else 0
+        pct = int(((estimated + reserve) / n_ctx) * 100) if n_ctx > 0 else 0
         pct = max(0, min(100, pct))
         
         self._token_bar.setValue(pct)
-        self._token_lbl.setText(f"{estimated:,} / {n_ctx:,} tokens")
+        self._token_lbl.setText(f"prompt {estimated:,} + reserve {reserve:,} / ctx {n_ctx:,}")
+        self._token_remaining_lbl.setText(f"free {remaining:,}")
+        self._token_bar.setToolTip(
+            f"Prompt tokens: {estimated:,}\n"
+            f"Reserved generation tokens: {reserve:,}\n"
+            f"Remaining context after reserve: {remaining:,}\n"
+            f"Context window: {n_ctx:,}"
+        )
         
         if pct < 70:
             color = "#00C2FF"  # cyan
@@ -899,6 +936,10 @@ class WorkbenchWorkspace(QMainWindow):
         if visible:
             self._refresh_model_combo()
         self._params_drawer.setVisible(visible)
+
+    def _on_max_tokens_changed(self, value: int):
+        self._hyperparams["max_tokens"] = value
+        self._update_token_budget()
 
     def _on_agent_selected(self, *_args):
         self._agent_profile = self._agent_combo.currentData() or "karl"
@@ -1495,7 +1536,9 @@ class WorkbenchWorkspace(QMainWindow):
     def _branch_from_node(self, node_id):
         if not self.chat_history:
             return
-        self.chat_history.set_current_node(node_id)
+        if not self.chat_history.set_current_node(node_id):
+            self._chat_view.append_system_note("branch target no longer exists")
+            return
         self._update_expert_strip()
 
         
@@ -1521,17 +1564,28 @@ class WorkbenchWorkspace(QMainWindow):
         self._chat_view._render_all()
         
         self._populate_branches_tree()
+        self._update_token_budget()
+        self._input.setFocus()
+        self._chat_view.append_system_note("branch cursor moved - write the next prompt to fork from this message")
         self._save_current_session()
 
     def _populate_branches_tree(self):
         self._branches_tree.blockSignals(True)
         self._branches_tree.clear()
         if not self.chat_history:
+            if hasattr(self, "_branch_stats_lbl"):
+                self._branch_stats_lbl.setText("Branches: 0 · Depth: 0 · Active: root")
             self._branches_tree.blockSignals(False)
             return
 
         root_node = self.chat_history.root
         self._tree_items_map = {}
+        stats = self.chat_history.stats()
+        if hasattr(self, "_branch_stats_lbl"):
+            self._branch_stats_lbl.setText(
+                f"Branches: {stats.leaf_count} · Messages: {stats.message_nodes} · "
+                f"Depth: {self.chat_history.node_depth()} · Active: {self.chat_history.active_branch_label()}"
+            )
         
         def _add_node(session_node, parent_item):
             snippet = session_node.content
@@ -1576,6 +1630,14 @@ class WorkbenchWorkspace(QMainWindow):
         if node_id == self.chat_history.current_id:
             return
         self._branch_from_node(node_id)
+
+    def _branch_from_selected_tree_item(self):
+        item = self._branches_tree.currentItem()
+        if not item:
+            return
+        node_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if node_id:
+            self._branch_from_node(node_id)
 
     # ── Expert Control Strip ──────────────────────────────────────────────────
 

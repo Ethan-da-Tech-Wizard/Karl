@@ -1,4 +1,15 @@
+from __future__ import annotations
+
 import uuid
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SessionTreeStats:
+    total_nodes: int
+    message_nodes: int
+    leaf_count: int
+    max_depth: int
 
 class SessionNode:
     def __init__(
@@ -19,8 +30,15 @@ class SessionNode:
         self.thought = thought
         self.attachments = attachments or []
 
-    def add_child(self, role: str, content: str, node_id: str = None, attachments: list | None = None) -> 'SessionNode':
-        child = SessionNode(role, content, node_id=node_id, parent=self, attachments=attachments)
+    def add_child(
+        self,
+        role: str,
+        content: str,
+        node_id: str = None,
+        attachments: list | None = None,
+        thought: str = None,
+    ) -> 'SessionNode':
+        child = SessionNode(role, content, node_id=node_id, parent=self, attachments=attachments, thought=thought)
         self.children.append(child)
         return child
 
@@ -81,12 +99,27 @@ class SessionTree:
             self._rebuild_maps()
         return self.nodes_map.get(self.current_id, self.root)
 
-    def add_message(self, role: str, content: str, attachments: list | None = None) -> SessionNode:
+    def add_message(self, role: str, content: str, attachments: list | None = None, thought: str = None) -> SessionNode:
         parent = self.current_node
-        child = parent.add_child(role, content, attachments=attachments)
+        child = parent.add_child(role, content, attachments=attachments, thought=thought)
         self.nodes_map[child.id] = child
         self.current_id = child.id
         return child
+
+    def branch_from(
+        self,
+        node_id: str,
+        role: str | None = None,
+        content: str = "",
+        attachments: list | None = None,
+        thought: str = None,
+    ) -> SessionNode | None:
+        """Move to node_id and optionally append a new child as a fresh branch."""
+        if not self.set_current_node(node_id):
+            return None
+        if role is None:
+            return self.current_node
+        return self.add_message(role, content, attachments=attachments, thought=thought)
 
     def get_active_path(self) -> list[SessionNode]:
         path = []
@@ -107,15 +140,74 @@ class SessionTree:
             items.append(item)
         return items
 
-    def set_current_node(self, node_id: str):
+    def set_current_node(self, node_id: str) -> bool:
         # Make sure node_id exists, rebuilding maps if needed
         if node_id not in self.nodes_map:
             self._rebuild_maps()
         if node_id in self.nodes_map:
             self.current_id = node_id
+            return True
+        return False
 
     def update_current_node_content(self, text: str):
         self.current_node.content = text
+
+    def update_node_content(self, node_id: str, text: str) -> bool:
+        node = self.get_node(node_id)
+        if node is None:
+            return False
+        node.content = text
+        return True
+
+    def node_depth(self, node_id: str | None = None) -> int:
+        node = self.get_node(node_id or self.current_id)
+        depth = 0
+        while node is not None and node.id != self.root.id:
+            depth += 1
+            node = node.parent
+        return depth
+
+    def leaf_nodes(self) -> list[SessionNode]:
+        leaves: list[SessionNode] = []
+
+        def _walk(node: SessionNode):
+            message_children = [child for child in node.children if child.id != self.root.id]
+            if node.id != self.root.id and not message_children:
+                leaves.append(node)
+            for child in node.children:
+                _walk(child)
+
+        _walk(self.root)
+        return leaves
+
+    def stats(self) -> SessionTreeStats:
+        total = 0
+        message_nodes = 0
+        max_depth = 0
+
+        def _walk(node: SessionNode, depth: int):
+            nonlocal total, message_nodes, max_depth
+            total += 1
+            if node.id != self.root.id:
+                message_nodes += 1
+                max_depth = max(max_depth, depth)
+            for child in node.children:
+                _walk(child, depth + 1)
+
+        _walk(self.root, 0)
+        return SessionTreeStats(
+            total_nodes=total,
+            message_nodes=message_nodes,
+            leaf_count=len(self.leaf_nodes()),
+            max_depth=max_depth,
+        )
+
+    def active_branch_label(self) -> str:
+        path = self.get_active_path()
+        if not path:
+            return "root"
+        leaf = path[-1]
+        return f"{leaf.role}:{leaf.id[:8]}"
 
     def to_dict(self) -> dict:
         return {

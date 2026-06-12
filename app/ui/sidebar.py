@@ -57,7 +57,7 @@ class Sidebar(QWidget):
             3: "Vision Workbench (Saved images, OCR, and screenshot reasoning)",
             4: "Training Studio (LoRA/QLoRA fine-tuning & curator)",
             5: "Eval Suite (Automated model benchmarking)",
-            6: "Swarm (Autonomous multi-agent loop)",
+            6: "Swarm Studio (dependency layers, task states, verification, and tracebacks)",
             7: "System Config (Hardware readout & model loader settings)",
             8: "Codex (Prompt taxonomy & information guide)",
         }

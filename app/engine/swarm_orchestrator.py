@@ -48,6 +48,12 @@ class SwarmSessionState:
 class SwarmOrchestratorThread(QThread):
     status_update = pyqtSignal(str)              # General log message
     task_plan_created = pyqtSignal(dict)          # The Architect's JSON plan
+    dependency_layers_built = pyqtSignal(list)    # list[list[task]]
+    layer_started = pyqtSignal(int, int, list)     # layer_index, total_layers, tasks
+    layer_finished = pyqtSignal(int, bool, str)    # layer_index, success, summary
+    task_status_changed = pyqtSignal(str, str, str)  # filepath, status, detail
+    verification_started = pyqtSignal(int, str)    # layer_index, command
+    traceback_captured = pyqtSignal(str, str)      # filepath/layer, traceback
     file_edited = pyqtSignal(str, str)            # filepath, new_content
     test_result = pyqtSignal(bool, str)           # passed, error_traceback
     finished_swarm = pyqtSignal(bool, str)        # success, final_summary
@@ -278,6 +284,7 @@ class SwarmOrchestratorThread(QThread):
             # Initialize tasks status
             for t in tasks:
                 self.state.tasks_status[t["filepath"]] = "pending"
+                self.task_status_changed.emit(t["filepath"], "pending", "Architect queued task")
 
             # Phase 2 & 3: Coder and Tester loop
             all_successful = True
@@ -285,6 +292,7 @@ class SwarmOrchestratorThread(QThread):
 
             # 1. Group tasks into layers
             layers = self.build_dependency_layers(tasks)
+            self.dependency_layers_built.emit(layers)
             self.status_update.emit(f"[Swarm] Divided {len(tasks)} tasks into {len(layers)} dependency layers.")
 
             import concurrent.futures
@@ -295,6 +303,7 @@ class SwarmOrchestratorThread(QThread):
                     return
 
                 self.status_update.emit(f"[Swarm] Starting execution of Layer {layer_idx}/{len(layers)} ({len(layer)} tasks)...")
+                self.layer_started.emit(layer_idx, len(layers), layer)
 
                 layer_success = False
                 layer_retries = 0
@@ -314,6 +323,7 @@ class SwarmOrchestratorThread(QThread):
                             filepath = task["filepath"]
                             instructions = task["instructions"]
                             trace = layer_failure_traces.get(filepath)
+                            self.task_status_changed.emit(filepath, "in_progress", f"Layer {layer_idx} coder running")
                             
                             # Submit worker
                             futures[executor.submit(self._run_single_coder, filepath, instructions, trace)] = filepath
@@ -346,9 +356,12 @@ class SwarmOrchestratorThread(QThread):
                             self.state.tasks_status[filepath] = "failed"
                             layer_failure_traces[filepath] = res["error_msg"]
                             self.status_update.emit(f"[Coder] Code generation failed for {filepath}: {res['error_msg']}")
+                            self.task_status_changed.emit(filepath, "failed", res["error_msg"] or "Coder failed")
+                            self.traceback_captured.emit(filepath, res["error_msg"] or "")
                             self.test_result.emit(False, res["error_msg"])
                         else:
                             self.state.tasks_status[filepath] = "in_progress"
+                            self.task_status_changed.emit(filepath, "generated", "Coder produced syntax-valid content")
                             # Write changes to the file if they were successfully generated and validated
                             if res["file_path_written"] and res["new_content"] is not None:
                                 try:
@@ -356,10 +369,13 @@ class SwarmOrchestratorThread(QThread):
                                     with open(res["file_path_written"], "w", encoding="utf-8") as f:
                                         f.write(res["new_content"])
                                     self.file_edited.emit(filepath, res["new_content"])
+                                    self.task_status_changed.emit(filepath, "written", "File written; awaiting verification")
                                 except Exception as exc:
                                     all_coders_ok = False
                                     layer_failure_traces[filepath] = f"Write error: {exc}"
                                     self.status_update.emit(f"[Error] Failed to write {filepath}: {exc}")
+                                    self.task_status_changed.emit(filepath, "failed", f"Write error: {exc}")
+                                    self.traceback_captured.emit(filepath, f"Write error: {exc}")
 
                     if not all_coders_ok:
                         layer_retries += 1
@@ -368,6 +384,7 @@ class SwarmOrchestratorThread(QThread):
 
                     # Run TesterAgent verification
                     self.status_update.emit(f"[Tester] Running tests: {self.state.test_command}...")
+                    self.verification_started.emit(layer_idx, self.state.test_command)
                     test_res = self.tester.run_test_command(self.state.test_command)
                     self.state.test_runs.append(test_res)
 
@@ -375,16 +392,20 @@ class SwarmOrchestratorThread(QThread):
                         self.status_update.emit(f"[Tester] Verification PASSED for all tasks in Layer {layer_idx}!")
                         for task in layer:
                             self.state.tasks_status[task["filepath"]] = "completed"
+                            self.task_status_changed.emit(task["filepath"], "completed", f"Layer {layer_idx} verified")
                             if task["filepath"] not in changed_files:
                                 changed_files.append(task["filepath"])
                         self.test_result.emit(True, "")
                         layer_success = True
+                        self.layer_finished.emit(layer_idx, True, f"Layer {layer_idx} verified")
                     else:
                         failure_trace = test_res["error_trace"]
                         self.status_update.emit(f"[Tester] Verification FAILED for Layer {layer_idx}!")
                         self.test_result.emit(False, failure_trace)
+                        self.traceback_captured.emit(f"Layer {layer_idx}", failure_trace)
                         for task in layer:
                             layer_failure_traces[task["filepath"]] = failure_trace
+                            self.task_status_changed.emit(task["filepath"], "verification_failed", failure_trace)
                         layer_retries += 1
 
                 if not layer_success:
@@ -393,6 +414,8 @@ class SwarmOrchestratorThread(QThread):
                     for task in layer:
                         if self.state.tasks_status[task["filepath"]] != "completed":
                             self.state.tasks_status[task["filepath"]] = "failed"
+                            self.task_status_changed.emit(task["filepath"], "failed", f"Layer {layer_idx} exhausted retries")
+                    self.layer_finished.emit(layer_idx, False, f"Layer {layer_idx} exhausted retries")
 
             summary = f"Modified files: {', '.join(changed_files)}" if changed_files else "No files modified successfully."
             self.finished_swarm.emit(all_successful, summary)
