@@ -32,6 +32,23 @@ window.addEventListener('unload', () => {
 window.addEventListener('message', event => {
     const message = event.data || {};
 
+    if (message.command === 'inject_chat') {
+        const text = message.text || '';
+        $('chatInput').value = text;
+        switchWorkspace('chat');
+        if (message.autoSend && text.trim()) {
+            sendChatMessage();
+        }
+        return;
+    }
+
+    if (message.command === 'inject_swarm') {
+        const objective = message.objective || '';
+        if ($('objective')) $('objective').value = objective;
+        switchWorkspace('swarm');
+        return;
+    }
+
     // ── Host-relay bridge events ──────────────────────────────────────────────
     // When KARL_USE_HOST_RELAY is active the extension host owns the WebSocket
     // and forwards frames/lifecycle events here via postMessage.
@@ -519,6 +536,8 @@ function _initThoughtsPanel() {
     });
 }
 
+let _lastAssistantContent = '';
+
 function sendChatMessage() {
     const input = $('chatInput');
     const text = input.value.trim();
@@ -530,6 +549,8 @@ function sendChatMessage() {
     appendMessageBubble('user', text);
     appendMessageBubble('assistant', '');
     currentConversationInput = text;
+    _lastAssistantContent = '';
+    $('chatInput').dataset.lastSent = $('chatInput').value;
     input.value = '';
     chatFinished = false;
     $('chatSendBtn').disabled = true;
@@ -544,6 +565,7 @@ function sendChatMessage() {
 }
 
 function handleResponseToken(token) {
+    _lastAssistantContent += token;
     currentResponseText += token;
     
     if (labRunning) {
@@ -588,6 +610,16 @@ function handleChatFinished() {
     recordConversationTurn(currentConversationInput, lastAssistant ? lastAssistant.innerText : '');
     currentConversationInput = '';
     activeWorkflowId = '';
+
+    // Check if this was a refactor request — extract code block and notify host
+    const lastInput = $('chatInput').dataset.lastSent || '';
+    if (lastInput.startsWith('Refactor the following')) {
+        const fullResponse = _lastAssistantContent || '';
+        const codeMatch = fullResponse.match(/```[\w]*\n([\s\S]*?)```/);
+        if (codeMatch) {
+            vscode.postMessage({ command: 'refactor_result', code: codeMatch[1] });
+        }
+    }
 }
 
 function activeBranch() {

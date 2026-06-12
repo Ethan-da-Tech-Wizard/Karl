@@ -239,3 +239,34 @@ def save_ui_config(config: dict) -> bool:
     """Persist appearance settings (only known keys). Returns True on success."""
     payload = {key: config.get(key, default) for key, default in UI_CONFIG_DEFAULTS.items()}
     return write_json_atomic(UI_CONFIG_PATH, payload, indent=2)
+
+
+MCP_CONFIG_PATH = os.path.join("data", "mcp_config.json")
+MCP_CONFIG_DEFAULT: dict = {"mcpServers": {}}
+
+
+def get_mcp_config() -> dict:
+    data = read_json(MCP_CONFIG_PATH, default=MCP_CONFIG_DEFAULT)
+    if not isinstance(data, dict) or "mcpServers" not in data:
+        return dict(MCP_CONFIG_DEFAULT)
+    return data
+
+
+def add_mcp_server(name: str, command: str, args: list[str], env: dict | None = None) -> bool:
+    cfg = get_mcp_config()
+    cfg["mcpServers"][name] = {"command": command, "args": args or []}
+    if env:
+        cfg["mcpServers"][name]["env"] = env
+    return write_json_atomic(MCP_CONFIG_PATH, cfg, indent=2)
+
+
+def remove_mcp_server(name: str) -> bool:
+    cfg = get_mcp_config()
+    cfg["mcpServers"].pop(name, None)
+    return write_json_atomic(MCP_CONFIG_PATH, cfg, indent=2)
+
+
+def get_model_variants(base_model: str) -> list[dict]:
+    """Return all registry variants for a given base_model name."""
+    return [e for e in get_model_registry()
+            if isinstance(e, dict) and e.get("base_model") == base_model]

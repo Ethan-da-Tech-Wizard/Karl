@@ -25,7 +25,22 @@
       },
       {
         "command": "karl.explainSelection",
-        "title": "Explain Selection",
+        "title": "Karl: Explain Selection",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.refactorSelection",
+        "title": "Karl: Refactor Selection",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.askKarl",
+        "title": "Karl: Ask Karl...",
+        "category": "Karl"
+      },
+      {
+        "command": "karl.sendToSwarm",
+        "title": "Karl: Send to Swarm",
         "category": "Karl"
       },
       {
@@ -124,6 +139,25 @@
         "category": "Karl"
       }
     ],
+    "keybindings": [
+      {
+        "command": "karl.explainSelection",
+        "key": "ctrl+shift+k e",
+        "mac": "cmd+shift+k e",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "karl.refactorSelection",
+        "key": "ctrl+shift+k r",
+        "mac": "cmd+shift+k r",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "karl.askKarl",
+        "key": "ctrl+shift+k a",
+        "mac": "cmd+shift+k a"
+      }
+    ],
     "menus": {
       "editor/context": [
         {
@@ -133,8 +167,18 @@
         },
         {
           "command": "karl.explainSelection",
-          "when": "editorHasSelection",
-          "group": "karl@2"
+          "group": "karl@1",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "karl.refactorSelection",
+          "group": "karl@2",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "karl.sendToSwarm",
+          "group": "karl@3",
+          "when": "editorHasSelection"
         },
         {
           "command": "karl.generateTests",

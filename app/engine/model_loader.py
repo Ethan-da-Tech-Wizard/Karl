@@ -344,3 +344,23 @@ class ModelLoader:
         """True when a draft model is attached and speculative decoding is active."""
         with cls._lock:
             return cls._draft_instance is not None
+
+    @classmethod
+    def get_quantization(cls) -> str | None:
+        """Return quantization level from the registry entry for the loaded model."""
+        from app.engine import config_store
+        name = getattr(cls, "_model_name", None)
+        if not name:
+            return None
+        entry = config_store.registry_entry(name)
+        return entry.get("quant") if entry else None
+
+    @classmethod
+    def vram_estimate_gb(cls) -> float | None:
+        """Return estimated VRAM requirement from registry for the loaded model."""
+        from app.engine import config_store
+        name = getattr(cls, "_model_name", None)
+        if not name:
+            return None
+        entry = config_store.registry_entry(name)
+        return entry.get("min_vram_gb") if entry else None
