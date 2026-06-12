@@ -23,6 +23,9 @@ _SYNC_TIMEOUT_SECONDS = 8.0
 _CONNECT_TIMEOUT_SECONDS = 5.0
 _INITIALIZE_TIMEOUT_SECONDS = 5.0
 
+_cached_tools: list[dict] | None = None
+_tools_cache_dirty: bool = True
+
 
 class MCPClientManager:
     _instance = None
@@ -33,6 +36,10 @@ class MCPClientManager:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls(config_path)
+                try:
+                    cls._instance.start()
+                except Exception as e:
+                    logger.warning(f"Failed to auto-start MCP Client Manager: {e}")
             return cls._instance
 
     @classmethod
@@ -42,6 +49,25 @@ class MCPClientManager:
             if cls._instance is not None:
                 cls._instance.stop()
                 cls._instance = None
+
+    @classmethod
+    def get_tool_schemas(cls) -> list[dict]:
+        """Return cached tool list; refresh if dirty. Safe to call from any thread."""
+        global _cached_tools, _tools_cache_dirty
+        inst = cls.get_instance()
+        if _cached_tools is None or _tools_cache_dirty:
+            try:
+                _cached_tools = inst.list_tools()
+                _tools_cache_dirty = False
+            except Exception as e:
+                logger.warning(f"Failed to refresh tool cache: {e}")
+                _cached_tools = _cached_tools or []
+        return _cached_tools or []
+
+    @classmethod
+    def invalidate_cache(cls):
+        global _tools_cache_dirty
+        _tools_cache_dirty = True
 
     def __init__(self, config_path: str = "data/mcp_config.json"):
         self.config_path = config_path

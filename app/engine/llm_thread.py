@@ -28,6 +28,9 @@ class LLMThread(QThread):
     live_stats = pyqtSignal(int, float)
     reload_notice = pyqtSignal(str)   # module name that was hot-reloaded
     error_occurred = pyqtSignal(str)
+    context_stats = pyqtSignal(int, int, int, int)  # prompt_tokens, history_tokens, rag_tokens, budget
+    rag_context_used = pyqtSignal(list)             # List[dict] attribution records
+    tool_call_started = pyqtSignal(str, str)        # server_name, tool_name
 
     def __init__(self, system_prompt, chat_history, hyperparams,
                  retrieved_chunks=None, start_in_thought=False,
@@ -43,6 +46,7 @@ class LLMThread(QThread):
         self.template = template
         self.adapter_name = adapter_name
         self.logger = TraceLogger()
+        self.enable_tools = False
 
     def _token_count(self, llm, text: str) -> int:
         if not text:
@@ -102,6 +106,13 @@ class LLMThread(QThread):
             )
 
             llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
+
+            # If retrieved_chunks is list of dicts, format it to list of strings early to prevent TypeError in context_str join
+            rag_attribution_chunks = None
+            if self.retrieved_chunks and isinstance(self.retrieved_chunks[0], dict):
+                rag_attribution_chunks = list(self.retrieved_chunks)
+                self.retrieved_chunks = [c["text"] for c in self.retrieved_chunks]
+
             system_prompt = self.system_prompt
             context_str = "(No context retrieved.)"
             if self.retrieved_chunks:
@@ -113,6 +124,20 @@ class LLMThread(QThread):
                 system_prompt += "\n\nRetrieved Context:\n" + context_str
             trimmed_history = self._trim_history(self.chat_history, llm, system_prompt)
             prompt = core.interaction_loop.build_prompt(system_prompt, trimmed_history)
+
+            # Emit context budget stats for the HUD
+            try:
+                budget = ModelLoader.n_ctx()
+                hist_tokens = sum(self._message_token_count(llm, m) for m in trimmed_history)
+                rag_tokens  = self._token_count(llm, context_str) if self.retrieved_chunks else 0
+                sys_tokens  = self._token_count(llm, system_prompt)
+                self.context_stats.emit(sys_tokens + hist_tokens + rag_tokens, hist_tokens, rag_tokens, budget)
+            except Exception:
+                pass
+
+            # Emit RAG attribution if chunks are dicts (post-Prompt-14 format)
+            if rag_attribution_chunks is not None:
+                self.rag_context_used.emit(rag_attribution_chunks)
 
             # Tokenize prompt to get accurate prompt token count
             prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
@@ -281,6 +306,43 @@ class LLMThread(QThread):
                 else:
                     self.new_chat_token.emit(buffer)
                     parsed_response += buffer
+
+            # MCP Tool loop — if enabled and model emitted tool calls, execute and continue
+            if self.enable_tools:
+                from app.engine.tool_executor import parse_tool_calls, execute_tool_calls
+                MAX_TOOL_TURNS = 5
+                tool_turn = 0
+                executed_calls = set()
+                while tool_turn < MAX_TOOL_TURNS:
+                    all_calls = parse_tool_calls(parsed_response + parsed_thought)
+                    # Filter to only calls we haven't executed yet
+                    calls = []
+                    for c in all_calls:
+                        call_key = (c["server"], c["name"], frozenset(c["args"].items()))
+                        if call_key not in executed_calls:
+                            calls.append(c)
+                            executed_calls.add(call_key)
+                    
+                    if not calls or all(c["name"] == "done" for c in calls):
+                        break
+                    for c in calls:
+                        if c["name"] != "done":
+                            self.tool_call_started.emit(c.get("server", ""), c["name"])
+                    results = execute_tool_calls(calls)
+                    tool_result_text = "\n".join(results)
+                    self.new_chat_token.emit(f"\n[Tool Results]\n{tool_result_text}\n")
+                    parsed_response += f"\n[Tool Results]\n{tool_result_text}\n"
+                    # Continue generation with tool results as context
+                    prompt = prompt + raw_output + tool_result_text
+                    raw_output = ""
+                    tool_gen = llm(prompt, max_tokens=self.hyperparams.get("max_tokens", 2048),
+                                   temperature=self.hyperparams.get("temperature", 0.7),
+                                   stream=False, stop=["<|im_end|>"], echo=False)
+                    continuation = tool_gen["choices"][0]["text"]
+                    parsed_response += continuation
+                    self.new_chat_token.emit(continuation)
+                    raw_output = continuation
+                    tool_turn += 1
 
             end_time = time.time()
             prefill_time = (first_token_time - start_time) if first_token_time is not None else (end_time - start_time)
