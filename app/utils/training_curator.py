@@ -71,15 +71,50 @@ def get_stats() -> dict:
     }
 
 
+def _classify_example(prompt: str) -> str:
+    prompt_lower = prompt.lower()
+    if "python" in prompt_lower or "code block" in prompt_lower or "def solve" in prompt_lower:
+        return "coding"
+    elif "matrix" in prompt_lower or "determinant" in prompt_lower or "graph" in prompt_lower or "vertices" in prompt_lower or "committee" in prompt_lower:
+        return "symbolic"
+    else:
+        return "arithmetic"
+
+
 def export_unsloth(output_path: str = "data/training/export_unsloth.jsonl"):
     """
     Export the curated dataset in pure Unsloth/HuggingFace format —
     only the 'messages' field, no metadata.
+    Maintains balanced classes by down-sampling over-represented categories.
     """
     _ensure_dir()
     examples = get_all_examples()
+    
+    # Classify all examples
+    categorized = {}
+    for ex in examples:
+        messages = ex.get("messages", [])
+        if len(messages) < 2:
+            continue
+        user_msg = messages[1].get("content", "")
+        cat = _classify_example(user_msg)
+        categorized.setdefault(cat, []).append(ex)
+        
+    if not categorized:
+        return output_path
+        
+    # Find the minimum non-zero count of examples in any category to establish the balancing cap
+    counts = [len(lst) for lst in categorized.values()]
+    min_count = min(counts) if counts else 0
+    
+    # Balance the dataset by slicing up to min_count for each category
+    balanced_examples = []
+    for cat, lst in categorized.items():
+        balanced_examples.extend(lst[:min_count])
+        
+    # Write to file
     with open(output_path, "w", encoding="utf-8") as f:
-        for ex in examples:
+        for ex in balanced_examples:
             out = {"messages": ex["messages"]}
             f.write(json.dumps(out, ensure_ascii=False) + "\n")
     return output_path
@@ -88,12 +123,8 @@ def export_unsloth(output_path: str = "data/training/export_unsloth.jsonl"):
 def export_dpo(output_path: str = "data/training/export_unsloth_dpo.jsonl") -> str:
     """
     Pairs thumbs_up/corrected (chosen) with thumbs_down (rejected) on the same prompt.
-    Writes to JSONL in standard HuggingFace/Unsloth DPO format:
-    {
-      "prompt": [{"role": "system", "content": ...}, {"role": "user", "content": ...}],
-      "chosen": [{"role": "assistant", "content": chosen_content}],
-      "rejected": [{"role": "assistant", "content": rejected_content}]
-    }
+    Writes to JSONL in standard HuggingFace/Unsloth DPO format.
+    Maintains balanced classes by down-sampling over-represented categories.
     """
     _ensure_dir()
     examples = get_all_examples()
@@ -120,30 +151,49 @@ def export_dpo(output_path: str = "data/training/export_unsloth_dpo.jsonl") -> s
             groups[key]["rejected"].append(response)
             
     # Generate DPO pairs
-    pairs = []
+    pairs_by_category = {}
     for (system_prompt, user_msg), group in groups.items():
         chosen_list = group["chosen"]
         rejected_list = group["rejected"]
         
-        # If we have at least one chosen and one rejected response for this prompt, pair them
-        for c_resp in chosen_list:
-            for r_resp in rejected_list:
-                pairs.append({
-                    "prompt": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_msg}
-                    ],
-                    "chosen": [
-                        {"role": "assistant", "content": c_resp}
-                    ],
-                    "rejected": [
-                        {"role": "assistant", "content": r_resp}
-                    ]
-                })
-                
+        if not chosen_list or not rejected_list:
+            continue
+            
+        cat = _classify_example(user_msg)
+        
+        # Balance locally: match 1-to-1 chosen-rejected to prevent combinatorial explosion
+        matched_count = min(len(chosen_list), len(rejected_list))
+        for i in range(matched_count):
+            c_resp = chosen_list[i]
+            r_resp = rejected_list[i]
+            pair = {
+                "prompt": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_msg}
+                ],
+                "chosen": [
+                    {"role": "assistant", "content": c_resp}
+                ],
+                "rejected": [
+                    {"role": "assistant", "content": r_resp}
+                ]
+            }
+            pairs_by_category.setdefault(cat, []).append(pair)
+            
+    # Down-sample over-represented classes
+    if pairs_by_category:
+        counts = [len(lst) for lst in pairs_by_category.values()]
+        min_count = min(counts) if counts else 0
+        
+        balanced_pairs = []
+        for cat, lst in pairs_by_category.items():
+            balanced_pairs.extend(lst[:min_count])
+    else:
+        balanced_pairs = []
+        
     # Write to file
     with open(output_path, "w", encoding="utf-8") as f:
-        for pair in pairs:
+        for pair in balanced_pairs:
             f.write(json.dumps(pair, ensure_ascii=False) + "\n")
             
     return output_path

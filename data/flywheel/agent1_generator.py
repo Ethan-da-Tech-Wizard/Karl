@@ -5,10 +5,61 @@ import uuid
 import time
 import random
 import argparse
+from collections import deque
+from math import sqrt
+
+# Project root on sys.path so we can import app.utils.topic_graph
+import pathlib as _pathlib
+_PROJECT_ROOT = str(_pathlib.Path(__file__).resolve().parent.parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 # Ensure output directories exist
 QUEUE_DIR = "/home/ethan/karl/data/flywheel/queue"
 os.makedirs(QUEUE_DIR, exist_ok=True)
+
+# ── Semantic deduplication ────────────────────────────────────────────────────
+
+_recent_statements: deque = deque(maxlen=50)   # rolling in-session cache
+_SIMILARITY_THRESHOLD = 0.70
+_NGRAM_SIZE = 3
+
+
+def _ngrams(text: str, n: int = _NGRAM_SIZE) -> set:
+    t = text.lower()
+    return {t[i:i+n] for i in range(len(t) - n + 1)} if len(t) >= n else set()
+
+
+def _jaccard_ngram(a: str, b: str) -> float:
+    sa, sb = _ngrams(a), _ngrams(b)
+    if not sa and not sb:
+        return 1.0
+    union = len(sa | sb)
+    return len(sa & sb) / union if union else 0.0
+
+
+def _is_duplicate(candidate: str) -> bool:
+    """Return True if candidate is too similar to any recent or queued problem."""
+    # In-session cache
+    for stmt in _recent_statements:
+        if _jaccard_ngram(candidate, stmt) > _SIMILARITY_THRESHOLD:
+            return True
+    # Existing queue files
+    try:
+        for fname in os.listdir(QUEUE_DIR):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(QUEUE_DIR, fname), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                stmt = data.get("problem_statement", "")
+                if stmt and _jaccard_ngram(candidate, stmt) > _SIMILARITY_THRESHOLD:
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
 
 def generate_math_problem_3var():
     # Category: Math/Algebra Systems (3 Variables)
@@ -67,7 +118,7 @@ def verify(response):
         "verification_script": verification_script
     }
 
-def generate_coding_problem_extended():
+def generate_coding_problem_extended(challenge_name: str | None = None):
     challenges = [
         {
             "name": "is_balanced_parentheses",
@@ -114,7 +165,12 @@ def generate_coding_problem_extended():
         }
     ]
     
-    challenge = random.choice(challenges)
+    if challenge_name:
+        challenge = next((c for c in challenges if c["name"] == challenge_name), None)
+        if challenge is None:
+            challenge = random.choice(challenges)
+    else:
+        challenge = random.choice(challenges)
     statement = f"{challenge['desc']}\nReturn ONLY the python code for the function, enclosed in a python code block."
     
     # Custom test checking
@@ -235,6 +291,76 @@ def verify(response):
         "verification_script": verification_script
     }
 
+def generate_quadratic_problem():
+    # Build from integer roots so verification is exact
+    r1 = random.randint(-8, 8)
+    r2 = random.randint(-8, 8)
+    while r1 == r2:
+        r2 = random.randint(-8, 8)
+    a = random.randint(1, 3)
+
+    # a(x - r1)(x - r2) = ax² - a(r1+r2)x + a*r1*r2
+    b = -a * (r1 + r2)
+    c =  a *  r1 * r2
+
+    def _fmt_term(coeff, var=""):
+        if coeff == 0:
+            return ""
+        sign = "+" if coeff > 0 else "-"
+        mag  = abs(coeff)
+        if var == "x²":
+            body = ("" if mag == 1 else str(mag)) + "x²"
+        elif var == "x":
+            body = ("" if mag == 1 else str(mag)) + "x"
+        else:
+            body = str(mag)
+        return f"{sign} {body}"
+
+    # Build equation string (leading term never has a + sign)
+    a_str = ("" if a == 1 else str(a)) + "x²"
+    parts = [a_str]
+    if b != 0:
+        parts.append(_fmt_term(b, "x"))
+    if c != 0:
+        parts.append(_fmt_term(c))
+    equation = " ".join(parts).lstrip("+ ") + " = 0"
+
+    ground_truth = f"x = {r1} or x = {r2}"
+
+    verification_script = f"""
+def verify(response):
+    import re
+    numbers = re.findall(r"-?\\b\\d+\\b", response)
+    return str({r1}) in numbers and str({r2}) in numbers
+"""
+
+    statement = (
+        f"Solve the following quadratic equation for x. Show your work step-by-step.\n"
+        f"{equation}\n"
+        f"State the final answer clearly."
+    )
+
+    return {
+        "id": str(uuid.uuid4()),
+        "category": "quadratics",
+        "problem_statement": statement,
+        "ground_truth_answer": ground_truth,
+        "verification_type": "exact_match",
+        "verification_script": verification_script,
+    }
+
+
+# ── Topic dispatch table ──────────────────────────────────────────────────────
+
+_TOPIC_DISPATCH = {
+    "algebra_3var":         generate_math_problem_3var,
+    "quadratics":           generate_quadratic_problem,
+    "parentheses_matching": lambda: generate_coding_problem_extended("is_balanced_parentheses"),
+    "matrix_transposition": lambda: generate_coding_problem_extended("matrix_transpose"),
+    "anagrams":             lambda: generate_coding_problem_extended("group_anagrams"),
+}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Agent 1 (Problem Generator) for Karl Self-Improvement Flywheel")
     parser.add_argument("--limit", type=int, default=100, help="Max number of tasks to generate (when infinite mode is off)")
@@ -243,52 +369,90 @@ def main():
     parser.add_argument("--buffer", type=int, default=15, help="Maximum number of pending tasks in the queue before throttling")
     args = parser.parse_args()
     
+    from app.utils.topic_graph import DynamicTopicGraph
+
     print(f"Starting Agent 1 (Problem Generator)...")
     print(f"Settings: infinite={args.infinite}, limit={args.limit}, interval={args.interval}s, buffer={args.buffer}")
-    
+
+    topic_graph = DynamicTopicGraph()
     count = 0
+    duplicate_attempts = {}
+
     while True:
         # Check termination condition if infinite mode is off
         if not args.infinite and count >= args.limit:
             print(f"Reached generation limit ({args.limit}). Exiting.")
             break
-            
+
         # Check queue size to prevent flooding
         try:
             queue_files = [f for f in os.listdir(QUEUE_DIR) if f.startswith("task_") and f.endswith(".json")]
         except Exception:
             queue_files = []
-            
+
         if len(queue_files) >= args.buffer:
-            # Queue is full, throttle generation and sleep
             time.sleep(2.0)
             continue
-            
-        # Pick category randomly
-        category_choice = random.choice(["math", "coding", "symbolic"])
-        if category_choice == "math":
-            task = generate_math_problem_3var()
-        elif category_choice == "coding":
-            task = generate_coding_problem_extended()
-        else:
-            task = generate_symbolic_problem_extended()
-            
-        task_id = task["id"]
-        temp_path = os.path.join(QUEUE_DIR, f"task_{task_id}.tmp")
-        final_path = os.path.join(QUEUE_DIR, f"task_{task_id}.json")
+
+        # Topic-aware category selection
+        topic = topic_graph.get_underrepresented_topic()
         
-        # Write file atomically
+        # Check active learner's recommendation for ZPD throttling
+        try:
+            from data.flywheel.active_learner import ActiveLearner
+            active_learner = ActiveLearner()
+            if not active_learner.should_generate(topic):
+                node = next((n for n in topic_graph.leaves if n.name == topic), None)
+                if node:
+                    node.frequency = max(0, node.frequency - 1)
+                time.sleep(0.1)
+                continue
+        except Exception:
+            pass
+
+        generator = _TOPIC_DISPATCH.get(topic)
+        if generator is None:
+            print(f"Unknown topic '{topic}', skipping.")
+            continue
+
+        task = generator()
+        task["topic"] = topic
+
+        # Semantic deduplication — discard and regenerate if too similar
+        stmt = task.get("problem_statement", "")
+        if _is_duplicate(stmt):
+            attempts = duplicate_attempts.get(topic, 0) + 1
+            if attempts < 5:
+                duplicate_attempts[topic] = attempts
+                print(f"Duplicate detected for topic '{topic}' (attempt {attempts}/5), discarding and regenerating.")
+                # Decrement the frequency we just incremented so the slot stays fair
+                node = next((n for n in topic_graph.leaves if n.name == topic), None)
+                if node:
+                    node.frequency = max(0, node.frequency - 1)
+                continue
+            else:
+                print(f"Duplicate detected for topic '{topic}' but exceeded retry limit. Accepting task anyway.")
+                duplicate_attempts[topic] = 0
+        else:
+            duplicate_attempts[topic] = 0
+
+        _recent_statements.append(stmt)
+
+        task_id = task["id"]
+        temp_path  = os.path.join(QUEUE_DIR, f"task_{task_id}.tmp")
+        final_path = os.path.join(QUEUE_DIR, f"task_{task_id}.json")
+
         try:
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(task, f, indent=2)
             os.rename(temp_path, final_path)
-            print(f"Generated task: {task_id} (Category: {task['category']})")
+            print(f"Generated task: {task_id} (topic={topic}, category={task['category']})")
             count += 1
         except Exception as e:
             print(f"Error writing task {task_id}: {e}")
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-                
+
         time.sleep(args.interval)
 
 if __name__ == "__main__":

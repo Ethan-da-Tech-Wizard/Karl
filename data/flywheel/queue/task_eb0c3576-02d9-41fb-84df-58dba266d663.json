@@ -1,0 +1,9 @@
+{
+  "id": "eb0c3576-02d9-41fb-84df-58dba266d663",
+  "category": "quadratics",
+  "problem_statement": "Solve the following quadratic equation for x. Show your work step-by-step.\nx\u00b2 - 5x = 0\nState the final answer clearly.",
+  "ground_truth_answer": "x = 5 or x = 0",
+  "verification_type": "exact_match",
+  "verification_script": "\ndef verify(response):\n    import re\n    numbers = re.findall(r\"-?\\b\\d+\\b\", response)\n    return str(5) in numbers and str(0) in numbers\n",
+  "topic": "quadratics"
+}

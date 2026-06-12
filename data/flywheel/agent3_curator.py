@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
 """
-Agent 3: Automated Grader & Training Curator
+Agent 3: Automated Curator & Training Grader
 Part of the Karl self-improvement flywheel.
 
 Reads execution JSONs from data/flywheel/execution/ produced by Agent 2,
 verifies each model response, and curates SFT/DPO training data into
 data/training/curated.jsonl.
-
-Verification types:
-  unit_test      — run verification_script via subprocess; exit 0 = pass
-  exact_match    — run verification_script via subprocess
-  symbolic_match — subprocess + optional sympy numeric fallback
-
-Run:
-  python data/flywheel/agent3_grader.py [--interval N] [--once]
 """
 
 import os
@@ -27,17 +19,17 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Project root resolution — file lives at data/flywheel/agent3_grader.py
-# ---------------------------------------------------------------------------
+# Project root resolution
 _ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_ROOT))
+
+from data.flywheel.executor_sandbox import SafePythonSandbox
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("karl.agent3_grader")
+logger = logging.getLogger("karl.agent3_curator")
 
 EXECUTION_DIR = str(_ROOT / "data" / "flywheel" / "execution")
 CURATED_PATH  = str(_ROOT / "data" / "training" / "curated.jsonl")
@@ -111,11 +103,12 @@ def run_verification(exec_record: dict) -> tuple[bool, str]:
 
 def _verify_subprocess(verification_script: str, model_response: str) -> tuple[bool, str]:
     """
-    Write verification_script + a call to verify(response) into a temp file
-    and run it via subprocess.  Exit code 0 = pass.
+    Executes verification_script + a call to verify(response) in the SafePythonSandbox.
     """
-    runner = (
-        f"{verification_script}\n\n"
+    sandbox = SafePythonSandbox(cpu_timeout_sec=5.0, memory_limit_mb=256)
+    
+    # Construct the runner script as the test code
+    test_code = (
         "import sys as _sys, json as _json\n"
         f"_resp = _json.loads({json.dumps(json.dumps(model_response))})\n"
         "try:\n"
@@ -125,33 +118,9 @@ def _verify_subprocess(verification_script: str, model_response: str) -> tuple[b
         "    print('verify() raised:', _e, file=_sys.stderr)\n"
         "    _sys.exit(2)\n"
     )
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, encoding="utf-8"
-        ) as tmp:
-            tmp.write(runner)
-            tmp_path = tmp.name
-
-        result = subprocess.run(
-            [sys.executable, tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        passed = result.returncode == 0
-        detail = (result.stdout + result.stderr).strip()[:400]
-        return passed, detail or ("pass" if passed else "fail")
-    except subprocess.TimeoutExpired:
-        return False, "verification timed out (10s)"
-    except Exception as e:
-        return False, f"verification error: {e}"
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+    
+    passed, trace = sandbox.run_code(verification_script, test_code)
+    return passed, trace.strip()[:400]
 
 
 def _verify_sympy(ground_truth: str, model_response: str) -> tuple[bool, str]:
