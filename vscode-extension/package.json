@@ -137,6 +137,11 @@
         "command": "karl.reviewScreenshotError",
         "title": "Review Screenshot Error with Karl",
         "category": "Karl"
+      },
+      {
+        "command": "karl.autoTrain",
+        "title": "Karl: Auto-Train Adapter...",
+        "category": "Karl"
       }
     ],
     "keybindings": [

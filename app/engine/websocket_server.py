@@ -879,6 +879,71 @@ class WebSocketServerManager:
                             "result": {"diff_html": diff_html}
                         }))
 
+                    elif method == "start_auto_train":
+                        topic = params.get("topic")
+                        adapter_name = params.get("adapter_name")
+                        count = params.get("count", 15)
+                        epochs = params.get("epochs", 3)
+                        lr = params.get("lr", 2e-4)
+
+                        if not topic or not adapter_name:
+                            await websocket.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": "Invalid params: topic and adapter_name are required."
+                                }
+                            }))
+                            continue
+
+                        import subprocess
+                        import sys
+                        
+                        def run_auto_train():
+                            cmd = [
+                                sys.executable,
+                                "auto_train.py",
+                                "--topic", topic,
+                                "--adapter_name", adapter_name,
+                                "--count", str(count),
+                                "--epochs", str(epochs),
+                                "--lr", str(lr)
+                            ]
+                            try:
+                                proc = subprocess.Popen(
+                                    cmd,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    text=True,
+                                    bufsize=1,
+                                    universal_newlines=True
+                                )
+                                for line in proc.stdout:
+                                    self._send_notification("auto_train_log", {
+                                        "adapter_name": adapter_name,
+                                        "message": line.strip()
+                                    })
+                                rc = proc.wait()
+                                self._send_notification("auto_train_finished", {
+                                    "adapter_name": adapter_name,
+                                    "success": rc == 0,
+                                    "message": f"Process exited with code {rc}"
+                                })
+                            except Exception as e:
+                                self._send_notification("auto_train_finished", {
+                                    "adapter_name": adapter_name,
+                                    "success": False,
+                                    "message": str(e)
+                                })
+                        
+                        threading.Thread(target=run_auto_train, daemon=True).start()
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {"status": "started"}
+                        }))
+
                     elif method == "stop_task":
                         with self._threads_lock:
                             status = "idle"

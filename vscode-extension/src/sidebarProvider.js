@@ -108,6 +108,8 @@ class KarlSidebarProvider {
         this.isReady = false;
         /** @type {any[]} */
         this.messageQueue = [];
+        /** @type {vscode.OutputChannel | null} */
+        this.autoTrainChannel = null;
 
         // WebSocket properties
         /** @type {WebSocket | null} */
@@ -139,6 +141,26 @@ class KarlSidebarProvider {
             this._initGitWatcher();
             sendActiveStateToWebview(this);
         });
+    }
+
+    /**
+     * Sends an RPC command directly over the active bridge socket.
+     * @param {string} method
+     * @param {Object} params
+     * @returns {boolean}
+     */
+    sendRpc(method, params) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            const reqId = Math.floor(Math.random() * 10000);
+            this.socket.send(JSON.stringify({
+                jsonrpc: "2.0",
+                id: reqId,
+                method,
+                params
+            }));
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -213,6 +235,26 @@ class KarlSidebarProvider {
                 // Intercept status update response (heartbeat result)
                 if (data && data.id === 30 && data.result) {
                     this.lastHeartbeatAt = new Date();
+                }
+
+                // Intercept auto-train log notifications
+                if (data && data.method === 'auto_train_log') {
+                    const msg = data.params.message;
+                    if (this.autoTrainChannel) {
+                        this.autoTrainChannel.appendLine(msg);
+                    }
+                }
+                if (data && data.method === 'auto_train_finished') {
+                    const success = data.params.success;
+                    const msg = data.params.message;
+                    if (this.autoTrainChannel) {
+                        this.autoTrainChannel.appendLine(`\n--- Auto-Training Finished. Success: ${success}. ${msg} ---`);
+                    }
+                    if (success) {
+                        vscode.window.showInformationMessage(`Karl: Auto-training finished successfully for adapter "${data.params.adapter_name}"!`);
+                    } else {
+                        vscode.window.showErrorMessage(`Karl: Auto-training failed: ${msg}`);
+                    }
                 }
 
                 // Forward message to webview

@@ -138,6 +138,45 @@ function activate(context) {
         })
     );
 
+    context.subscriptions.push(
+        vscode.commands.registerCommand('karl.autoTrain', async () => {
+            const topic = await vscode.window.showInputBox({
+                prompt: 'Enter the topic/behavior for Karl to learn (e.g., modular arithmetic):',
+                placeHolder: 'e.g., binary search'
+            });
+            if (!topic) return;
+
+            const adapterName = await vscode.window.showInputBox({
+                prompt: 'Enter the save adapter name (e.g., math_specialist):',
+                placeHolder: 'e.g., binary_search'
+            });
+            if (!adapterName) return;
+
+            // Trigger training channel setup
+            if (!sidebarProvider.autoTrainChannel) {
+                sidebarProvider.autoTrainChannel = vscode.window.createOutputChannel("Karl Auto-Train Logs");
+            }
+            sidebarProvider.autoTrainChannel.show(true);
+            sidebarProvider.autoTrainChannel.clear();
+            sidebarProvider.autoTrainChannel.appendLine(`[SYSTEM] Starting auto-training for topic: "${topic}"...`);
+
+            // Send RPC command
+            const ok = sidebarProvider.sendRpc('start_auto_train', {
+                topic,
+                adapter_name: adapterName,
+                count: 15,
+                epochs: 3,
+                lr: 2e-4
+            });
+
+            if (ok) {
+                vscode.window.showInformationMessage(`Karl: Auto-training flywheel started for topic: "${topic}"! Output will stream to the Karl Auto-Train Logs channel.`);
+            } else {
+                vscode.window.showErrorMessage('Failed to start training. Is the Karl PyQt6 app running and connected?');
+            }
+        })
+    );
+
     // Synchronize cockpit state on events
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor(() => {
