@@ -456,7 +456,9 @@ class TrainingStudioWorkspace(QWidget):
         ec_lay.addWidget(preview_title)
 
         self._sft_preview = QTextBrowser()
-        self._sft_preview.setFont(QFont("Monospace", 8.5))
+        preview_font = QFont("Monospace")
+        preview_font.setPointSizeF(8.5)
+        self._sft_preview.setFont(preview_font)
         self._sft_preview.setStyleSheet("background-color: #0E0F15; border: 1px solid #1A1A24;")
         self._sft_preview.setPlaceholderText("No recent SFT exports found.")
         ec_lay.addWidget(self._sft_preview, 1)
@@ -1367,4 +1369,3 @@ class TrainingStudioWorkspace(QWidget):
         else:
             safe_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', name)
             self._export_path_lbl.setText(f"Export Path: data/adapters/{safe_name}/")
-

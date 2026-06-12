@@ -1,9 +1,9 @@
 import logging
 import os
 import time
-import importlib
 from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
+from app.engine.hot_reload import compile_and_reload
 from app.engine.model_loader import ModelLoader
 from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
@@ -52,23 +52,37 @@ class AgenticThread(QThread):
     def request_stop(self):
         self._stop_requested = True
 
-    def _trim_history(self, history, system_prompt):
+    def _token_count(self, llm, text: str) -> int:
+        if not text:
+            return 0
+        try:
+            return len(llm.tokenize(text.encode("utf-8"), add_bos=False))
+        except TypeError:
+            return len(llm.tokenize(text.encode("utf-8")))
+        except Exception as exc:
+            logger.warning("Tokenizer count failed; falling back to character estimate: %s", exc)
+            return max(1, len(text) // 3)
+
+    def _message_token_count(self, llm, msg) -> int:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        return self._token_count(llm, f"<|im_start|>{role}\n{content}<|im_end|>\n")
+
+    def _trim_history(self, history, system_prompt, llm):
         """
         Trims the chat history so the compiled prompt stays inside the context budget.
         Always keeps the first user message (the seed) and the most recent turns.
         """
         context_budget = ModelLoader.n_ctx()
-        history_char_limit = (context_budget - _RESPONSE_RESERVE) * 3  # ~1 token ≈ 3 chars (conservative)
+        base_tokens = self._token_count(llm, system_prompt)
+        budget = max(256, context_budget - _RESPONSE_RESERVE - base_tokens)
 
-        base_len = len(system_prompt)
-        budget = history_char_limit - base_len
-
-        # Walk backwards through history accumulating character count.
+        # Walk backwards through history accumulating tokenizer-measured size.
         # Always keep at least the first message (index 0) as the seed.
         kept = []
         running = 0
         for msg in reversed(history):
-            entry_len = len(msg.get("content", ""))
+            entry_len = self._message_token_count(llm, msg)
             if running + entry_len > budget and kept:
                 break  # Stop adding older messages
             kept.insert(0, msg)
@@ -97,6 +111,8 @@ class AgenticThread(QThread):
 
         continuation_count = 0
         max_continuations = 5
+        compression_reset_count = 0
+        max_compression_resets = 2
 
         while continuation_count <= max_continuations:
             response_gen = llm(
@@ -187,6 +203,7 @@ class AgenticThread(QThread):
             current_tokens_count = len(llm.tokenize((prompt + raw_output).encode('utf-8')))
             context_budget = ModelLoader.n_ctx()
             
+            compressed = False
             if current_tokens_count > 0.8 * context_budget and parsed_thought:
                 self.new_thought_token.emit("\n[Context full — compressing cognitive state...]\n")
                 try:
@@ -213,14 +230,21 @@ class AgenticThread(QThread):
                     parsed_thought = f"[Summary of thoughts so far: {summary}]"
                     raw_output = f"<think>\n{parsed_thought}\n"
                     in_thought = True # Resume in thought mode
+                    compressed = True
                     self.new_thought_token.emit(f"\n[Compressed state: {parsed_thought}]\n")
                 except Exception as ce:
-                    logger.warning(f"Cognitive compression failed: {ce}")
+                    logger.warning("Cognitive compression failed: %s", ce)
                     self.new_thought_token.emit("\n[continuing...]\n")
             else:
                 self.new_thought_token.emit("\n[continuing...]\n")
             
-            continuation_count += 1
+            if compressed and compression_reset_count < max_compression_resets:
+                compression_reset_count += 1
+                continuation_count = 0
+            else:
+                if compressed:
+                    self.new_thought_token.emit("\n[Compression reset limit reached — continuing with normal continuation budget.]\n")
+                continuation_count += 1
 
         # flush remainder
         if buffer:
@@ -235,9 +259,18 @@ class AgenticThread(QThread):
 
     def run(self):
         try:
-            importlib.reload(core.interaction_loop)
-            importlib.reload(core.agentic_loop)
-            self.reload_notice.emit("core/interaction_loop.py + core/agentic_loop.py")
+            core.interaction_loop = compile_and_reload(
+                core.interaction_loop,
+                "core/interaction_loop.py",
+                self.reload_notice.emit,
+                logger,
+            )
+            core.agentic_loop = compile_and_reload(
+                core.agentic_loop,
+                "core/agentic_loop.py",
+                self.reload_notice.emit,
+                logger,
+            )
 
             model_path = None
             if self.model_name:
@@ -260,7 +293,7 @@ class AgenticThread(QThread):
                         system_prompt += "\n\nRetrieved Context:\n" + context_str
 
                 # Trim history to fit context before building prompt
-                trimmed_history = self._trim_history(self.chat_history, system_prompt)
+                trimmed_history = self._trim_history(self.chat_history, system_prompt, llm)
                 prompt = core.interaction_loop.build_prompt(system_prompt, trimmed_history)
 
                 # Tokenize prompt to get accurate prompt token count
@@ -329,7 +362,12 @@ class AgenticThread(QThread):
                 iteration += 1
 
                 # Hot-reload stop condition and check it
-                importlib.reload(core.agentic_loop)
+                core.agentic_loop = compile_and_reload(
+                    core.agentic_loop,
+                    "core/agentic_loop.py",
+                    self.reload_notice.emit,
+                    logger,
+                )
                 if not core.agentic_loop.should_continue(iteration, response):
                     break
 

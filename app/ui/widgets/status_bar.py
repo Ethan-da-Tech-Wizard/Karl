@@ -30,7 +30,10 @@ class StatusBar(QWidget):
         self._adapter_lbl = _lbl("", self)
         self._state_lbl   = _lbl("idle", self)
         self._ram_lbl     = _lbl("", self)
-        self._bridge_lbl  = _lbl("⇄ Bridge: offline", self)
+        self._bridge_lbl  = _lbl("⇄ VS Code: offline", self)
+        # Compatibility for bridge tests and older callers that still refer to
+        # this indicator as the VS Code label.
+        self._vscode_lbl = self._bridge_lbl
 
         for w in (
             self._model_lbl, _sep(self),
@@ -57,6 +60,18 @@ class StatusBar(QWidget):
             self._ram_lbl.setText(f"{mb:.0f} MB")
         except Exception:
             pass
+        try:
+            from app.engine.websocket_server import WebSocketServerManager
+
+            manager = WebSocketServerManager._instance
+            if manager is None or manager.server is None:
+                self.set_bridge_status("offline")
+            elif manager.clients:
+                self.set_bridge_status("connected", len(manager.clients))
+            else:
+                self.set_bridge_status("listening")
+        except Exception:
+            self.set_bridge_status("offline")
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -79,16 +94,16 @@ class StatusBar(QWidget):
     def set_bridge_status(self, state: str, clients: int = 0):
         """Update the bridge indicator. state: 'connected' | 'listening' | 'offline' | 'error'"""
         if state == "connected":
-            text = f"⇄ Bridge: {clients} client{'s' if clients != 1 else ''}"
+            text = f"⇄ VS Code: {clients} client{'s' if clients != 1 else ''}"
             obj = "lbl-accent"
         elif state == "listening":
-            text = "⇄ Bridge: listening"
+            text = "⇄ VS Code: listening"
             obj = "lbl-muted"
         elif state == "error":
-            text = "⇄ Bridge: error"
+            text = "⇄ VS Code: error"
             obj = "lbl-muted"
         else:
-            text = "⇄ Bridge: offline"
+            text = "⇄ VS Code: offline"
             obj = "lbl-muted"
         self._bridge_lbl.setText(text)
         self._bridge_lbl.setObjectName(obj)

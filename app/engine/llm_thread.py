@@ -1,9 +1,9 @@
 import logging
 import os
 import time
-import importlib
 from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
+from app.engine.hot_reload import compile_and_reload
 from app.engine.model_loader import ModelLoader
 from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
@@ -44,15 +44,34 @@ class LLMThread(QThread):
         self.adapter_name = adapter_name
         self.logger = TraceLogger()
 
-    def _trim_history(self, history):
+    def _token_count(self, llm, text: str) -> int:
+        if not text:
+            return 0
+        try:
+            return len(llm.tokenize(text.encode("utf-8"), add_bos=False))
+        except TypeError:
+            return len(llm.tokenize(text.encode("utf-8")))
+        except Exception as exc:
+            logger.warning("Tokenizer count failed; falling back to character estimate: %s", exc)
+            return max(1, len(text) // 3)
+
+    def _message_token_count(self, llm, msg) -> int:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        # Include light ChatML-style overhead so trimming tracks the built prompt
+        # more closely than raw content length.
+        return self._token_count(llm, f"<|im_start|>{role}\n{content}<|im_end|>\n")
+
+    def _trim_history(self, history, llm, system_prompt=""):
         """
         Prepares history for the prompt:
         1. Truncates any individual message > _MAX_MSG_CHARS (keeps the tail — most recent content)
-        2. Drops oldest messages until the total fits in the budget
+        2. Drops oldest messages until tokenizer-measured history fits in the budget
         3. Always keeps message[0] (the seed)
         """
         context_budget = ModelLoader.n_ctx()
-        history_char_limit = (context_budget - _RESPONSE_RESERVE) * 3
+        system_tokens = self._token_count(llm, system_prompt)
+        history_token_limit = max(256, context_budget - _RESPONSE_RESERVE - system_tokens)
 
         def _cap(msg):
             content = msg.get("content", "")
@@ -64,8 +83,8 @@ class LLMThread(QThread):
         kept = []
         running = 0
         for msg in reversed(capped):
-            entry_len = len(msg.get("content", ""))
-            if running + entry_len > history_char_limit and kept:
+            entry_len = self._message_token_count(llm, msg)
+            if running + entry_len > history_token_limit and kept:
                 break
             kept.insert(0, msg)
             running += entry_len
@@ -75,11 +94,14 @@ class LLMThread(QThread):
 
     def run(self):
         try:
-            importlib.reload(core.interaction_loop)
-            self.reload_notice.emit("core/interaction_loop.py")
+            core.interaction_loop = compile_and_reload(
+                core.interaction_loop,
+                "core/interaction_loop.py",
+                self.reload_notice.emit,
+                logger,
+            )
 
             llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
-            trimmed_history = self._trim_history(self.chat_history)
             system_prompt = self.system_prompt
             context_str = "(No context retrieved.)"
             if self.retrieved_chunks:
@@ -89,6 +111,7 @@ class LLMThread(QThread):
                 system_prompt = system_prompt.replace("{rag_context}", context_str)
             elif self.retrieved_chunks:
                 system_prompt += "\n\nRetrieved Context:\n" + context_str
+            trimmed_history = self._trim_history(self.chat_history, llm, system_prompt)
             prompt = core.interaction_loop.build_prompt(system_prompt, trimmed_history)
 
             # Tokenize prompt to get accurate prompt token count
@@ -120,6 +143,8 @@ class LLMThread(QThread):
 
             continuation_count = 0
             max_continuations = 5
+            compression_reset_count = 0
+            max_compression_resets = 2
 
             with open(raw_log_path, "w", encoding="utf-8") as raw_file:
                 while continuation_count <= max_continuations:
@@ -205,6 +230,7 @@ class LLMThread(QThread):
                     current_tokens_count = len(llm.tokenize((prompt + raw_output).encode('utf-8')))
                     context_budget = ModelLoader.n_ctx()
                     
+                    compressed = False
                     if current_tokens_count > 0.8 * context_budget and parsed_thought:
                         self.new_thought_token.emit("\n[Context full — compressing cognitive state...]\n")
                         try:
@@ -231,14 +257,21 @@ class LLMThread(QThread):
                             parsed_thought = f"[Summary of thoughts so far: {summary}]"
                             raw_output = f"<think>\n{parsed_thought}\n"
                             in_thought = True # Resume in thought mode
+                            compressed = True
                             self.new_thought_token.emit(f"\n[Compressed state: {parsed_thought}]\n")
                         except Exception as ce:
-                            logger.warning(f"Cognitive compression failed: {ce}")
+                            logger.warning("Cognitive compression failed: %s", ce)
                             self.new_thought_token.emit("\n[continuing...]\n")
                     else:
                         self.new_thought_token.emit("\n[continuing...]\n")
                     
-                    continuation_count += 1
+                    if compressed and compression_reset_count < max_compression_resets:
+                        compression_reset_count += 1
+                        continuation_count = 0
+                    else:
+                        if compressed:
+                            self.new_thought_token.emit("\n[Compression reset limit reached — continuing with normal continuation budget.]\n")
+                        continuation_count += 1
 
             # Flush remainder
             if buffer:

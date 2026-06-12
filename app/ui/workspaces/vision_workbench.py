@@ -33,6 +33,7 @@ class VisionWorkbench(QWidget):
         self._records = []
         self._selected_id = ""
         self._active_threads = set()
+        self._vision_analysis_blocked = False
         self._build_ui()
         self.refresh()
 
@@ -115,6 +116,21 @@ class VisionWorkbench(QWidget):
         apl = QVBoxLayout(analysis_panel)
         apl.setContentsMargins(10, 10, 10, 10)
         apl.setSpacing(8)
+
+        self._vision_warning = QLabel("")
+        self._vision_warning.setObjectName("lbl-danger")
+        self._vision_warning.setWordWrap(True)
+        self._vision_warning.setVisible(False)
+        self._vision_warning.setStyleSheet(
+            "QLabel#lbl-danger {"
+            "border: 1px solid rgba(255, 92, 122, 0.65);"
+            "background: rgba(120, 20, 40, 0.28);"
+            "color: #ff9aae;"
+            "padding: 8px;"
+            "border-radius: 6px;"
+            "}"
+        )
+        apl.addWidget(self._vision_warning)
 
         self._vision_status = QLabel("")
         self._vision_status.setObjectName("lbl-muted")
@@ -311,7 +327,15 @@ class VisionWorkbench(QWidget):
         record = self._selected_record()
         if not record:
             return
+        self._update_vision_status()
         mode = self._mode_combo.currentData() or "ocr_vision"
+        if mode != "ocr_only" and self._vision_analysis_blocked:
+            QMessageBox.warning(
+                self,
+                "Vision Model Required",
+                self._vision_warning.text(),
+            )
+            return
         prompt = self._analysis_prompt.toPlainText().strip() or None
         self._meta.setText(self._meta.text() + f"\nAnalysis: running ({mode})")
         thread = ImageAnalysisThread(self.state.image_store, record.id, mode=mode, prompt=prompt)
@@ -402,3 +426,28 @@ class VisionWorkbench(QWidget):
         if missing_count:
             registry += f"\nRegistry entries waiting for local files: {missing_count}"
         self._registry_label.setText(registry)
+
+        needs_warning = False
+        blocks_analysis = False
+        warning_lines = []
+        if not status["backend_available"]:
+            needs_warning = True
+            blocks_analysis = True
+            warning_lines.append("Vision pixel analysis is blocked because llama-cpp multimodal support is unavailable.")
+        if not installed:
+            needs_warning = True
+            blocks_analysis = True
+            warning_lines.append(
+                "Vision requires a local multimodal GGUF plus matching projector file. "
+                "The current text model can still chat, but it cannot see image pixels."
+            )
+        elif not status["loaded"]:
+            needs_warning = True
+            warning_lines.append(
+                "A vision model/projector pair is installed but not loaded yet. "
+                "Run analysis to load it, or use OCR Only for text extraction."
+            )
+
+        self._vision_warning.setText("\n".join(warning_lines))
+        self._vision_warning.setVisible(needs_warning)
+        self._vision_analysis_blocked = blocks_analysis

@@ -8,7 +8,6 @@ orchestrating local LLM calls and system prompts to perform codebase tasks.
 import os
 import re
 import json
-import ast
 import subprocess
 from typing import Dict, Any, List, Optional
 from app.engine.model_loader import ModelLoader
@@ -178,13 +177,6 @@ class CoderAgent(BaseSwarmAgent):
         except ValueError as e:
             # Report the enforcer error as syntax/compilation failure comment
             return f"# REASONING ERROR GENERATED: {str(e)}\n"
-
-        # AST validation for Python files
-        if filepath.endswith(".py") and cleaned.strip():
-            try:
-                ast.parse(cleaned)
-            except SyntaxError as e:
-                return f"# SYNTAX ERROR: Line {e.lineno}: {e.msg}\n"
 
         return cleaned
 

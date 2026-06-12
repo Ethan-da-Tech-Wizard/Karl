@@ -10,11 +10,15 @@ import tests.qt_test_helper  # noqa: F401
 import os
 import sys
 import json
+import importlib.util
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
 from PyQt6.QtCore import QCoreApplication
+from app.engine.hot_reload import compile_and_reload
+from app.engine.model_loader import ModelLoader
+from app.engine.llm_thread import LLMThread
 from app.utils.codebase_search import codebase_search
 from app.engine.swarm_agents import parse_reasoning_and_tool
 from app.engine.swarm_orchestrator import SwarmOrchestratorThread
@@ -74,6 +78,79 @@ class TestTechnicalGuards(unittest.TestCase):
         reasoning, content = parse_reasoning_and_tool(raw_text)
         self.assertIsNone(reasoning)
         self.assertIsNone(content)
+
+    def test_hot_reload_keeps_previous_module_on_compile_error(self):
+        module_path = os.path.join(self.workspace_path, "hackable_module.py")
+        with open(module_path, "w", encoding="utf-8") as f:
+            f.write("VALUE = 1\n")
+
+        spec = importlib.util.spec_from_file_location("hackable_module_test", module_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        notices = []
+        with open(module_path, "w", encoding="utf-8") as f:
+            f.write("VALUE = \n")
+
+        kept = compile_and_reload(module, "hackable_module.py", notices.append)
+        self.assertIs(kept, module)
+        self.assertEqual(kept.VALUE, 1)
+        self.assertTrue(any("blocked by compile error" in notice for notice in notices))
+
+    def test_llm_trim_history_uses_tokenizer_counts(self):
+        class TokenDenseMock:
+            def tokenize(self, text_bytes, add_bos=False):
+                text = text_bytes.decode("utf-8")
+                return [0] * len(text)
+
+        original_n_ctx = ModelLoader.n_ctx
+        ModelLoader.n_ctx = lambda: 1200
+        try:
+            thread = LLMThread(
+                system_prompt="system",
+                chat_history=[],
+                hyperparams={},
+            )
+            history = [
+                {"role": "user", "content": "seed"},
+                {"role": "assistant", "content": "old" * 100},
+                {"role": "user", "content": "recent"},
+            ]
+            kept = thread._trim_history(history, TokenDenseMock(), "system")
+        finally:
+            ModelLoader.n_ctx = original_n_ctx
+
+        self.assertEqual(kept[0]["content"], "seed")
+        self.assertEqual(kept[-1]["content"], "recent")
+        self.assertNotIn("old" * 100, [item["content"] for item in kept])
+
+    def test_orchestrator_rejects_unsafe_task_paths(self):
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="unsafe plan",
+            test_command="true",
+        )
+
+        with self.assertRaises(ValueError):
+            orchestrator._validate_tasks([
+                {"filepath": "../outside.py", "instructions": "write outside"}
+            ])
+
+        with self.assertRaises(ValueError):
+            orchestrator._validate_tasks([
+                {"filepath": os.path.join(self.workspace_path, "absolute.py"), "instructions": "write absolute"}
+            ])
+
+        with self.assertRaises(ValueError):
+            orchestrator._validate_tasks([
+                {"filepath": "pkg/../safe.py", "instructions": "ambiguous normalized path"}
+            ])
+
+        tasks = orchestrator._validate_tasks([
+            {"filepath": "pkg/safe.py", "instructions": "write safe"}
+        ])
+        self.assertEqual(tasks[0]["filepath"], "pkg/safe.py")
 
     @patch("app.engine.model_loader.ModelLoader.get_instance")
     def test_orchestrator_syntax_validation_guards(self, mock_get_llm):

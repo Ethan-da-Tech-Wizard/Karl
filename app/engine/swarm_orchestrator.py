@@ -9,6 +9,7 @@ import os
 import time
 import ast
 import json
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.swarm_agents import ArchitectAgent, CoderAgent, TesterAgent
@@ -54,6 +55,58 @@ class SwarmOrchestratorThread(QThread):
     def request_stop(self):
         self._stop_requested = True
 
+    def _workspace_root(self) -> Path:
+        return Path(self.state.workspace_path).expanduser().resolve()
+
+    def _resolve_task_path(self, filepath: str) -> tuple[str, Path]:
+        if not isinstance(filepath, str) or not filepath.strip():
+            raise ValueError("filepath must be a non-empty string")
+
+        raw = filepath.strip().replace("\\", "/")
+        rel = Path(raw)
+        if rel.is_absolute():
+            raise ValueError(f"absolute paths are not allowed: {filepath}")
+        if any(part == ".." for part in rel.parts):
+            raise ValueError(f"path traversal is not allowed: {filepath}")
+
+        root = self._workspace_root()
+        full_path = (root / rel).resolve()
+        try:
+            full_path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"path escapes workspace: {filepath}") from exc
+
+        return full_path.relative_to(root).as_posix(), full_path
+
+    def _validate_task(self, task: dict[str, Any]) -> dict[str, str]:
+        if not isinstance(task, dict):
+            raise ValueError("task must be an object")
+        if not isinstance(task.get("instructions"), str) or not task["instructions"].strip():
+            raise ValueError("task.instructions must be a non-empty string")
+
+        filepath, _full_path = self._resolve_task_path(task.get("filepath", ""))
+        return {
+            "filepath": filepath,
+            "instructions": task["instructions"].strip(),
+        }
+
+    def _validate_tasks(self, raw_tasks: Any) -> list[dict[str, str]]:
+        if not isinstance(raw_tasks, list):
+            raise ValueError("plan.tasks must be a list")
+
+        validated = []
+        seen = set()
+        for index, task in enumerate(raw_tasks, start=1):
+            try:
+                item = self._validate_task(task)
+            except ValueError as exc:
+                raise ValueError(f"invalid task #{index}: {exc}") from exc
+            if item["filepath"] in seen:
+                raise ValueError(f"duplicate task filepath: {item['filepath']}")
+            seen.add(item["filepath"])
+            validated.append(item)
+        return validated
+
     def scan_workspace(self) -> Dict[str, str]:
         """Scans the directory for code files, excluding build and git files."""
         context = {}
@@ -71,8 +124,8 @@ class SwarmOrchestratorThread(QThread):
                         if os.path.getsize(path) < 50000:
                             with open(path, "r", encoding="utf-8", errors="ignore") as file_obj:
                                 context[rel_path] = file_obj.read()
-                    except Exception:
-                        pass
+                    except OSError as exc:
+                        self.status_update.emit(f"[Scan] Skipped {rel_path}: {exc}")
         return context
 
     def run(self):
@@ -90,7 +143,13 @@ class SwarmOrchestratorThread(QThread):
             self.state.plan = plan
             self.task_plan_created.emit(plan)
 
-            tasks = plan.get("tasks", [])
+            try:
+                tasks = self._validate_tasks(plan.get("tasks", []))
+            except ValueError as exc:
+                self.status_update.emit(f"[Architect] Rejected unsafe task plan: {exc}")
+                self.finished_swarm.emit(False, f"Unsafe task plan: {exc}")
+                return
+
             if not tasks:
                 self.status_update.emit("[Swarm] No coding tasks identified by the Architect.")
                 self.finished_swarm.emit(True, "No actions needed.")
@@ -113,7 +172,14 @@ class SwarmOrchestratorThread(QThread):
 
                 filepath = task["filepath"]
                 instructions = task["instructions"]
-                full_path = os.path.join(self.state.workspace_path, filepath)
+                try:
+                    filepath, full_path_obj = self._resolve_task_path(filepath)
+                except ValueError as exc:
+                    self.state.tasks_status[filepath] = "failed"
+                    self.status_update.emit(f"[Error] Refusing unsafe task path {filepath}: {exc}")
+                    all_successful = False
+                    continue
+                full_path = str(full_path_obj)
 
                 self.state.tasks_status[filepath] = "in_progress"
                 self.status_update.emit(f"[Coder] Starting work on: {filepath}")
