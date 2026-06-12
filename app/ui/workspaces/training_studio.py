@@ -41,9 +41,9 @@ def _hline() -> QFrame:
 # ── training thread ───────────────────────────────────────────────────────────
 
 class TrainingThread(QThread):
-    loss = pyqtSignal(int, float)     # step, loss_val
-    progress = pyqtSignal(int, int) # step, total_steps
-    done = pyqtSignal(str)           # adapter_path
+    loss = pyqtSignal(int, float, float)     # step, loss_val, epoch
+    progress = pyqtSignal(int, int, float)   # step, total_steps, epoch
+    done = pyqtSignal(str)                   # adapter_path
     error = pyqtSignal(str)
     log = pyqtSignal(str)
 
@@ -148,11 +148,14 @@ class TrainingThread(QThread):
             class TrainerProgressCallback(TrainerCallback):
                 def on_log(self, args, state, control, logs=None, **kwargs):
                     if logs and "loss" in logs:
-                        thread_ref.loss.emit(state.global_step, float(logs["loss"]))
-                        thread_ref.log.emit(f"Step {state.global_step}: loss = {logs['loss']:.4f}")
+                        loss_val = float(logs["loss"])
+                        epoch_val = state.epoch if state.epoch is not None else 0.0
+                        thread_ref.loss.emit(state.global_step, loss_val, epoch_val)
+                        thread_ref.log.emit(f"Step {state.global_step}/{state.max_steps} | Epoch {epoch_val:.2f} | Loss: {loss_val:.4f}")
 
                 def on_step_end(self, args, state, control, **kwargs):
-                    thread_ref.progress.emit(state.global_step, state.max_steps)
+                    epoch_val = state.epoch if state.epoch is not None else 0.0
+                    thread_ref.progress.emit(state.global_step, state.max_steps, epoch_val)
 
             self.log.emit("Starting SFTTrainer...")
             trainer = SFTTrainer(
@@ -1336,11 +1339,10 @@ class TrainingStudioWorkspace(QWidget):
     def _on_train_log(self, text: str):
         self._train_log.append(text)
         
-    def _on_train_loss(self, step: int, value: float):
-        # Optional: update a plot or stat in the future
-        pass
+    def _on_train_loss(self, step: int, value: float, epoch: float):
+        self._train_log.append(f"[METRIC] Step {step} | Epoch {epoch:.2f} | Loss: {value:.4f}")
 
-    def _on_train_progress(self, current: int, total: int):
+    def _on_train_progress(self, current: int, total: int, epoch: float):
         if total > 0:
             percentage = int((current / total) * 100)
             self._train_progress.setValue(percentage)

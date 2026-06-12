@@ -423,10 +423,9 @@ class _PromptColumn(QWidget):
             threshold = getattr(self.state, "rag_threshold", 0.0)
             retrieved_metadata = self.state.rag.retrieve_with_metadata(
                 user,
-                top_k=top_k
+                top_k=top_k,
+                threshold=threshold
             )
-            if threshold > 0.0:
-                retrieved_metadata = [r for r in retrieved_metadata if r["distance"] <= threshold]
             
             if retrieved_metadata:
                 sources_text = "\n[Retrieved Context Sources:\n"

@@ -624,10 +624,10 @@ class WorkbenchWorkspace(QMainWindow):
             
             retrieved_metadata = []
             if self.state.rag.total_chunks > 0:
-                retrieved_metadata.extend(self.state.rag.retrieve_with_metadata(prompt_text, top_k=top_k))
+                retrieved_metadata.extend(self.state.rag.retrieve_with_metadata(prompt_text, top_k=top_k, threshold=threshold))
                 
             if hasattr(self.state, "codex_rag") and self.state.codex_rag.total_chunks > 0:
-                retrieved_metadata.extend(self.state.codex_rag.retrieve_with_metadata(prompt_text, top_k=top_k))
+                retrieved_metadata.extend(self.state.codex_rag.retrieve_with_metadata(prompt_text, top_k=top_k, threshold=threshold))
                 
             # Sort combined results by distance (lower distance = closer match)
             retrieved_metadata.sort(key=lambda x: x.get("distance", 999.0))

@@ -68,6 +68,7 @@ class KnowledgeBaseWorkspace(QWidget):
         super().__init__(parent)
         self.state = state
         self.setObjectName("workspace-root")
+        self._load_rag_config()
         self._active_threads = set()
         self._ingest_queue = []
         self._build_ui()
@@ -567,8 +568,36 @@ class KnowledgeBaseWorkspace(QWidget):
             self._source_inspector.clear()
             self._ingest_status.setText("index cleared")
 
+    def _load_rag_config(self):
+        import json
+        cfg_path = os.path.join("data", "rag_config.json")
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    self.state.rag_threshold = float(cfg.get("rag_threshold", 0.0))
+                    self.state.rag_top_k = int(cfg.get("rag_top_k", 3))
+            except Exception:
+                pass
+
+    def _save_rag_config(self):
+        import json
+        os.makedirs("data", exist_ok=True)
+        cfg_path = os.path.join("data", "rag_config.json")
+        try:
+            cfg = {
+                "rag_threshold": self.state.rag_threshold,
+                "rag_top_k": self.state.rag_top_k
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception:
+            pass
+
     def _on_threshold_changed(self, val):
         self.state.rag_threshold = val
+        self._save_rag_config()
 
     def _on_topk_changed(self, val):
         self.state.rag_top_k = val
+        self._save_rag_config()

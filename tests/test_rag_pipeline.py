@@ -114,7 +114,31 @@ def test_rag_pipeline_ingestion_and_retrieval():
         shutil.rmtree(temp_dir)
 
 
+def test_rag_pipeline_retrieve_with_metadata_threshold():
+    """Test retrieve_with_metadata threshold filtering."""
+    import pytest
+    from tests.conftest import embedding_model_available
+    if not embedding_model_available():
+        pytest.skip("sentence-transformers embedding model is unavailable")
+
+    temp_dir = tempfile.mkdtemp()
+    try:
+        pipeline = RAGPipeline(index_path=temp_dir)
+        pipeline.ingest_text("Deep learning models are neural networks.", source_name="doc1.txt")
+        
+        # Test retrieve_with_metadata with extremely low threshold
+        res = pipeline.retrieve_with_metadata("neural networks", top_k=5, threshold=0.001)
+        assert len(res) == 0
+        
+        # Test retrieve_with_metadata with relaxed threshold
+        res2 = pipeline.retrieve_with_metadata("neural networks", top_k=5, threshold=2.0)
+        assert len(res2) > 0
+    finally:
+        shutil.rmtree(temp_dir)
+
+
 if __name__ == "__main__":
     test_rag_pipeline_chunking()
     test_rag_pipeline_ingestion_and_retrieval()
+    test_rag_pipeline_retrieve_with_metadata_threshold()
     print("All RAG pipeline unit tests PASSED!")

@@ -267,9 +267,8 @@ class RAGPipeline:
             query,
             top_k=top_k,
             source_filter=source_filter,
+            threshold=threshold,
         )
-        if threshold > 0.0:
-            results = [r for r in results if r["distance"] <= threshold]
 
         formatted = []
         for r in results:
@@ -286,6 +285,7 @@ class RAGPipeline:
         query: str,
         top_k: int = 3,
         source_filter: str | None = None,
+        threshold: float = 0.0,
     ) -> list[dict]:
         """
         Like retrieve() but returns full metadata dicts including distance scores.
@@ -423,6 +423,9 @@ class RAGPipeline:
             })
             if len(results) >= top_k:
                 break
+
+        if threshold > 0.0:
+            results = [r for r in results if r["distance"] <= threshold]
 
         return results[:top_k]
 
