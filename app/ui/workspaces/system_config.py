@@ -347,15 +347,9 @@ class SystemConfigWorkspace(QWidget):
         return w
 
     def _load_registry(self):
-        registry_path = "data/model_registry.json"
-        self._registry = []
-        if os.path.exists(registry_path):
-            try:
-                with open(registry_path, "r") as f:
-                    self._registry = json.load(f)
-            except Exception as e:
-                print(f"[SystemConfig] Error reading registry: {e}")
-        
+        from app.engine import config_store
+        self._registry = list(config_store.get_model_registry())
+
         if not self._registry:
             self._registry = [
                 {
@@ -413,13 +407,10 @@ class SystemConfigWorkspace(QWidget):
     def _get_active_model_name(self) -> str:
         active_name = self.state.model_name or "none"
         if active_name == "none":
-            active_path = "data/active_model.json"
-            if os.path.exists(active_path):
-                try:
-                    with open(active_path, "r") as f:
-                        active_name = json.load(f).get("filename", "none")
-                except Exception:
-                    pass
+            from app.engine import config_store
+            data = config_store.read_json(config_store.ACTIVE_MODEL_PATH, default=None)
+            if isinstance(data, dict):
+                active_name = data.get("filename") or "none"
         return active_name
 
     def _populate_registry(self):
@@ -499,12 +490,11 @@ class SystemConfigWorkspace(QWidget):
             path = os.path.join("data", "models", filename)
             ModelLoader.get_instance(model_path=path)
             self.state.model_name = filename
-            
-            active = {"filename": filename}
-            os.makedirs("data", exist_ok=True)
-            with open("data/active_model.json", "w") as f:
-                json.dump(active, f)
-                
+
+            from app.engine import config_store
+            if not config_store.set_active_model(filename):
+                raise OSError("Failed to persist data/active_model.json")
+
             self._scan_models(force=True)
             self._populate_registry()
             
@@ -1053,10 +1043,9 @@ class SystemConfigWorkspace(QWidget):
             ModelLoader.get_instance(model_path=path)
             name = os.path.basename(path)
             self.state.model_name = name
-            active = {"filename": name}
-            os.makedirs("data", exist_ok=True)
-            with open("data/active_model.json", "w") as f:
-                json.dump(active, f)
+            from app.engine import config_store
+            if not config_store.set_active_model(name):
+                raise OSError("Failed to persist data/active_model.json")
             self._scan_models(force=True)
             self._run_model_preflight_checks()
         except Exception as e:
@@ -1091,15 +1080,7 @@ class SystemConfigWorkspace(QWidget):
                 self._model_list.setHtml("<span style='color:#505068;'>no .gguf models in data/models/</span>")
             return
 
-        active_name = self.state.model_name or "none"
-        if active_name == "none":
-            active_path = "data/active_model.json"
-            if os.path.exists(active_path):
-                try:
-                    with open(active_path, "r") as f:
-                        active_name = json.load(f).get("filename", "none")
-                except Exception:
-                    pass
+        active_name = self._get_active_model_name()
 
         html_lines = []
         for item in self._cached_models_list:
@@ -1168,21 +1149,13 @@ class SystemConfigWorkspace(QWidget):
         self.state.adapter_name = adapter_name
         self.adapter_changed.emit(adapter_name or "")
         
-        # Save to active model configuration
-        active_path = "data/active_model.json"
-        active_data = {"filename": "deepseek-r1-1.5b.gguf"}
-        if os.path.exists(active_path):
-            try:
-                with open(active_path, "r") as f:
-                    active_data = json.load(f)
-            except Exception:
-                pass
-        
-        active_data["adapter"] = adapter_name
+        # Save to active model configuration, preserving the active filename
+        from app.engine import config_store
         try:
-            with open(active_path, "w") as f:
-                json.dump(active_data, f)
-            
+            filename = config_store.get_active_model()["filename"]
+            if not config_store.set_active_model(filename, adapter_name):
+                raise OSError("Failed to persist data/active_model.json")
+
             self._scan_adapters(force=True)
             self._run_model_preflight_checks()
             
@@ -1210,15 +1183,7 @@ class SystemConfigWorkspace(QWidget):
 
     def _run_model_preflight_checks(self):
         from core.hardware_scout import get_hardware_profile
-        active_name = self.state.model_name or "none"
-        if active_name == "none":
-            active_path = "data/active_model.json"
-            if os.path.exists(active_path):
-                try:
-                    with open(active_path, "r") as f:
-                        active_name = json.load(f).get("filename", "none")
-                except Exception:
-                    pass
+        active_name = self._get_active_model_name()
 
         if active_name == "none":
             self._model_status.setText("<div style='color: #888;'>No active model loaded.</div>")
@@ -1276,13 +1241,10 @@ class SystemConfigWorkspace(QWidget):
         # 3. Adapter compatibility warning
         active_adapter = self.state.adapter_name or "none"
         if active_adapter == "none":
-            active_path = "data/active_model.json"
-            if os.path.exists(active_path):
-                try:
-                    with open(active_path, "r") as f:
-                        active_adapter = json.load(f).get("adapter", "none")
-                except Exception:
-                    pass
+            from app.engine import config_store
+            data = config_store.read_json(config_store.ACTIVE_MODEL_PATH, default=None)
+            if isinstance(data, dict):
+                active_adapter = data.get("adapter") or "none"
 
         if active_adapter and active_adapter != "none":
             model_lower = active_name.lower()
@@ -1654,41 +1616,15 @@ class SystemConfigWorkspace(QWidget):
         card_layout.addStretch()
 
     def _load_active_appearance_config(self):
-        config_path = "data/ui_config.json"
-        fallback_path = "data/theme_config.json"
-        
-        theme_preset = "Karl Obsidian Core"
-        custom_accent = None
-        layout_preset = "Focused Workbench"
-        reduced_motion = False
-        glow_enabled = True
-        animation_intensity = 1.0
-        glow_strength = 1.0
-        
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                    theme_preset = config.get("theme_preset", "Karl Obsidian Core")
-                    custom_accent = config.get("custom_accent")
-                    layout_preset = config.get("layout_preset", "Focused Workbench")
-                    reduced_motion = config.get("reduced_motion", False)
-                    glow_enabled = config.get("glow_enabled", True)
-                    animation_intensity = config.get("animation_intensity", 1.0)
-                    glow_strength = config.get("glow_strength", 1.0)
-            except Exception:
-                pass
-        elif os.path.exists(fallback_path):
-            try:
-                with open(fallback_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                    theme_preset = config.get("theme_name", "Karl Obsidian Core")
-                    if theme_preset == "Karl Obsidian":
-                        theme_preset = "Karl Obsidian Core"
-                    custom_accent = config.get("custom_accent")
-                    reduced_motion = config.get("reduced_motion", False)
-            except Exception:
-                pass
+        from app.engine import config_store
+        config = config_store.get_ui_config()
+        theme_preset = config["theme_preset"]
+        custom_accent = config["custom_accent"]
+        layout_preset = config["layout_preset"]
+        reduced_motion = config["reduced_motion"]
+        glow_enabled = config["glow_enabled"]
+        animation_intensity = config["animation_intensity"]
+        glow_strength = config["glow_strength"]
 
         self._theme_preset_combo.blockSignals(True)
         idx = self._theme_preset_combo.findText(theme_preset)
@@ -1969,21 +1905,16 @@ class SystemConfigWorkspace(QWidget):
             self._theme_preset_combo.setCurrentIndex(idx)
 
     def _save_appearance_config_silent(self):
-        config = {
+        from app.engine import config_store
+        config_store.save_ui_config({
             "theme_preset": self.state.theme_preset,
             "custom_accent": self.state.custom_accent,
             "layout_preset": self.state.layout_preset,
             "reduced_motion": self.state.reduced_motion,
             "glow_enabled": self.state.glow_enabled,
             "animation_intensity": self.state.animation_intensity,
-            "glow_strength": self.state.glow_strength
-        }
-        os.makedirs("data", exist_ok=True)
-        try:
-            with open("data/ui_config.json", "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
-        except Exception:
-            pass
+            "glow_strength": self.state.glow_strength,
+        })
 
     def _save_appearance_config(self):
         self._save_appearance_config_silent()

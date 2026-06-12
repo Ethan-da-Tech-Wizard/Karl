@@ -70,30 +70,27 @@ class VisionModelEntry:
 
 
 def read_vision_registry(path: Path = REGISTRY_PATH) -> list[VisionModelEntry]:
-    if not path.exists():
-        return []
-    with path.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
+    from app.engine.config_store import read_json
+
+    raw = read_json(str(path), default=[])
     if not isinstance(raw, list):
         return []
     return [VisionModelEntry.from_dict(item) for item in raw]
 
 
 def active_vision_model_id(path: Path = ACTIVE_PATH) -> str | None:
-    if not path.exists():
-        return None
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
+    from app.engine.config_store import read_json
+
+    data = read_json(str(path), default=None)
+    if not isinstance(data, dict):
         return None
     return data.get("id") or data.get("vision_model_id")
 
 
 def set_active_vision_model(model_id: str, path: Path = ACTIVE_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump({"id": model_id}, f, indent=2)
+    from app.engine.config_store import write_json_atomic
+
+    write_json_atomic(str(path), {"id": model_id}, indent=2)
 
 
 def installed_vision_models() -> list[dict[str, Any]]:

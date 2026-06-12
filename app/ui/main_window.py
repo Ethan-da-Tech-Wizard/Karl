@@ -185,52 +185,16 @@ class MainWindow(QMainWindow):
             self._system.show_theme_tab()
 
     def _load_theme_config(self):
-        import json
-        import os
-        
-        config_path = "data/ui_config.json"
-        fallback_path = "data/theme_config.json"
-        
-        theme_preset = "Karl Obsidian Core"
-        custom_accent = None
-        layout_preset = "Focused Workbench"
-        reduced_motion = False
-        glow_enabled = True
-        animation_intensity = 1.0
-        glow_strength = 1.0
-        
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                    theme_preset = config.get("theme_preset", "Karl Obsidian Core")
-                    custom_accent = config.get("custom_accent")
-                    layout_preset = config.get("layout_preset", "Focused Workbench")
-                    reduced_motion = config.get("reduced_motion", False)
-                    glow_enabled = config.get("glow_enabled", True)
-                    animation_intensity = config.get("animation_intensity", 1.0)
-                    glow_strength = config.get("glow_strength", 1.0)
-            except Exception:
-                pass
-        elif os.path.exists(fallback_path):
-            try:
-                with open(fallback_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                    theme_preset = config.get("theme_name", "Karl Obsidian Core")
-                    if theme_preset == "Karl Obsidian":
-                        theme_preset = "Karl Obsidian Core"
-                    custom_accent = config.get("custom_accent")
-                    reduced_motion = config.get("reduced_motion", False)
-            except Exception:
-                pass
-                
-        self._state.theme_preset = theme_preset
-        self._state.custom_accent = custom_accent
-        self._state.layout_preset = layout_preset
-        self._state.reduced_motion = reduced_motion
-        self._state.glow_enabled = glow_enabled
-        self._state.animation_intensity = animation_intensity
-        self._state.glow_strength = glow_strength
+        from app.engine import config_store
+
+        config = config_store.get_ui_config()
+        self._state.theme_preset = config["theme_preset"]
+        self._state.custom_accent = config["custom_accent"]
+        self._state.layout_preset = config["layout_preset"]
+        self._state.reduced_motion = config["reduced_motion"]
+        self._state.glow_enabled = config["glow_enabled"]
+        self._state.animation_intensity = config["animation_intensity"]
+        self._state.glow_strength = config["glow_strength"]
 
         self._apply_theme_from_state()
 

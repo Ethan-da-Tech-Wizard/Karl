@@ -1169,27 +1169,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._refresh_model_combo()
 
     def _is_adapter_compatible(self, model_filename: str, adapter_name: str) -> bool:
-        import json
-        import os
-        config_path = os.path.join("data", "adapters", adapter_name, "adapter_config.json")
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                base_model = config.get("base_model_name_or_path", "").lower()
-                model_fn = model_filename.lower()
-                if "1.5b" in model_fn and "1.5b" in base_model:
-                    return True
-                if "8b" in model_fn and "8b" in base_model:
-                    return True
-            except Exception:
-                pass
-        # Fallback to simple sub-string matching on name
-        if "1.5b" in model_filename.lower() and "1.5b" in adapter_name.lower():
-            return True
-        if "8b" in model_filename.lower() and "8b" in adapter_name.lower():
-            return True
-        return False
+        from app.engine import config_store
+        return config_store.is_adapter_compatible(model_filename, adapter_name)
 
     def _refresh_model_combo(self):
         entries = self._model_selection_entries()
@@ -1237,16 +1218,12 @@ class WorkbenchWorkspace(QMainWindow):
             combo.setCurrentIndex(0)
 
     def _model_selection_entries(self) -> list[dict]:
-        import json
         import os
+        from app.engine import config_store
 
         registry = {}
-        try:
-            with open("data/model_registry.json", "r", encoding="utf-8") as f:
-                for item in json.load(f):
-                    registry[item.get("filename", "")] = item
-        except Exception:
-            registry = {}
+        for item in config_store.get_model_registry():
+            registry[item.get("filename", "")] = item
 
         adapters_dir = "data/adapters"
         adapters = []
@@ -1360,9 +1337,8 @@ class WorkbenchWorkspace(QMainWindow):
             return
         
         from PyQt6.QtWidgets import QApplication
-        import json
         import os
-        
+
         # Disable inputs temporarily during model swap
         self._set_busy(True)
         loading_text = f"Loading {filename} (adapter: {adapter_name})..." if adapter_name else f"Loading {filename}..."
@@ -1376,14 +1352,13 @@ class WorkbenchWorkspace(QMainWindow):
             ModelLoader.get_instance(model_path=os.path.join("data", "models", filename), adapter_name=adapter_name)
             
             # Save the active model to active_model.json
-            active = {
-                "filename": filename,
-                "adapter": adapter_name
-            }
-            os.makedirs("data", exist_ok=True)
-            with open("data/active_model.json", "w") as f:
-                json.dump(active, f)
-                
+            from app.engine import config_store
+            if not config_store.set_active_model(filename, adapter_name):
+                self._chat_view.append_system_note(
+                    "[Warning] Could not persist data/active_model.json — "
+                    "this selection will not survive a restart."
+                )
+
             self.state.model_name = filename
             self.state.adapter_name = adapter_name
             

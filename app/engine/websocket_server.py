@@ -14,6 +14,7 @@ import uuid
 import websockets
 from typing import Set, Optional, Any
 from PyQt6.QtCore import Qt
+from app.engine import config_store
 from app.engine.swarm_orchestrator import SwarmOrchestratorThread
 from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
@@ -88,29 +89,10 @@ class WebSocketServerManager:
                 pass
 
     def _active_model_config(self) -> dict:
-        filename = "deepseek-r1-1.5b.gguf"
-        adapter = None
-        active_path = os.path.join("data", "active_model.json")
-        if os.path.exists(active_path):
-            try:
-                with open(active_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                filename = data.get("filename") or data.get("model") or filename
-                adapter = data.get("adapter")
-            except Exception:
-                pass
-        return {"filename": filename, "adapter": adapter}
+        return config_store.get_active_model()
 
     def _read_model_registry(self) -> list[dict]:
-        registry_path = os.path.join("data", "model_registry.json")
-        if not os.path.exists(registry_path):
-            return []
-        try:
-            with open(registry_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data if isinstance(data, list) else []
-        except Exception:
-            return []
+        return config_store.get_model_registry()
 
     def _list_models(self) -> dict:
         models_dir = os.path.join("data", "models")
@@ -190,9 +172,8 @@ class WebSocketServerManager:
         if adapter:
             active["adapter"] = adapter
 
-        os.makedirs("data", exist_ok=True)
-        with open(os.path.join("data", "active_model.json"), "w", encoding="utf-8") as f:
-            json.dump(active, f)
+        if not config_store.set_active_model(safe_filename, adapter):
+            raise OSError("Failed to persist data/active_model.json")
 
         ModelLoader.reset_instance()
         return {

@@ -1,7 +1,8 @@
 import os
-import json
 import threading
 from llama_cpp import Llama
+
+from app.engine import config_store
 
 
 class ModelLoader:
@@ -11,36 +12,16 @@ class ModelLoader:
     @classmethod
     def _read_registry_n_ctx(cls, filename: str) -> int:
         """Look up n_ctx for the given model filename from model_registry.json."""
-        registry_path = "data/model_registry.json"
-        if os.path.exists(registry_path):
-            try:
-                with open(registry_path, "r") as f:
-                    registry = json.load(f)
-                for entry in registry:
-                    if entry.get("filename") == filename:
-                        return entry.get("n_ctx", 4096)
-            except Exception as e:
-                print(f"[ModelLoader] Could not read registry: {e}")
-        return 4096
+        return config_store.registry_n_ctx(filename)
 
     @classmethod
     def get_instance(cls, model_path: str | None = None, adapter_name: str | None = None) -> Llama:
         with cls._lock:
             if model_path is None:
-                active_path = "data/active_model.json"
-                filename = "deepseek-r1-1.5b.gguf"
-                default_adapter = None
-                if os.path.exists(active_path):
-                    try:
-                        with open(active_path, "r") as f:
-                            data = json.load(f)
-                            filename = data.get("filename", filename)
-                            default_adapter = data.get("adapter", None)
-                    except Exception as e:
-                        print(f"[ModelLoader] Could not read {active_path}: {e}")
-                model_path = os.path.join("data", "models", filename)
+                active = config_store.get_active_model()
+                model_path = os.path.join("data", "models", active["filename"])
                 if adapter_name is None:
-                    adapter_name = default_adapter
+                    adapter_name = active["adapter"]
 
             current_model_path = getattr(cls, "_model_path", None)
             current_adapter = getattr(cls, "_active_adapter", None)
