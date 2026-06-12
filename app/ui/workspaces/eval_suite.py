@@ -9,6 +9,7 @@ import logging
 import json
 import os
 import html
+from datetime import datetime, timezone
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
@@ -65,6 +66,31 @@ class _EvalThread(QThread):
                 adapter_name=self.adapter_name
             )
             self.done.emit(report)
+            try:
+                from app.utils.training_curator import save_eval_result
+                items = []
+                for case in getattr(report, "cases", []):
+                    grade = case.grade or {}
+                    items.append({
+                        "system_prompt": "",
+                        "question": case.prompt,
+                        "model_response": case.output or "",
+                        "expected_answer": grade.get("detail", ""),
+                        "passed": grade.get("passed", False),
+                        "score": grade.get("score", 0.0),
+                    })
+                report_dict = {
+                    "model_name": self.model_name or "unknown",
+                    "adapter_name": self.adapter_name,
+                    "dataset_name": self.dataset_path,
+                    "accuracy": report.pass_rate,
+                    "mrr": getattr(report, "mrr", 0.0),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "items": items,
+                }
+                save_eval_result(report_dict)
+            except Exception as e:
+                logger.warning(f"Failed to auto-save eval report: {e}")
         except Exception as e:
             self.error.emit(str(e))
 

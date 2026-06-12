@@ -94,6 +94,11 @@ class WorkbenchWorkspace(QMainWindow):
         )
         self._agent_profile = "karl"
         self._current_session_file: str | None = None
+        self._session_id: str | None = None
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(30_000)  # 30s
+        self._autosave_timer.timeout.connect(self._autosave_session)
+        self._autosave_timer.start()
         self._is_correcting = False
         self._pending_image_attachments: list[dict] = []
         self._pending_generation_history: list[dict] | None = None
@@ -303,6 +308,23 @@ class WorkbenchWorkspace(QMainWindow):
         self._reload_hide_timer.timeout.connect(lambda: self._reload_notice.setVisible(False))
         layout.addWidget(self._reload_notice)
 
+        # Context HUD bar — shows token budget usage
+        self._context_bar = QProgressBar()
+        self._context_bar.setRange(0, 100)
+        self._context_bar.setValue(0)
+        self._context_bar.setFixedHeight(14)
+        self._context_bar.setTextVisible(True)
+        self._context_bar.setFormat("Connect a model to see context usage")
+        self._context_bar.setStyleSheet("QProgressBar { font-size: 7.5pt; } QProgressBar::chunk { background: #2DD4A0; }")
+        layout.addWidget(self._context_bar)
+
+        # RAG attribution panel — shown after each generation that used RAG
+        self._rag_sources_view = QTextBrowser()
+        self._rag_sources_view.setFixedHeight(120)
+        self._rag_sources_view.setVisible(False)
+        self._rag_sources_view.setObjectName("panel")
+        layout.addWidget(self._rag_sources_view)
+
         # input area
         input_container = QWidget()
         input_container.setFixedHeight(140)
@@ -323,7 +345,6 @@ class WorkbenchWorkspace(QMainWindow):
         self._token_remaining_lbl.setObjectName("lbl-muted")
         self._token_remaining_lbl.setStyleSheet("font-size: 8pt;")
 
-        from PyQt6.QtWidgets import QProgressBar
         self._token_bar = QProgressBar()
         self._token_bar.setObjectName("token-budget-bar")
         self._token_bar.setFixedHeight(6)
@@ -804,59 +825,27 @@ class WorkbenchWorkspace(QMainWindow):
             return "reasoning_minimal"
 
     def _update_token_budget(self):
+        """Update the context window HUD bar."""
+        if not hasattr(self, '_context_bar'):
+            return
         from app.engine.model_loader import ModelLoader
-
-        def _count_tokens(text: str) -> int:
-            if not text:
-                return 0
-            if ModelLoader.is_loaded():
-                try:
-                    llm = ModelLoader.get_instance()
-                    return len(llm.tokenize(text.encode("utf-8"), add_bos=False))
-                except TypeError:
-                    return len(llm.tokenize(text.encode("utf-8")))
-                except Exception as exc:
-                    logger.debug("Workbench token HUD tokenizer fallback: %s", exc)
-            return max(1, len(text.encode("utf-8")) // 3)
-
-        history = list(self.chat_history) if self.chat_history else []
-        if hasattr(self, "_input"):
-            pending = self._input.toPlainText().strip()
-            if pending:
-                history.append({"role": "user", "content": pending})
-
-        prompt_parts = [f"<|im_start|>system\n{self._active_system_prompt()}<|im_end|>\n"]
-        for msg in history:
-            prompt_parts.append(
-                f"<|im_start|>{msg.get('role', 'user')}\n"
-                f"{msg.get('content', '')}<|im_end|>\n"
-            )
-        estimated = _count_tokens("".join(prompt_parts))
-        n_ctx = ModelLoader.n_ctx()
-        reserve = int(self._hyperparams.get("max_tokens", 2048))
-        remaining = max(0, n_ctx - estimated - reserve)
-        
-        pct = int(((estimated + reserve) / n_ctx) * 100) if n_ctx > 0 else 0
-        pct = max(0, min(100, pct))
-        
-        self._token_bar.setValue(pct)
-        self._token_lbl.setText(f"prompt {estimated:,} + reserve {reserve:,} / ctx {n_ctx:,}")
-        self._token_remaining_lbl.setText(f"free {remaining:,}")
-        self._token_bar.setToolTip(
-            f"Prompt tokens: {estimated:,}\n"
-            f"Reserved generation tokens: {reserve:,}\n"
-            f"Remaining context after reserve: {remaining:,}\n"
-            f"Context window: {n_ctx:,}"
-        )
-        
-        if pct < 70:
-            color = "#00C2FF"  # cyan
-        elif pct < 90:
-            color = "#FFCC00"  # yellow
+        budget = ModelLoader.n_ctx()
+        used = getattr(self, '_last_context_used', 0)
+        rag = getattr(self, '_last_rag_tokens', 0)
+        hist = getattr(self, '_last_hist_tokens', 0)
+        pct = int((used / max(budget, 1)) * 100)
+    
+        self._context_bar.setValue(pct)
+        if pct >= 92:
+            self._context_bar.setStyleSheet("QProgressBar::chunk { background: #FF3366; }")
+        elif pct >= 80:
+            self._context_bar.setStyleSheet("QProgressBar::chunk { background: #FFB400; }")
         else:
-            color = "#FF3366"  # red
-            
-        self._token_bar.setStyleSheet(f"QProgressBar#token-budget-bar::chunk {{ background-color: {color}; }}")
+            self._context_bar.setStyleSheet("QProgressBar::chunk { background: #2DD4A0; }")
+    
+        self._context_bar.setFormat(
+            f"{used:,} / {budget:,} tokens  |  RAG: {rag:,}  |  History: {hist:,}"
+        )
 
     def _on_reload_success(self, label: str):
         toast = ToastOverlay(self, f"⟳ {label} reloaded successfully")
@@ -914,6 +903,8 @@ class WorkbenchWorkspace(QMainWindow):
         t.generation_finished.connect(self._on_done)
         t.error_occurred.connect(self._on_error)
         t.reload_notice.connect(self._show_reload_notice)
+        t.context_stats.connect(self._on_context_stats)
+        t.rag_context_used.connect(self._on_rag_context_used)
         
         # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
         self._active_threads.add(t)
@@ -1279,10 +1270,63 @@ class WorkbenchWorkspace(QMainWindow):
         self._header_model_status.setText(f"{prefix}: {model} · adapter {adapter} · ctx {n_ctx}")
         self._header_model_status.setStyleSheet(f"color: {accent}; font-weight: bold;")
 
+    def _autosave_session(self):
+        if not self.chat_history or len(self.chat_history) < 2:
+            return
+        try:
+            path = self.chat_history.save(self._session_id)
+            if self._session_id is None:
+                import os
+                self._session_id = os.path.splitext(os.path.basename(path))[0]
+                self._current_session_file = path
+            self._refresh_sessions()
+        except Exception as e:
+            logger.warning(f"Autosave failed: {e}")
+
+    def _load_session(self, path: str):
+        try:
+            tree, session_id = SessionTree.load(path)
+            self.chat_history = tree
+            self._session_id = session_id
+            self._current_session_file = path
+            
+            # Rebuild the chat view from the loaded tree
+            self._chat_view.clear_display()
+            active_path = self.chat_history.get_active_path()
+            self._chat_view._messages = [(n.role, n.content, n.id, getattr(n, "attachments", [])) for n in active_path]
+            self._chat_view._render_all()
+            
+            self._populate_branches_tree()
+            
+            self._is_correcting = False
+            self._correct_btn.setText("✎ correct")
+            
+            last_node = active_path[-1] if active_path else None
+            if last_node and last_node.role == "assistant":
+                self._last_response = last_node.content
+                self._last_thought = last_node.thought or ""
+                self._reasoning_view.setPlainText(self._last_thought)
+                self._thumb_btn.setEnabled(True)
+                self._thumb_down_btn.setEnabled(True)
+                self._correct_btn.setEnabled(True)
+            else:
+                self._last_response = ""
+                self._last_thought = ""
+                self._reasoning_view.clear()
+                self._thumb_btn.setEnabled(False)
+                self._thumb_down_btn.setEnabled(False)
+                self._correct_btn.setEnabled(False)
+                
+            self._update_expert_strip()
+            self._refresh_sessions()
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Could not load session: {e}")
+
     def _new_session(self):
-        self._save_current_session()
+        self._autosave_session()
+        self.chat_history = SessionTree()
+        self._session_id = None
         self._current_session_file = None
-        self.chat_history.clear()
         self._pending_image_attachments = []
         self._pending_generation_history = None
         self._update_expert_strip()
@@ -1303,6 +1347,36 @@ class WorkbenchWorkspace(QMainWindow):
         self._sessions_list.setCurrentItem(None)
         self._sessions_list.blockSignals(False)
         self._update_token_budget()
+
+    def _on_context_stats(self, total: int, hist: int, rag: int, budget: int):
+        self._last_context_used = total
+        self._last_hist_tokens  = hist
+        self._last_rag_tokens   = rag
+        self._update_token_budget()
+    
+    def _on_rag_context_used(self, chunks: list):
+        if not hasattr(self, '_rag_sources_view'):
+            return
+        if not chunks:
+            self._rag_sources_view.setVisible(False)
+            return
+        self._rag_sources_view.setVisible(True)
+        html_parts = []
+        for chunk in chunks[:5]:
+            src = chunk.get("source_file", "?")
+            dist = chunk.get("distance", 0.0)
+            text_preview = chunk.get("text", "")[:120].replace("<", "&lt;")
+            html_parts.append(
+                f"<div style='margin-bottom:8px; padding:6px; background:#0D0D1E; "
+                f"border-left:2px solid #2DD4A0; border-radius:2px;'>"
+                f"<span style='color:#2DD4A0; font-size:8pt;'>{src}</span> "
+                f"<span style='color:#505068; font-size:7.5pt;'>dist={dist:.3f}</span><br/>"
+                f"<span style='color:#9090A8; font-size:8pt;'>{text_preview}…</span>"
+                f"</div>"
+            )
+        self._rag_sources_view.setHtml(
+            f"<div style='font-family:monospace; padding:4px;'>{''.join(html_parts)}</div>"
+        )
 
     # ── thread slots ──────────────────────────────────────────────────────────
 
@@ -1440,44 +1514,37 @@ class WorkbenchWorkspace(QMainWindow):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _save_current_session(self):
-        if not self.chat_history:
+        if not self.chat_history or len(self.chat_history) < 2:
             return
-        from app.engine.model_loader import ModelLoader
-        # Calculate message count on the active path
-        msg_count = len(self.chat_history) if not hasattr(self.chat_history, "get_active_path") else len(self.chat_history.get_active_path())
-        self._current_session_file = self.state.memory.save_session(
-            chat_history=self.chat_history,
-            system_prompt=self._system_prompt,
-            filename=self._current_session_file,
-            last_model=ModelLoader.model_name() if ModelLoader.is_loaded() else "unknown",
-            adapter_name=self.state.adapter_name,
-            message_count=msg_count
-        )
-        self._refresh_sessions()
+        try:
+            path = self.chat_history.save(self._session_id)
+            if self._session_id is None:
+                import os
+                self._session_id = os.path.splitext(os.path.basename(path))[0]
+                self._current_session_file = path
+            self._refresh_sessions()
+        except Exception as e:
+            logger.warning(f"Save failed: {e}")
 
 
     def _refresh_sessions(self):
+        if not hasattr(self, '_sessions_list'):
+            return
         self._sessions_list.blockSignals(True)
         self._sessions_list.clear()
-        sessions = self.state.memory.list_sessions_with_metadata()
-        for s in sessions:
-            fname = s["filename"]
-            msg_count = s["message_count"]
-            model = s["last_model"]
-            adapter = s["adapter_name"]
-            
-            item = QListWidgetItem(fname)
-            tooltip = f"File: {fname}\nUpdated: {s['updated_time']}\nMessages: {msg_count}\nModel: {model}"
-            if adapter:
-                tooltip += f"\nAdapter: {adapter}"
-            item.setToolTip(tooltip)
-            item.setData(Qt.ItemDataRole.UserRole, s)
+        for meta in SessionTree.list_sessions():
+            from PyQt6.QtWidgets import QListWidgetItem
+            item = QListWidgetItem(meta["preview"] or meta["session_id"])
+            item.setToolTip(meta["path"])
+            item.setData(Qt.ItemDataRole.UserRole, meta["path"])
             self._sessions_list.addItem(item)
             
         if getattr(self, "_current_session_file", None):
-            items = self._sessions_list.findItems(self._current_session_file, Qt.MatchFlag.MatchFixedString)
-            if items:
-                self._sessions_list.setCurrentItem(items[0])
+            for idx in range(self._sessions_list.count()):
+                item = self._sessions_list.item(idx)
+                if item.data(Qt.ItemDataRole.UserRole) == self._current_session_file:
+                    self._sessions_list.setCurrentItem(item)
+                    break
         self._sessions_list.blockSignals(False)
         if hasattr(self, "_session_search"):
             self._filter_sessions(self._session_search.text())
@@ -1486,46 +1553,12 @@ class WorkbenchWorkspace(QMainWindow):
     def _on_session_clicked(self, current, previous):
         if not current:
             return
-        filename = current.text()
-        if filename == getattr(self, "_current_session_file", None):
+        path = current.data(Qt.ItemDataRole.UserRole)
+        if path == getattr(self, "_current_session_file", None):
             return
 
         self._save_current_session()
-
-        sys_prompt, history = self.state.memory.load_session(filename)
-        self._current_session_file = filename
-        self._system_prompt = sys_prompt
-        self.chat_history = history
-        self._update_expert_strip()
-
-
-        self._chat_view.clear_display()
-        active_path = self.chat_history.get_active_path()
-        self._chat_view._messages = [(n.role, n.content, n.id, getattr(n, "attachments", [])) for n in active_path]
-        self._chat_view._render_all()
-        self._populate_branches_tree()
-
-        self._is_correcting = False
-        self._correct_btn.setText("✎ correct")
-
-        last_node = active_path[-1] if active_path else None
-        if last_node and last_node.role == "assistant":
-            self._last_response = last_node.content
-            self._last_thought = last_node.thought or ""
-            self._reasoning_view.setPlainText(self._last_thought)
-            self._thumb_btn.setText("✓ good")
-            self._thumb_down_btn.setText("✗ bad")
-            self._thumb_btn.setEnabled(True)
-            self._thumb_down_btn.setEnabled(True)
-            self._correct_btn.setEnabled(True)
-        else:
-            self._last_response = ""
-            self._last_thought = ""
-            self._reasoning_view.clear()
-            self._thumb_btn.setEnabled(False)
-            self._thumb_down_btn.setEnabled(False)
-            self._correct_btn.setEnabled(False)
-        self._update_token_budget()
+        self._load_session(path)
 
     def on_close(self):
         self._save_current_session()

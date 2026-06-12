@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QTabWidget, QFrame,
-    QSizePolicy,
+    QSizePolicy, QTableWidget, QTableWidgetItem, QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QLinearGradient, QPainterPath
@@ -575,6 +575,8 @@ class FlywheelStudioWorkspace(QWidget):
         ft_lay.addWidget(splitter, 1)
         self._tabs.addTab(failures_tab, "Eval Failure Pairs Inspector")
 
+        self._tabs.addTab(self._build_leaderboard_tab(), "Leaderboard")
+
         right_layout.addWidget(self._tabs)
         root.addWidget(right_col, 1)
 
@@ -664,6 +666,90 @@ class FlywheelStudioWorkspace(QWidget):
         self._lbl_fail_prompt.setText(f"Prompt: {user_p}")
         self._chosen_txt.setPlainText(pair.get("chosen", ""))
         self._rejected_txt.setPlainText(pair.get("rejected", ""))
+
+    def _build_leaderboard_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        header_row = QWidget()
+        hl = QHBoxLayout(header_row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("Evaluation Leaderboard")
+        title.setObjectName("lbl-accent")
+        title.setStyleSheet("font-size: 12pt; font-weight: bold;")
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setObjectName("btn-secondary")
+        refresh_btn.clicked.connect(self._refresh_leaderboard)
+        hl.addWidget(title)
+        hl.addStretch()
+        hl.addWidget(refresh_btn)
+        layout.addWidget(header_row)
+
+        self._leaderboard_table = QTableWidget(0, 6)
+        self._leaderboard_table.setHorizontalHeaderLabels(
+            ["Timestamp", "Model", "Adapter", "Accuracy", "MRR", "Items"]
+        )
+        self._leaderboard_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._leaderboard_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._leaderboard_table.horizontalHeader().setStretchLastSection(True)
+        self._leaderboard_table.itemDoubleClicked.connect(self._open_leaderboard_item)
+        layout.addWidget(self._leaderboard_table, 1)
+
+        dpo_row = QWidget()
+        dr = QHBoxLayout(dpo_row)
+        dr.setContentsMargins(0, 0, 0, 0)
+        self._dpo_count_lbl = QLabel("DPO pairs ready: 0")
+        self._dpo_count_lbl.setObjectName("lbl-muted")
+        export_dpo_btn = QPushButton("Export DPO Dataset")
+        export_dpo_btn.setObjectName("btn-primary")
+        export_dpo_btn.clicked.connect(self._export_dpo_from_evals)
+        dr.addWidget(self._dpo_count_lbl)
+        dr.addStretch()
+        dr.addWidget(export_dpo_btn)
+        layout.addWidget(dpo_row)
+        return w
+
+    def _refresh_leaderboard(self):
+        from app.utils.training_curator import list_eval_results, get_all_examples
+        results = list_eval_results()
+        self._leaderboard_table.setRowCount(0)
+        for meta in results:
+            row = self._leaderboard_table.rowCount()
+            self._leaderboard_table.insertRow(row)
+            self._leaderboard_table.setItem(row, 0, QTableWidgetItem(meta["timestamp"][:16]))
+            self._leaderboard_table.setItem(row, 1, QTableWidgetItem(meta["model_name"]))
+            self._leaderboard_table.setItem(row, 2, QTableWidgetItem(meta["adapter_name"] or "base"))
+            acc_item = QTableWidgetItem(f"{meta['accuracy']:.1%}")
+            acc_item.setForeground(QColor("#2DD4A0") if meta["accuracy"] > 0.7 else QColor("#FFB400"))
+            self._leaderboard_table.setItem(row, 3, acc_item)
+            self._leaderboard_table.setItem(row, 4, QTableWidgetItem(f"{meta.get('mrr', 0):.3f}"))
+            self._leaderboard_table.setItem(row, 5, QTableWidgetItem(str(meta["item_count"])))
+            self._leaderboard_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, meta["path"])
+        self._leaderboard_table.resizeColumnsToContents()
+        chosen = sum(1 for e in get_all_examples() if e.get("source") == "eval_chosen")
+        rejected = sum(1 for e in get_all_examples() if e.get("source") == "eval_rejected")
+        self._dpo_count_lbl.setText(
+            f"DPO pairs ready: {min(chosen, rejected)} (chosen: {chosen}, rejected: {rejected})"
+        )
+
+    def _export_dpo_from_evals(self):
+        from app.utils.training_curator import export_dpo
+        path = export_dpo()
+        QMessageBox.information(self, "DPO Export", f"Exported DPO dataset to:\n{path}")
+
+    def _open_leaderboard_item(self, item):
+        path = self._leaderboard_table.item(item.row(), 0).data(Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            detail = json.dumps(data, indent=2)[:3000]
+            QMessageBox.information(self, "Eval Report", detail)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
 
     def _export_sft(self):
         try:

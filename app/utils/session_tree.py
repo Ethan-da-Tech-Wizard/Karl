@@ -248,3 +248,67 @@ class SessionTree:
         if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
             raise TypeError("Appended message must be a dict containing 'role' and 'content'")
         self.add_message(msg["role"], msg["content"], attachments=msg.get("attachments"))
+
+    SESSIONS_DIR = "data/sessions"
+
+    def save(self, session_id: str | None = None) -> str:
+        """Write this tree to data/sessions/{session_id}.json. Returns the path."""
+        import os, json
+        os.makedirs(self.SESSIONS_DIR, exist_ok=True)
+        if session_id is None:
+            import uuid
+            session_id = str(uuid.uuid4())[:8]
+        path = os.path.join(self.SESSIONS_DIR, f"{session_id}.json")
+        payload = self.to_dict()
+        payload["session_id"] = session_id
+        # Store first user message as preview
+        for node_data in payload.get("root", {}).get("children", []):
+            if node_data.get("role") == "user":
+                payload["preview"] = node_data.get("content", "")[:80]
+                break
+        import tempfile, os as _os
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        _os.replace(tmp, path)
+        return path
+
+    @classmethod
+    def load(cls, path: str) -> tuple['SessionTree', str]:
+        """Load a session from disk. Returns (tree, session_id)."""
+        import json
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        session_id = data.get("session_id", "unknown")
+        tree = cls.from_dict(data)
+        return tree, session_id
+
+    @classmethod
+    def list_sessions(cls) -> list[dict]:
+        """Return metadata for all saved sessions, newest first."""
+        import os, json
+        if not os.path.exists(cls.SESSIONS_DIR):
+            return []
+        sessions = []
+        for fname in sorted(os.listdir(cls.SESSIONS_DIR), reverse=True):
+            if not fname.endswith(".json"):
+                continue
+            path = os.path.join(cls.SESSIONS_DIR, fname)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                sessions.append({
+                    "path": path,
+                    "session_id": data.get("session_id", fname[:-5]),
+                    "preview": data.get("preview", "(empty)"),
+                    "mtime": os.path.getmtime(path),
+                })
+            except Exception:
+                pass
+        sessions.sort(key=lambda x: x["mtime"], reverse=True)
+        return sessions
+
+    def delete_session_file(self, path: str):
+        import os
+        if os.path.exists(path):
+            os.remove(path)

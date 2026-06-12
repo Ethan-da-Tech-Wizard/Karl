@@ -12,6 +12,7 @@ import json
 from datetime import datetime, timezone
 
 CURATED_PATH = "data/training/curated.jsonl"
+EVAL_RESULTS_DIR = "data/eval_results"
 
 
 def _ensure_dir():
@@ -159,6 +160,75 @@ def delete_example(index: int):
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
 
+def save_eval_result(report: dict) -> str:
+    """
+    Persist an EvalReport dict to data/eval_results/{timestamp}_{model}_{adapter}.json.
+    Also auto-generates DPO pairs from passing/failing items.
+    Returns the saved file path.
+    """
+    import time
+    os.makedirs(EVAL_RESULTS_DIR, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    model = report.get("model_name", "unknown").replace("/", "_")[:30]
+    adapter = (report.get("adapter_name") or "base").replace("/", "_")[:20]
+    path = os.path.join(EVAL_RESULTS_DIR, f"{ts}_{model}_{adapter}.json")
+
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+    items = report.get("items", [])
+    for item in items:
+        system_prompt = item.get("system_prompt", "")
+        user_msg = item.get("question", "")
+        model_response = item.get("model_response", "")
+        passed = item.get("passed", False)
+        expected = item.get("expected_answer", "")
+
+        if not user_msg or not model_response:
+            continue
+
+        if passed:
+            save_example(system_prompt, user_msg, model_response, source="eval_chosen")
+        else:
+            save_example(system_prompt, user_msg, model_response, source="eval_rejected")
+            if expected:
+                save_example(system_prompt, user_msg, expected, source="eval_chosen")
+
+    return path
+
+
+def list_eval_results() -> list[dict]:
+    """Return all saved eval results as metadata dicts, newest first."""
+    if not os.path.exists(EVAL_RESULTS_DIR):
+        return []
+    results = []
+    for fname in os.listdir(EVAL_RESULTS_DIR):
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(EVAL_RESULTS_DIR, fname)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            results.append({
+                "path": path,
+                "filename": fname,
+                "model_name": data.get("model_name", "?"),
+                "adapter_name": data.get("adapter_name", "base"),
+                "accuracy": data.get("accuracy", 0.0),
+                "mrr": data.get("mrr", 0.0),
+                "item_count": len(data.get("items", [])),
+                "dataset": data.get("dataset_name", "?"),
+                "timestamp": data.get("timestamp", fname[:15]),
+                "mtime": os.path.getmtime(path),
+            })
+        except Exception:
+            pass
+    results.sort(key=lambda x: x["mtime"], reverse=True)
+    return results
+
+
 class TrainingCurator:
     """
     Class wrapper around the module-level curator functions.
@@ -184,3 +254,9 @@ class TrainingCurator:
 
     def delete_example(self, index: int):
         return delete_example(index)
+
+    def save_eval_result(self, report: dict) -> str:
+        return save_eval_result(report)
+
+    def list_eval_results(self) -> list[dict]:
+        return list_eval_results()
