@@ -431,6 +431,9 @@ class KarlSidebarProvider {
     getHtmlForWebview(webview, port, autoConnect, workspaceFolder, persisted) {
         const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl.css'));
         const themesUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'themes.js'));
+        const stateUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl_state.js'));
+        const renderUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl_render.js'));
+        const socketUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl_socket.js'));
         const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl.js'));
         const nonce = String(Date.now());
         const config = JSON.stringify({
@@ -804,6 +807,9 @@ class KarlSidebarProvider {
         </main>
     </div>
     <script nonce="${nonce}" src="${themesUri}"></script>
+    <script nonce="${nonce}" src="${stateUri}"></script>
+    <script nonce="${nonce}" src="${renderUri}"></script>
+    <script nonce="${nonce}" src="${socketUri}"></script>
     <script nonce="${nonce}" src="${jsUri}"></script>
 </body>
 </html>`;
