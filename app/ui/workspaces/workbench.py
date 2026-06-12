@@ -40,6 +40,54 @@ from app.ui.widgets.symbolic_icon import IconBtn, GearIcon, HamburgerIcon, Brain
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+AGENT_PROFILES = {
+    "karl": {
+        "label": "Karl",
+        "description": "Balanced analytical assistant for general work.",
+        "prompt": "",
+    },
+    "architect": {
+        "label": "Architect",
+        "description": "Plans systems, breaks work into phases, and calls out file boundaries.",
+        "prompt": (
+            "Active agent profile: Architect. Focus on system design, implementation planning, "
+            "dependency mapping, risk analysis, and clear sequencing before code-level detail."
+        ),
+    },
+    "coder": {
+        "label": "Coder",
+        "description": "Implementation-focused engineer for concrete code changes and fixes.",
+        "prompt": (
+            "Active agent profile: Coder. Focus on practical implementation, precise code behavior, "
+            "minimal safe edits, and runnable verification steps."
+        ),
+    },
+    "reviewer": {
+        "label": "Reviewer",
+        "description": "Code-review stance: bugs, regressions, tests, and maintainability first.",
+        "prompt": (
+            "Active agent profile: Reviewer. Prioritize correctness bugs, regressions, missing tests, "
+            "security issues, and maintainability risks. Lead with concrete findings."
+        ),
+    },
+    "debugger": {
+        "label": "Debugger",
+        "description": "Diagnoses errors, logs, screenshots, stack traces, and runtime failures.",
+        "prompt": (
+            "Active agent profile: Debugger. Focus on symptoms, root cause, reproduction steps, "
+            "logs, stack traces, and the smallest fix that proves the issue is resolved."
+        ),
+    },
+    "vision": {
+        "label": "Vision",
+        "description": "Screenshot/image analysis with OCR, UI, document, and code-error awareness.",
+        "prompt": (
+            "Active agent profile: Vision. For attached images or OCR, describe only visible evidence, "
+            "separate observation from inference, and focus on accurate screenshot, document, UI, or error analysis."
+        ),
+    },
+}
+
 def _hline() -> QFrame:
     f = QFrame()
     f.setFrameShape(QFrame.Shape.HLine)
@@ -337,6 +385,7 @@ class WorkbenchWorkspace(QMainWindow):
             "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
             "Double-check your derivations and arithmetic before writing the final answer."
         )
+        self._agent_profile = "karl"
         self._current_session_file: str | None = None
         self._is_correcting = False
         self._pending_image_attachments: list[dict] = []
@@ -547,6 +596,16 @@ class WorkbenchWorkspace(QMainWindow):
         if default_idx >= 0:
             self._workflow_combo.setCurrentIndex(default_idx)
         ctrl_layout.addWidget(self._workflow_combo)
+
+        self._agent_combo = QComboBox()
+        self._agent_combo.setFixedWidth(135)
+        self._agent_combo.setToolTip("Select Karl's active workbench agent profile")
+        for key, data in AGENT_PROFILES.items():
+            self._agent_combo.addItem(data["label"], key)
+            idx = self._agent_combo.count() - 1
+            self._agent_combo.setItemData(idx, data["description"], Qt.ItemDataRole.ToolTipRole)
+        self._agent_combo.currentIndexChanged.connect(self._on_agent_selected)
+        ctrl_layout.addWidget(self._agent_combo)
 
         self._rag_check = QCheckBox("RAG")
         self._rag_check.setToolTip("Inject relevant knowledge base context into prompt")
@@ -910,7 +969,7 @@ class WorkbenchWorkspace(QMainWindow):
         history = self._pending_generation_history or list(self.chat_history)
         self._pending_generation_history = None
         t = LLMThread(
-            system_prompt=self._system_prompt,
+            system_prompt=self._active_system_prompt(),
             chat_history=history,
             hyperparams=self._hyperparams,
             retrieved_chunks=chunks,
@@ -939,7 +998,7 @@ class WorkbenchWorkspace(QMainWindow):
         history = self._pending_generation_history or list(self.chat_history)
         self._pending_generation_history = None
         t = AgenticThread(
-            system_prompt=self._system_prompt,
+            system_prompt=self._active_system_prompt(),
             initial_history=history,
             hyperparams=self._hyperparams,
             retrieved_chunks=chunks,
@@ -980,6 +1039,17 @@ class WorkbenchWorkspace(QMainWindow):
         if visible:
             self._refresh_model_combo()
         self._params_drawer.setVisible(visible)
+
+    def _on_agent_selected(self, *_args):
+        self._agent_profile = self._agent_combo.currentData() or "karl"
+        self._update_expert_strip()
+
+    def _active_system_prompt(self) -> str:
+        profile = AGENT_PROFILES.get(self._agent_profile, AGENT_PROFILES["karl"])
+        profile_prompt = profile.get("prompt", "").strip()
+        if not profile_prompt:
+            return self._system_prompt
+        return f"{self._system_prompt}\n\n{profile_prompt}"
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1529,6 +1599,12 @@ class WorkbenchWorkspace(QMainWindow):
         
         self._strip_loop_lbl = QLabel("Loop: OFF")
         layout.addWidget(self._strip_loop_lbl)
+
+        self._strip_sep5 = _label("|", "lbl-muted")
+        layout.addWidget(self._strip_sep5)
+
+        self._strip_agent_lbl = QLabel("Agent: Karl")
+        layout.addWidget(self._strip_agent_lbl)
         
         layout.addStretch()
         
@@ -1552,6 +1628,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._strip_sep2.setHidden(not is_collapsed)
         self._strip_sep3.setHidden(not is_collapsed)
         self._strip_sep4.setHidden(not is_collapsed)
+        self._strip_sep5.setHidden(not is_collapsed)
+        self._strip_agent_lbl.setHidden(not is_collapsed)
         
         if not is_collapsed:
             self._collapse_strip_btn.setText("▼ expand")
@@ -1586,6 +1664,13 @@ class WorkbenchWorkspace(QMainWindow):
         loop_on = self._loop_check.isChecked()
         self._strip_loop_lbl.setText(f"Loop: {'ON' if loop_on else 'OFF'}")
         self._strip_loop_lbl.setStyleSheet(f"color: {'#00C2FF' if loop_on else '#A0AEC0'};")
+
+        profile = AGENT_PROFILES.get(self._agent_profile, AGENT_PROFILES["karl"])
+        self._strip_agent_lbl.setText(f"Agent: {profile['label']}")
+        self._strip_agent_lbl.setToolTip(profile["description"])
+        self._strip_agent_lbl.setStyleSheet(
+            f"color: {'#00C2FF' if self._agent_profile != 'karl' else '#A0AEC0'};"
+        )
 
     # ── Sessions Upgrades ─────────────────────────────────────────────────────
 

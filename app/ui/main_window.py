@@ -149,7 +149,7 @@ class MainWindow(QMainWindow):
         self._workbench.adapter_changed.connect(self._on_adapter_changed)
         self._system.adapter_changed.connect(self._status_bar.set_adapter)
         self._system.adapter_changed.connect(self._on_adapter_changed)
-        self._system.appearance_changed.connect(self._load_theme_config)
+        self._system.appearance_changed.connect(self._apply_theme_from_state)
 
     def _init_model(self):
         from app.engine.model_loader import ModelLoader
@@ -181,8 +181,6 @@ class MainWindow(QMainWindow):
     def _load_theme_config(self):
         import json
         import os
-        from PyQt6.QtWidgets import QApplication
-        from app.ui.themes import get_theme_colors, get_theme_stylesheet
         
         config_path = "data/ui_config.json"
         fallback_path = "data/theme_config.json"
@@ -228,6 +226,12 @@ class MainWindow(QMainWindow):
         self._state.animation_intensity = animation_intensity
         self._state.glow_strength = glow_strength
 
+        self._apply_theme_from_state()
+
+    def _apply_theme_from_state(self):
+        from PyQt6.QtWidgets import QApplication
+        from app.ui.themes import get_theme_stylesheet
+
         # Apply stylesheet to application
         stylesheet_str = get_theme_stylesheet(self._state)
         QApplication.instance().setStyleSheet(stylesheet_str)
@@ -236,7 +240,7 @@ class MainWindow(QMainWindow):
         self._workbench.update_theme()
 
         # Apply layout preset
-        self.apply_layout_preset(layout_preset)
+        self.apply_layout_preset(self._state.layout_preset)
 
     def apply_layout_preset(self, preset_name: str):
         # 1. Sidebar and status bar visibilities

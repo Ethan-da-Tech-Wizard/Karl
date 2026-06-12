@@ -28,7 +28,7 @@ class HamburgerIcon(BaseSymbol):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        pen = QPen(self.get_color(), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.Round)
+        pen = QPen(self.get_color(), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         
         w = self.width()
@@ -85,7 +85,7 @@ class ThumbsUpIcon(BaseSymbol):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         color = self.get_color()
-        pen = QPen(color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.Round, Qt.PenJoinStyle.Round)
+        pen = QPen(color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
         
         w = self.width()
@@ -118,7 +118,7 @@ class ThumbsDownIcon(BaseSymbol):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         color = self.get_color()
-        pen = QPen(color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.Round, Qt.PenJoinStyle.Round)
+        pen = QPen(color, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
         
         w = self.width()
@@ -179,7 +179,7 @@ class CheckIcon(BaseSymbol):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        pen = QPen(self.get_color(), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.Round)
+        pen = QPen(self.get_color(), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         
         w = self.width()
@@ -196,7 +196,7 @@ class CrossIcon(BaseSymbol):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        pen = QPen(self.get_color(), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.Round)
+        pen = QPen(self.get_color(), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         
         w = self.width()
@@ -257,4 +257,3 @@ class IconBtn(QPushButton):
         
     def update_style(self):
         self.icon_widget.update()
-

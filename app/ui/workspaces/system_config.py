@@ -1417,6 +1417,14 @@ class SystemConfigWorkspace(QWidget):
         ctrl_layout.addWidget(_row("Custom Accent", accent_widget))
 
         ctrl_layout.addWidget(_hline())
+        ctrl_layout.addWidget(_section("THEME GALLERY"))
+
+        self._theme_gallery = QTextBrowser()
+        self._theme_gallery.setMinimumHeight(260)
+        self._theme_gallery.setOpenExternalLinks(False)
+        ctrl_layout.addWidget(self._theme_gallery)
+
+        ctrl_layout.addWidget(_hline())
         ctrl_layout.addWidget(_section("LAYOUT DENSITY PRESETS"))
 
         # Layout density selector
@@ -1726,6 +1734,7 @@ class SystemConfigWorkspace(QWidget):
         self._preset_desc_lbl.setText(preset_data.get("description", ""))
         self._update_accent_button_text()
         self._apply_active_theme()
+        self._update_theme_gallery()
 
     def _pick_custom_accent(self):
         preset_name = self._theme_preset_combo.currentText()
@@ -1827,6 +1836,42 @@ class SystemConfigWorkspace(QWidget):
             su_layout.addWidget(lbl_text, alignment=Qt.AlignmentFlag.AlignCenter)
             
             self._swatches_layout.addWidget(swatch_unit)
+
+    def _update_theme_gallery(self):
+        if not hasattr(self, "_theme_gallery"):
+            return
+        selected = self._theme_preset_combo.currentText()
+        rows = []
+        for name, data in THEMES.items():
+            border = data.get("border_hi", "#35356E")
+            accent = data.get("accent", "#00E5FF")
+            accent_alt = data.get("accent_alt", "#0099AA")
+            bg_deep = data.get("bg_deep", "#020205")
+            bg_surface = data.get("bg_surface", "#0D0D1B")
+            bg_raised = data.get("bg_raised", "#14142D")
+            text_hi = data.get("text_hi", "#F0F5FF")
+            text_mid = data.get("text_mid", "#A0AEC0")
+            selected_badge = " ACTIVE" if name == selected else ""
+            rows.append(
+                "<div style='"
+                f"background:{bg_surface}; color:{text_hi}; border:1px solid {border}; "
+                "border-radius:4px; padding:8px; margin-bottom:8px;'>"
+                f"<div style='font-weight:bold; color:{accent};'>{html.escape(name)}{selected_badge}</div>"
+                f"<div style='color:{text_mid}; margin:4px 0 7px 0;'>{html.escape(data.get('description', ''))}</div>"
+                "<div>"
+                f"<span style='display:inline-block; width:34px; height:14px; background:{accent}; border:1px solid {border};'></span> "
+                f"<span style='display:inline-block; width:34px; height:14px; background:{accent_alt}; border:1px solid {border};'></span> "
+                f"<span style='display:inline-block; width:34px; height:14px; background:{bg_deep}; border:1px solid {border};'></span> "
+                f"<span style='display:inline-block; width:34px; height:14px; background:{bg_surface}; border:1px solid {border};'></span> "
+                f"<span style='display:inline-block; width:34px; height:14px; background:{bg_raised}; border:1px solid {border};'></span>"
+                "</div>"
+                "</div>"
+            )
+        self._theme_gallery.setHtml(
+            f"<div style='font-family:{MONO}; font-size:8.5pt; line-height:1.35;'>"
+            + "".join(rows)
+            + "</div>"
+        )
 
     def _save_appearance_config_silent(self):
         config = {
