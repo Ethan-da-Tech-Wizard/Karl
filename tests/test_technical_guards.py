@@ -13,6 +13,7 @@ import json
 import importlib.util
 import tempfile
 import unittest
+import shutil
 from unittest.mock import patch, MagicMock
 
 from PyQt6.QtCore import QCoreApplication
@@ -33,6 +34,7 @@ class TestTechnicalGuards(unittest.TestCase):
     def tearDown(self):
         self.sandbox_dir.cleanup()
 
+    @unittest.skipIf(shutil.which("rg") is None, "ripgrep (rg) not installed on this system")
     def test_codebase_search_ripgrep(self):
         # Create a test file with unique content
         target_file = os.path.join(self.workspace_path, "search_target.py")
