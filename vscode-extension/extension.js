@@ -146,6 +146,7 @@ const WORKFLOW_REGISTRY = {
 
 function activate(context) {
     const sidebarProvider = new KarlSidebarProvider(context);
+    context.subscriptions.push(sidebarProvider);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('karl.sidebarView', sidebarProvider)
     );
@@ -457,24 +458,45 @@ function getDiagnosticsStats() {
     return counts;
 }
 
-async function sendActiveStateToWebview(sidebarProvider) {
-    const workspacePath = currentWorkspacePath('');
-    const activeFile = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.document.uri.fsPath : '';
-    const gitBranch = await getGitBranch(workspacePath);
-    const diagnostics = getDiagnosticsStats();
-    const diagnosticsDetails = groupedDiagnostics(false);
+let sendStateTimeout = null;
 
-    sidebarProvider.postMessageToWebview({
-        command: 'cockpit_state_update',
-        state: {
-            workspacePath,
-            activeFile,
-            gitBranch,
-            diagnostics,
-            diagnosticsDetails,
-            pendingEditsCount: sidebarProvider.pendingEdits.size
+function sendActiveStateToWebview(sidebarProvider) {
+    if (sendStateTimeout) {
+        clearTimeout(sendStateTimeout);
+    }
+    sendStateTimeout = setTimeout(async () => {
+        sendStateTimeout = null;
+        try {
+            const workspacePath = currentWorkspacePath('');
+            const activeFile = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.document.uri.fsPath : '';
+            const gitBranch = await getGitBranch(workspacePath);
+            const diagnostics = getDiagnosticsStats();
+            const diagnosticsDetails = groupedDiagnostics(false);
+            const pendingEditsCount = sidebarProvider.pendingEdits ? sidebarProvider.pendingEdits.size : 0;
+
+            const state = {
+                workspacePath,
+                activeFile,
+                gitBranch,
+                diagnostics,
+                diagnosticsDetails,
+                pendingEditsCount
+            };
+
+            const stateJson = JSON.stringify(state);
+            if (sidebarProvider.lastSentStateJson === stateJson) {
+                return; // Skip sending unchanged state
+            }
+            sidebarProvider.lastSentStateJson = stateJson;
+
+            sidebarProvider.postMessageToWebview({
+                command: 'cockpit_state_update',
+                state
+            });
+        } catch (err) {
+            console.error('Failed to send active state:', err);
         }
-    });
+    }, 150);
 }
 
 function groupedDiagnostics(currentFileOnly = false) {
@@ -534,6 +556,14 @@ class KarlSidebarProvider {
         this.extensionUri = context.extensionUri;
         this.webviewView = null;
         this.pendingEdits = new Map();
+        this._resolveWebview = null;
+        this.isReady = false;
+        this.messageQueue = [];
+    }
+
+    dispose() {
+        this.webviewView = null;
+        this.pendingEdits.clear();
         this._resolveWebview = null;
         this.isReady = false;
         this.messageQueue = [];
@@ -667,7 +697,7 @@ class KarlSidebarProvider {
         }
     }
 
-    queueFileEdit(filepath, content, summary = '') {
+    async queueFileEdit(filepath, content, summary = '') {
         if (!filepath || typeof content !== 'string') {
             vscode.window.showErrorMessage('Karl sent an invalid file edit payload.');
             return;
@@ -676,7 +706,8 @@ class KarlSidebarProvider {
         const filename = path.basename(filepath);
         let previous = '';
         try {
-            previous = fs.existsSync(filepath) ? fs.readFileSync(filepath, 'utf8') : '';
+            const fileExists = await fs.promises.access(filepath).then(() => true).catch(() => false);
+            previous = fileExists ? await fs.promises.readFile(filepath, 'utf8') : '';
         } catch {
             previous = '';
         }
@@ -745,14 +776,17 @@ class KarlSidebarProvider {
 
         try {
             const backupPath = edit.filepath + '.original';
-            if (fs.existsSync(edit.filepath) && !fs.existsSync(backupPath)) {
+            const fileExists = await fs.promises.access(edit.filepath).then(() => true).catch(() => false);
+            const backupExists = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+            if (fileExists && !backupExists) {
                 await fs.promises.copyFile(edit.filepath, backupPath);
             }
             await fs.promises.writeFile(edit.filepath, edit.content, 'utf8');
             edit.status = 'applied';
             edit.backupPath = backupPath;
             this.pendingEdits.set(editId, edit);
-            this.postMessageToWebview({ command: 'file_edit_applied', editId, backupExists: fs.existsSync(backupPath) });
+            const backupExistsAfter = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+            this.postMessageToWebview({ command: 'file_edit_applied', editId, backupExists: backupExistsAfter });
             vscode.window.showInformationMessage(`Karl applied changes to ${edit.filename}.`);
             await vscode.window.showTextDocument(vscode.Uri.file(edit.filepath), { preview: false });
             sendActiveStateToWebview(this);
@@ -787,8 +821,11 @@ class KarlSidebarProvider {
 
     async openFile(editId) {
         const edit = this.pendingEdits.get(editId);
-        if (edit && fs.existsSync(edit.filepath)) {
-            await vscode.window.showTextDocument(vscode.Uri.file(edit.filepath), { preview: false });
+        if (edit) {
+            const fileExists = await fs.promises.access(edit.filepath).then(() => true).catch(() => false);
+            if (fileExists) {
+                await vscode.window.showTextDocument(vscode.Uri.file(edit.filepath), { preview: false });
+            }
         }
     }
 
@@ -804,7 +841,8 @@ class KarlSidebarProvider {
         const edit = this.pendingEdits.get(editId);
         if (!edit) return;
         const backupPath = edit.backupPath || edit.filepath + '.original';
-        if (!fs.existsSync(backupPath)) {
+        const backupExists = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+        if (!backupExists) {
             vscode.window.showWarningMessage('No backup file found to rollback.');
             return;
         }
@@ -820,7 +858,8 @@ class KarlSidebarProvider {
     async acceptLegacyFile(filepath) {
         if (!filepath) return;
         const backupPath = filepath + '.original';
-        if (fs.existsSync(backupPath)) {
+        const backupExists = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+        if (backupExists) {
             await fs.promises.unlink(backupPath);
             vscode.window.showInformationMessage(`Accepted changes for ${path.basename(filepath)}.`);
         }
@@ -829,7 +868,8 @@ class KarlSidebarProvider {
     async rollbackLegacyFile(filepath) {
         if (!filepath) return;
         const backupPath = filepath + '.original';
-        if (!fs.existsSync(backupPath)) {
+        const backupExists = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+        if (!backupExists) {
             vscode.window.showWarningMessage('No backup file found to rollback.');
             return;
         }
