@@ -291,8 +291,18 @@ class SwarmOrchestratorThread(QThread):
                 results[fp] = (ok, detail)
 
         self._process_events_if_main_thread()
+        all_ok = all(ok for ok, _ in results.values())
+        if not all_ok:
+            for task in layer_tasks:
+                fp = task["filepath"]
+                ok, detail = results.get(fp, (False, "Unknown failure"))
+                if not ok:
+                    self.state.tasks_status[fp] = "failed"
+                    self.task_status_changed.emit(fp, "failed", detail)
+            self.layer_finished.emit(layer_index, False, f"Layer {layer_index} had coding failures")
+            self._process_events_if_main_thread()
+            return False
 
-        # Verify the layer
         if self._stop_requested:
             return False
 
@@ -317,23 +327,14 @@ class SwarmOrchestratorThread(QThread):
                     self.task_status_changed.emit(task["filepath"], "completed", f"Layer {layer_index} verified")
                 self.layer_finished.emit(layer_index, True, f"Layer {layer_index} verified")
                 self._process_events_if_main_thread()
-    
-        all_ok = all(ok for ok, _ in results.values())
-        if all_ok and not cmd:
+                return True
+        else:
             for task in layer_tasks:
                 self.state.tasks_status[task["filepath"]] = "completed"
                 self.task_status_changed.emit(task["filepath"], "completed", f"Layer {layer_index} complete")
-        elif not all_ok:
-            for task in layer_tasks:
-                fp = task["filepath"]
-                ok, detail = results.get(fp, (False, "Unknown failure"))
-                if not ok:
-                    self.state.tasks_status[fp] = "failed"
-                    self.task_status_changed.emit(fp, "failed", detail)
-        
-        self.layer_finished.emit(layer_index, all_ok, f"Layer {layer_index} {'complete' if all_ok else 'had failures'}")
-        self._process_events_if_main_thread()
-        return all_ok
+            self.layer_finished.emit(layer_index, True, f"Layer {layer_index} complete")
+            self._process_events_if_main_thread()
+            return True
 
     def run(self):
         try:
