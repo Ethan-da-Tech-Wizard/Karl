@@ -63,9 +63,58 @@ class WebSocketServerManager:
         self.kb_ingest_thread: Optional[threading.Thread] = None
         self.rag = RAGPipeline()
         self._seed_codex()
+        self._init_security()
         self.server = None
         self.started_event = threading.Event()
         self._start_loop_thread()
+
+    def _init_security(self):
+        """Initializes security token and safe path rules."""
+        token_path = "data/bridge_token.txt"
+        if os.path.exists(token_path):
+            try:
+                with open(token_path, "r", encoding="utf-8") as f:
+                    self.bridge_token = f.read().strip()
+            except Exception:
+                self.bridge_token = self._generate_token()
+        else:
+            self.bridge_token = self._generate_token()
+            try:
+                os.makedirs("data", exist_ok=True)
+                with open(token_path, "w", encoding="utf-8") as f:
+                    f.write(self.bridge_token)
+            except Exception as e:
+                logger.warning(f"Could not save bridge token: {e}")
+
+        # Sensitive directories that should never be targeted by agents or RAG
+        self.blocked_paths = {
+            "/", "/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin",
+            "/var", "/boot", "/dev", "/proc", "/sys", "/root"
+        }
+        user_home = os.path.expanduser("~")
+        self.blocked_paths.add(user_home)
+        self.blocked_paths.add(os.path.join(user_home, "Desktop"))
+        self.blocked_paths.add(os.path.join(user_home, "Documents"))
+        self.blocked_paths.add(os.path.join(user_home, "Downloads"))
+
+    def _generate_token(self) -> str:
+        return uuid.uuid4().hex
+
+    def _is_safe_path(self, path: str) -> bool:
+        """Checks if a path is outside sensitive system directories."""
+        if not path:
+            return False
+        abs_path = os.path.abspath(os.path.expanduser(path))
+        
+        # Check against blocked paths
+        for blocked in self.blocked_paths:
+            if abs_path == blocked or abs_path.startswith(blocked + os.sep):
+                # Allow the project directory itself even if it's in a subfolder of home
+                project_root = os.getcwd()
+                if abs_path.startswith(project_root):
+                    return True
+                return False
+        return True
 
     def _seed_codex(self):
         library_dir = "data/codex_library"
@@ -558,7 +607,8 @@ class WebSocketServerManager:
         self.client_metadata[websocket] = {
             "id": client_id,
             "ip": ip,
-            "connected_at": datetime.now(timezone.utc).isoformat()
+            "connected_at": datetime.now(timezone.utc).isoformat(),
+            "authenticated": False
         }
         self.client_histories[websocket] = []
         logger.info(f"Client connected: {websocket.remote_address} (ID: {client_id})")
@@ -573,6 +623,45 @@ class WebSocketServerManager:
                 method = data.get("method")
                 params = data.get("params", {})
                 req_id = data.get("id")
+                token = params.get("token")
+
+                # Authentication check
+                client_meta = self.client_metadata.get(websocket, {})
+                authenticated = client_meta.get("authenticated", False)
+
+                if method == "authenticate":
+                    if token == self.bridge_token:
+                        client_meta["authenticated"] = True
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {"authenticated": True}
+                        }))
+                    else:
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32000, "message": "Invalid token."}
+                        }))
+                    continue
+
+                # Block sensitive methods if not authenticated
+                sensitive_methods = {
+                    "submit_task", "submit_chat", "ingest_path", 
+                    "set_active_model", "start_auto_train", "save_prompt_pair",
+                    "delete_prompt_pair"
+                }
+                
+                if method in sensitive_methods and not authenticated:
+                    await websocket.send(json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32000, 
+                            "message": "Authentication required. Call 'authenticate' with the token found in 'data/bridge_token.txt'."
+                        }
+                    }))
+                    continue
 
                 try:
                     if method == "get_runtime_status":
@@ -634,6 +723,17 @@ class WebSocketServerManager:
                         }))
 
                     elif method == "ingest_path":
+                        path = params.get("path", "")
+                        if not self._is_safe_path(path):
+                            await websocket.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32001,
+                                    "message": f"Security Error: Ingesting a sensitive system path is blocked: {path}"
+                                }
+                            }))
+                            continue
                         await websocket.send(json.dumps({
                             "jsonrpc": "2.0",
                             "id": req_id,
@@ -659,6 +759,17 @@ class WebSocketServerManager:
                                 "error": {
                                     "code": -32602,
                                     "message": "Invalid params: objective and workspace_path are required."
+                                }
+                            }))
+                            continue
+
+                        if not self._is_safe_path(workspace_path):
+                            await websocket.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32001,
+                                    "message": f"Security Error: Targeting a sensitive system path is blocked: {workspace_path}"
                                 }
                             }))
                             continue

@@ -106,6 +106,20 @@ npx ovsx publish karl-1.4.0.vsix -p <your-open-vsx-access-token>
 
 ---
 
+## Security and Safety
+
+Karl is a local-first application, but it has the power to execute code and
+interact with your filesystem. 
+
+- **Privacy:** Karl does not phone home. All inference and RAG are offline.
+- **Bridge Security:** The VS Code bridge now requires a token (found in `data/bridge_token.txt`) for sensitive operations.
+- **Path Protection:** Critical system paths are blocked from being targeted by agents or RAG.
+- **Sandboxing:** Code verifications in the auto-train pipeline run inside isolated Docker containers.
+
+See [docs/10_security_and_safety.md](docs/10_security_and_safety.md) for the full security model and safe usage guidelines.
+
+---
+
 ## Project Structure
 ```
 ├── core/               # THE HACKABLE LAYER — edit these freely
