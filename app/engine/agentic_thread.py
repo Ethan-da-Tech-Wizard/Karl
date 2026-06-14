@@ -73,7 +73,7 @@ class AgenticThread(QThread):
         Trims the chat history so the compiled prompt stays inside the context budget.
         Always keeps the first user message (the seed) and the most recent turns.
         """
-        context_budget = ModelLoader.n_ctx()
+        context_budget = ModelLoader.context_limit()
         base_tokens = self._token_count(llm, system_prompt)
         budget = max(256, context_budget - _RESPONSE_RESERVE - base_tokens)
 
@@ -201,7 +201,7 @@ class AgenticThread(QThread):
 
             # Check if we need to do cognitive roll-up compression
             current_tokens_count = len(llm.tokenize((prompt + raw_output).encode('utf-8')))
-            context_budget = ModelLoader.n_ctx()
+            context_budget = ModelLoader.context_limit()
             
             compressed = False
             if current_tokens_count > 0.8 * context_budget and parsed_thought:
@@ -276,6 +276,7 @@ class AgenticThread(QThread):
             if self.model_name:
                 model_path = os.path.join("data", "models", self.model_name)
             llm = ModelLoader.get_instance(model_path=model_path, adapter_name=self.adapter_name)
+            ModelLoader.lock_instance()
             iteration = 0
 
             while not self._stop_requested:
@@ -379,3 +380,5 @@ class AgenticThread(QThread):
 
         except Exception as e:
             self.error_occurred.emit(f"Agentic Error: {str(e)}")
+        finally:
+            ModelLoader.unlock_instance()

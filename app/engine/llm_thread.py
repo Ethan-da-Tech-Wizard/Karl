@@ -73,7 +73,7 @@ class LLMThread(QThread):
         2. Drops oldest messages until tokenizer-measured history fits in the budget
         3. Always keeps message[0] (the seed)
         """
-        context_budget = ModelLoader.n_ctx()
+        context_budget = ModelLoader.context_limit()
         system_tokens = self._token_count(llm, system_prompt)
         history_token_limit = max(256, context_budget - _RESPONSE_RESERVE - system_tokens)
 
@@ -106,6 +106,7 @@ class LLMThread(QThread):
             )
 
             llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
+            ModelLoader.lock_instance()
 
             # If retrieved_chunks is list of dicts, format it to list of strings early to prevent TypeError in context_str join
             rag_attribution_chunks = None
@@ -127,7 +128,7 @@ class LLMThread(QThread):
 
             # Emit context budget stats for the HUD
             try:
-                budget = ModelLoader.n_ctx()
+                budget = ModelLoader.context_limit()
                 hist_tokens = sum(self._message_token_count(llm, m) for m in trimmed_history)
                 rag_tokens  = self._token_count(llm, context_str) if self.retrieved_chunks else 0
                 sys_tokens  = self._token_count(llm, system_prompt)
@@ -253,7 +254,7 @@ class LLMThread(QThread):
 
                     # Check if we need to do cognitive roll-up compression
                     current_tokens_count = len(llm.tokenize((prompt + raw_output).encode('utf-8')))
-                    context_budget = ModelLoader.n_ctx()
+                    context_budget = ModelLoader.context_limit()
                     
                     compressed = False
                     if current_tokens_count > 0.8 * context_budget and parsed_thought:
@@ -395,3 +396,5 @@ class LLMThread(QThread):
 
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")
+        finally:
+            ModelLoader.unlock_instance()

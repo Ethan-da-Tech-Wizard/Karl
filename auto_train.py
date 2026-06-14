@@ -445,6 +445,8 @@ def main():
         sys.exit(1)
 
     # 5. Run SFT Trainer
+    logger.info("Releasing GPU VRAM from active GGUF inference engine...")
+    ModelLoader.reset_instance()
     train_adapter(str(dataset_file), base_model, args.adapter_name, args)
 
     # 6. GGUF compilation

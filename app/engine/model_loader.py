@@ -24,6 +24,8 @@ class ModelLoader:
     _draft_model_path: str | None = None
     _draft_instance = None
     _MEMORY_SAFETY_MARGIN = 0.92
+    _instance_locked = False
+
 
     @classmethod
     def _read_registry_n_ctx(cls, filename: str) -> int:
@@ -300,6 +302,9 @@ class ModelLoader:
     @classmethod
     def reset_instance(cls):
         with cls._lock:
+            if cls._instance_locked:
+                logger.warning("Resetting ModelLoader instance while VRAM lock is active.")
+            cls._instance_locked = False
             if cls._instance is not None:
                 try:
                     cls._instance.close()
@@ -326,13 +331,54 @@ class ModelLoader:
                 pass
 
     @classmethod
+    def lock_instance(cls):
+        with cls._lock:
+            cls._instance_locked = True
+            logger.info("ModelLoader instance VRAM lock acquired.")
+
+    @classmethod
+    def unlock_instance(cls):
+        with cls._lock:
+            cls._instance_locked = False
+            logger.info("ModelLoader instance VRAM lock released.")
+
+    @classmethod
+    def is_instance_locked(cls) -> bool:
+        with cls._lock:
+            return cls._instance_locked
+
+    @classmethod
+    def context_limit(cls) -> int:
+        """Return the context limit of the loaded GGUF model or config fallback."""
+        return cls.n_ctx()
+
+    @classmethod
     def model_name(cls) -> str:
         return getattr(cls, "_model_name", "none")
 
     @classmethod
     def n_ctx(cls) -> int:
         """Return the context window size for the loaded model."""
-        return getattr(cls, '_n_ctx', 4096)
+        with cls._lock:
+            if cls._instance is not None:
+                try:
+                    if hasattr(cls._instance, "n_ctx"):
+                        val = cls._instance.n_ctx
+                        if callable(val):
+                            return val()
+                        return int(val)
+                except Exception as e:
+                    logger.warning(f"Error querying model context limit: {e}")
+            
+            # Fallback to active model's n_ctx
+            try:
+                from app.engine import config_store
+                active = config_store.get_active_model()
+                if active and "filename" in active:
+                    return cls._read_registry_n_ctx(active["filename"])
+            except Exception:
+                pass
+            return getattr(cls, '_n_ctx', 4096)
 
     @classmethod
     def is_loaded(cls) -> bool:
