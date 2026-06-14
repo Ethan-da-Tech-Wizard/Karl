@@ -9,6 +9,7 @@ import os
 import time
 import ast
 import json
+import threading
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -55,7 +56,9 @@ class SwarmOrchestratorThread(QThread):
     task_status_changed = pyqtSignal(str, str, str)  # filepath, status, detail
     verification_started = pyqtSignal(int, str)    # layer_index, command
     traceback_captured = pyqtSignal(str, str)      # filepath/layer, traceback
-    file_edited = pyqtSignal(str, str)            # filepath, new_content
+    verification_failed = pyqtSignal(str, str)    # context (filepath/layer), full traceback
+    edits_proposed = pyqtSignal(list)             # list[{filepath, content}] — awaits commit_selected_edits()
+    file_edited = pyqtSignal(str, str)            # filepath, new_content (emitted after write)
     test_result = pyqtSignal(bool, str)           # passed, error_traceback
     finished_swarm = pyqtSignal(bool, str)        # success, final_summary
     coder_token = pyqtSignal(str, str)            # (filepath, token)
@@ -67,6 +70,9 @@ class SwarmOrchestratorThread(QThread):
         self.coder = CoderAgent()
         self.tester = TesterAgent(workspace_path)
         self._stop_requested = False
+
+        self._cherry_pick_event = threading.Event()
+        self._cherry_pick_selected: list[str] = []
 
         if hyperparams:
             temp = hyperparams.get("temperature")
@@ -88,6 +94,13 @@ class SwarmOrchestratorThread(QThread):
 
     def request_stop(self):
         self._stop_requested = True
+        # Unblock any pending cherry-pick wait so the thread can exit cleanly.
+        self._cherry_pick_event.set()
+
+    def commit_selected_edits(self, selected_filepaths: list[str]):
+        """Called from the UI thread to confirm which proposed edits should be written to disk."""
+        self._cherry_pick_selected = list(selected_filepaths)
+        self._cherry_pick_event.set()
 
     def _workspace_root(self) -> Path:
         return Path(self.state.workspace_path).expanduser().resolve()
@@ -219,8 +232,9 @@ class SwarmOrchestratorThread(QThread):
         workspace_ctx = self.scan_workspace()
         max_workers = min(len(layer_tasks), 4)
         results: dict[str, tuple[bool, str]] = {}
-    
+
         def _run_one(task: dict) -> tuple[str, bool, str]:
+            """Generate and validate content only — does NOT write to disk."""
             if self._stop_requested:
                 return task["filepath"], False, "stopped"
             filepath = task["filepath"]
@@ -228,13 +242,15 @@ class SwarmOrchestratorThread(QThread):
 
             def _tok_cb(tok: str):
                 self.coder_token.emit(filepath, tok)
-            
-            # Append failure trace to instructions if present
+
             task_copy = dict(task)
-            trace = layer_failure_traces.get(filepath)
-            if trace:
-                task_copy["instructions"] += f"\nWarning: Previous test failed with this trace:\n{trace}\nCorrect the code to fix this."
-    
+            prior_trace = layer_failure_traces.get(filepath)
+            if prior_trace:
+                task_copy["instructions"] += (
+                    f"\nWarning: Previous test failed with this trace:\n{prior_trace}\n"
+                    "Correct the code to fix this."
+                )
+
             try:
                 content = self.coder.generate(
                     task_copy, workspace_ctx,
@@ -244,21 +260,19 @@ class SwarmOrchestratorThread(QThread):
                 if content.startswith("# SYNTAX ERROR"):
                     self.task_status_changed.emit(filepath, "failed", content[:120])
                     self.traceback_captured.emit(filepath, content)
+                    self.verification_failed.emit(filepath, content)
                     self.test_result.emit(False, content)
                     layer_failure_traces[filepath] = content
                     return filepath, False, content
 
-                # Syntax validation guards
                 syntax_error = None
                 if filepath.endswith(".py"):
                     try:
-                        import ast
                         ast.parse(content)
                     except SyntaxError as e:
                         syntax_error = f"SyntaxError: {e.msg} at line {e.lineno}"
                 elif filepath.endswith(".json"):
                     try:
-                        import json
                         json.loads(content)
                     except json.JSONDecodeError as e:
                         syntax_error = f"JSONDecodeError: {e.msg} at line {e.lineno} col {e.colno}"
@@ -266,20 +280,17 @@ class SwarmOrchestratorThread(QThread):
                 if syntax_error:
                     self.task_status_changed.emit(filepath, "failed", syntax_error)
                     self.traceback_captured.emit(filepath, syntax_error)
+                    self.verification_failed.emit(filepath, syntax_error)
                     self.test_result.emit(False, syntax_error)
                     layer_failure_traces[filepath] = syntax_error
                     return filepath, False, syntax_error
 
-                _, full_path = self._resolve_task_path(filepath)
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                full_path.write_text(content, encoding="utf-8")
-                self.file_edited.emit(filepath, content)
-                self.task_status_changed.emit(filepath, "written", "File written")
                 return filepath, True, content
             except Exception as e:
                 msg = str(e)
                 self.task_status_changed.emit(filepath, "failed", msg[:120])
                 self.traceback_captured.emit(filepath, msg)
+                self.verification_failed.emit(filepath, msg)
                 self.test_result.emit(False, msg)
                 layer_failure_traces[filepath] = msg
                 return filepath, False, msg
@@ -291,6 +302,8 @@ class SwarmOrchestratorThread(QThread):
                 results[fp] = (ok, detail)
 
         self._process_events_if_main_thread()
+
+        # Fail fast if any coder produced an invalid result
         all_ok = all(ok for ok, _ in results.values())
         if not all_ok:
             for task in layer_tasks:
@@ -306,6 +319,44 @@ class SwarmOrchestratorThread(QThread):
         if self._stop_requested:
             return False
 
+        # ── Cherry-pick: surface proposed edits to the UI before touching disk ──
+        proposals = [
+            {"filepath": fp, "content": detail}
+            for fp, (ok, detail) in results.items()
+            if ok
+        ]
+        self._cherry_pick_event.clear()
+        self._cherry_pick_selected = [p["filepath"] for p in proposals]  # default: all selected
+        self.edits_proposed.emit(proposals)
+
+        # Block until the UI calls commit_selected_edits() (or stop is requested)
+        while not self._cherry_pick_event.wait(timeout=0.5):
+            if self._stop_requested:
+                return False
+
+        if self._stop_requested:
+            return False
+
+        # ── Write only the files the developer approved ──
+        for p in proposals:
+            fp = p["filepath"]
+            content = p["content"]
+            if fp in self._cherry_pick_selected:
+                try:
+                    _, full_path = self._resolve_task_path(fp)
+                    full_path.parent.mkdir(parents=True, exist_ok=True)
+                    full_path.write_text(content, encoding="utf-8")
+                    self.file_edited.emit(fp, content)
+                    self.task_status_changed.emit(fp, "written", "File written")
+                except Exception as e:
+                    self.task_status_changed.emit(fp, "failed", str(e))
+                    layer_failure_traces[fp] = str(e)
+            else:
+                self.task_status_changed.emit(fp, "skipped", "Cherry-picked out")
+                self.state.tasks_status[fp] = "skipped"
+
+        self._process_events_if_main_thread()
+
         cmd = self.state.test_command
         if cmd:
             self.verification_started.emit(layer_index, cmd)
@@ -315,6 +366,7 @@ class SwarmOrchestratorThread(QThread):
             self._process_events_if_main_thread()
             if not passed:
                 self.traceback_captured.emit(f"Layer {layer_index}", trace)
+                self.verification_failed.emit(f"Layer {layer_index}", trace)
                 for task in layer_tasks:
                     layer_failure_traces[task["filepath"]] = trace
                     self.task_status_changed.emit(task["filepath"], "verification_failed", trace)
@@ -323,15 +375,18 @@ class SwarmOrchestratorThread(QThread):
                 return False
             else:
                 for task in layer_tasks:
-                    self.state.tasks_status[task["filepath"]] = "completed"
-                    self.task_status_changed.emit(task["filepath"], "completed", f"Layer {layer_index} verified")
+                    fp = task["filepath"]
+                    if fp in self._cherry_pick_selected:
+                        self.state.tasks_status[fp] = "completed"
+                        self.task_status_changed.emit(fp, "completed", f"Layer {layer_index} verified")
                 self.layer_finished.emit(layer_index, True, f"Layer {layer_index} verified")
                 self._process_events_if_main_thread()
                 return True
         else:
             for task in layer_tasks:
-                self.state.tasks_status[task["filepath"]] = "completed"
-                self.task_status_changed.emit(task["filepath"], "completed", f"Layer {layer_index} complete")
+                fp = task["filepath"]
+                self.state.tasks_status[fp] = "completed"
+                self.task_status_changed.emit(fp, "completed", f"Layer {layer_index} complete")
             self.layer_finished.emit(layer_index, True, f"Layer {layer_index} complete")
             self._process_events_if_main_thread()
             return True

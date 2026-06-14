@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
@@ -246,17 +247,50 @@ class SwarmStudioWorkspace(QWidget):
         )
         layout.addWidget(self._stream_view)
 
+        # ── Cherry-pick panel (hidden until the orchestrator proposes edits) ──
+        self._cherry_pick_group = QGroupBox("Proposed Edits — Cherry Pick")
+        cg = QVBoxLayout(self._cherry_pick_group)
+        cg.setSpacing(6)
+
+        self._cherry_pick_list = QListWidget()
+        self._cherry_pick_list.setMinimumHeight(100)
+        self._cherry_pick_list.itemClicked.connect(self._on_cherry_pick_item_clicked)
+        cg.addWidget(self._cherry_pick_list)
+
+        btn_row = QWidget()
+        br = QHBoxLayout(btn_row)
+        br.setContentsMargins(0, 0, 0, 0)
+        br.setSpacing(4)
+        _all_btn = QPushButton("All")
+        _all_btn.setFixedWidth(42)
+        _all_btn.clicked.connect(self._cherry_select_all)
+        _none_btn = QPushButton("None")
+        _none_btn.setFixedWidth(42)
+        _none_btn.clicked.connect(self._cherry_select_none)
+        self._commit_btn = QPushButton("Commit Checked Edits")
+        self._commit_btn.setObjectName("btn-primary")
+        self._commit_btn.setEnabled(False)
+        self._commit_btn.clicked.connect(self._on_commit_edits)
+        br.addWidget(_all_btn)
+        br.addWidget(_none_btn)
+        br.addStretch()
+        br.addWidget(self._commit_btn)
+        cg.addWidget(btn_row)
+
+        self._cherry_pick_group.setVisible(False)
+        layout.addWidget(self._cherry_pick_group)
+
         layout.addWidget(QLabel("File Preview"))
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
         self._preview.setFont(QFont("Monospace", 9))
         layout.addWidget(self._preview, 2)
 
-        layout.addWidget(QLabel("Traceback / Verification Detail"))
-        self._traceback = QTextEdit()
-        self._traceback.setReadOnly(True)
-        self._traceback.setFont(QFont("Monospace", 8))
-        layout.addWidget(self._traceback, 2)
+        layout.addWidget(QLabel("Verification Traceback"))
+        self._traceback_browser = QTextBrowser()
+        self._traceback_browser.setFont(QFont("Monospace", 9))
+        self._traceback_browser.setOpenLinks(False)
+        layout.addWidget(self._traceback_browser, 2)
 
         self._result_banner = QLabel("No run active.")
         self._result_banner.setWordWrap(True)
@@ -325,6 +359,8 @@ class SwarmStudioWorkspace(QWidget):
         self._thread.task_status_changed.connect(self._on_task_status)
         self._thread.verification_started.connect(self._on_verification_started)
         self._thread.traceback_captured.connect(self._on_traceback)
+        self._thread.verification_failed.connect(self._on_verification_failed)
+        self._thread.edits_proposed.connect(self._on_edits_proposed)
         self._thread.file_edited.connect(self._on_file_edited)
         self._thread.test_result.connect(self._on_test_result)
         self._thread.finished_swarm.connect(self._on_finished)
@@ -348,7 +384,10 @@ class SwarmStudioWorkspace(QWidget):
         self._task_table.setRowCount(0)
         self._status_log.clear()
         self._preview.clear()
-        self._traceback.clear()
+        self._traceback_browser.clear()
+        self._cherry_pick_list.clear()
+        self._cherry_pick_group.setVisible(False)
+        self._commit_btn.setEnabled(False)
         self._stream_view.clear()
         self._stream_current_file = None
         self._progress.setValue(0)
@@ -419,7 +458,7 @@ class SwarmStudioWorkspace(QWidget):
 
     def _on_traceback(self, key: str, trace: str):
         self._tracebacks[key] = trace
-        self._traceback.setPlainText(trace)
+        self._traceback_browser.setHtml(self._format_traceback_html(trace, key))
 
     def _on_file_edited(self, filepath: str, content: str):
         self._file_contents[filepath] = content
@@ -428,9 +467,11 @@ class SwarmStudioWorkspace(QWidget):
 
     def _on_test_result(self, passed: bool, trace: str):
         if passed:
-            self._traceback.setPlainText("Verification passed.")
+            self._traceback_browser.setHtml(
+                '<div style="font-family:Monospace,monospace;padding:8px;color:#4CAF50;">Verification passed.</div>'
+            )
         else:
-            self._traceback.setPlainText(trace)
+            self._traceback_browser.setHtml(self._format_traceback_html(trace))
 
     def _on_finished(self, success: bool, summary: str):
         self.state.swarm_running = False
@@ -594,10 +635,91 @@ class SwarmStudioWorkspace(QWidget):
             return
         filepath = filepath_item.text()
         self._preview.setPlainText(self._file_contents.get(filepath, "No file content captured yet."))
-        self._traceback.setPlainText(
+        trace = (
             self._tracebacks.get(filepath)
             or self._tracebacks.get(f"Layer {self._layer_for_file(filepath)}", "")
         )
+        if trace:
+            self._traceback_browser.setHtml(self._format_traceback_html(trace, filepath))
+        else:
+            self._traceback_browser.clear()
+
+    # ── Cherry-pick helpers ──────────────────────────────────────────────────
+
+    def _on_edits_proposed(self, edits: list):
+        self._cherry_pick_list.clear()
+        for edit in edits:
+            item = QListWidgetItem(edit["filepath"])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            item.setData(Qt.ItemDataRole.UserRole, edit["content"])
+            self._cherry_pick_list.addItem(item)
+        self._commit_btn.setEnabled(True)
+        self._cherry_pick_group.setVisible(True)
+        self._status_log.append("[Swarm] Edits proposed — review and commit to proceed.")
+
+    def _on_cherry_pick_item_clicked(self, item: QListWidgetItem):
+        content = item.data(Qt.ItemDataRole.UserRole)
+        if content:
+            self._preview.setPlainText(content)
+
+    def _cherry_select_all(self):
+        for i in range(self._cherry_pick_list.count()):
+            self._cherry_pick_list.item(i).setCheckState(Qt.CheckState.Checked)
+
+    def _cherry_select_none(self):
+        for i in range(self._cherry_pick_list.count()):
+            self._cherry_pick_list.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+    def _on_commit_edits(self):
+        if not self._thread:
+            return
+        selected = [
+            self._cherry_pick_list.item(i).text()
+            for i in range(self._cherry_pick_list.count())
+            if self._cherry_pick_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        skipped = self._cherry_pick_list.count() - len(selected)
+        self._thread.commit_selected_edits(selected)
+        self._commit_btn.setEnabled(False)
+        self._cherry_pick_group.setVisible(False)
+        msg = f"[Swarm] Committed {len(selected)} edit(s)"
+        if skipped:
+            msg += f", skipped {skipped}"
+        self._status_log.append(msg + ".")
+
+    # ── Verification traceback viewer ────────────────────────────────────────
+
+    def _on_verification_failed(self, context: str, traceback_text: str):
+        self._traceback_browser.setHtml(self._format_traceback_html(traceback_text, context))
+
+    def _format_traceback_html(self, trace: str, context: str = "") -> str:
+        import html as _html
+        _exc_starts = (
+            "Traceback", "Error", "Exception", "SyntaxError", "TypeError",
+            "ValueError", "KeyError", "IndexError", "AttributeError",
+            "NameError", "ImportError", "AssertionError", "JSONDecodeError",
+            "# SYNTAX",
+        )
+        parts = [
+            '<div style="font-family:Monospace,monospace;font-size:9pt;'
+            'background:#0A0A14;padding:8px;color:#C0C0D0;">'
+        ]
+        if context:
+            parts.append(f'<b style="color:#FFB400;">[{_html.escape(context)}]</b><br/>')
+        for line in trace.splitlines():
+            stripped = line.strip()
+            escaped = _html.escape(line)
+            if stripped.startswith("File ") and ("line " in stripped or '", line' in stripped):
+                parts.append(f'<span style="color:#7FDBFF;">{escaped}</span><br/>')
+            elif any(stripped.startswith(p) for p in _exc_starts):
+                parts.append(f'<b style="color:#FF5C7A;">{escaped}</b><br/>')
+            elif stripped.startswith("^") or "~~~" in stripped:
+                parts.append(f'<span style="color:#FF9900;">{escaped}</span><br/>')
+            else:
+                parts.append(f'{escaped}<br/>')
+        parts.append("</div>")
+        return "".join(parts)
 
     def closeEvent(self, event):
         if self._thread and self._thread.isRunning():
