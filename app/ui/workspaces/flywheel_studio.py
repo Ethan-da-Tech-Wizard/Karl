@@ -46,11 +46,12 @@ def _label(text: str, obj: str = "") -> QLabel:
 # ── Custom Interactive Line Chart Widget ──────────────────────────────────────
 
 class CustomLineChart(QWidget):
-    def __init__(self, title: str, x_label: str, y_label: str, parent=None):
+    def __init__(self, title: str, x_label: str, y_label: str, parent=None, accent_hex: str = "#00C2FF"):
         super().__init__(parent)
         self.title = title
         self.x_label = x_label
         self.y_label = y_label
+        self._accent_hex = accent_hex
         self.points: list[tuple[float, float]] = []
         self.labels: list[str] = []
         self.setMouseTracking(True)
@@ -144,8 +145,8 @@ class CustomLineChart(QWidget):
         bg_color = QColor(13, 13, 27)
         grid_color = QColor(31, 31, 61)
         text_color = QColor(144, 144, 168)
-        accent_color = QColor(0, 194, 255)
-        line_color = QColor(0, 194, 255, 220)
+        accent_color = QColor(self._accent_hex)
+        line_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 220)
         
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(bg_color))
@@ -238,8 +239,9 @@ class CustomLineChart(QWidget):
         area_path.closeSubpath()
         
         grad = QLinearGradient(0, margin_top, 0, margin_top + plot_h)
-        grad.setColorAt(0, QColor(0, 194, 255, 60))
-        grad.setColorAt(1, QColor(0, 194, 255, 0))
+        ar, ag, ab = accent_color.red(), accent_color.green(), accent_color.blue()
+        grad.setColorAt(0, QColor(ar, ag, ab, 60))
+        grad.setColorAt(1, QColor(ar, ag, ab, 0))
         painter.setBrush(QBrush(grad))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(area_path)
@@ -267,7 +269,11 @@ class CustomLineChart(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt.PenStyle.DashLine))
             painter.drawLine(int(hx), margin_top, int(hx), margin_top + plot_h)
             
-            tooltip_text = f"{self.x_label}: {lbl}\n{self.y_label}: {y_val:.4f}"
+            if "°C" in self.y_label:
+                y_line = f"Temp: {y_val:.1f}°C"
+            else:
+                y_line = f"{self.y_label}: {y_val:.4f}"
+            tooltip_text = f"{self.x_label}: {lbl}\n{y_line}"
             painter.setFont(QFont("JetBrains Mono, Courier New", 7))
             fm = painter.fontMetrics()
             lines = tooltip_text.split('\n')
@@ -931,6 +937,15 @@ class FlywheelStudioWorkspace(QWidget):
         dh_lay.setContentsMargins(0, 0, 0, 0)
         dh_lay.addWidget(_section("DECRYPTED TRACE TELEMETRY"))
         dh_lay.addStretch()
+        dh_lay.addWidget(_label("Metric:", "lbl-muted"))
+        self._log_metric_combo = QComboBox()
+        self._log_metric_combo.addItems([
+            "Generation Speed",
+            "Response Time",
+            "Feedback Quality",
+            "GPU Temperature (°C)",
+        ])
+        dh_lay.addWidget(self._log_metric_combo)
         lock_btn = QPushButton("Lock")
         lock_btn.setObjectName("btn-ghost")
         lock_btn.setToolTip("Return to token entry and clear decrypted data")
@@ -946,21 +961,25 @@ class FlywheelStudioWorkspace(QWidget):
         self._log_trace_list.setToolTip("Decrypted trace entries")
         splitter.addWidget(self._log_trace_list)
 
-        charts_host = QWidget()
-        ch_lay = QVBoxLayout(charts_host)
-        ch_lay.setContentsMargins(0, 0, 0, 0)
-        ch_lay.setSpacing(8)
+        self._log_charts_stack = QStackedWidget()
 
         self._log_speed_chart = CustomLineChart("Generation Speed", "Trace #", "tok/s")
-        ch_lay.addWidget(self._log_speed_chart, 1)
+        self._log_charts_stack.addWidget(self._log_speed_chart)   # idx 0
 
         self._log_time_chart = CustomLineChart("Response Time", "Trace #", "seconds")
-        ch_lay.addWidget(self._log_time_chart, 1)
+        self._log_charts_stack.addWidget(self._log_time_chart)    # idx 1
 
         self._log_acc_chart = CustomLineChart("Feedback Quality", "Trace #", "thumbs up")
-        ch_lay.addWidget(self._log_acc_chart, 1)
+        self._log_charts_stack.addWidget(self._log_acc_chart)     # idx 2
 
-        splitter.addWidget(charts_host)
+        self._log_temp_chart = CustomLineChart(
+            "GPU Temperature", "Trace #", "°C", accent_hex="#FF9500"
+        )
+        self._log_charts_stack.addWidget(self._log_temp_chart)    # idx 3
+
+        self._log_metric_combo.currentIndexChanged.connect(self._log_charts_stack.setCurrentIndex)
+
+        splitter.addWidget(self._log_charts_stack)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         dash_lay.addWidget(splitter, 1)
@@ -1033,6 +1052,7 @@ class FlywheelStudioWorkspace(QWidget):
         self._log_speed_chart.set_data([], [])
         self._log_time_chart.set_data([], [])
         self._log_acc_chart.set_data([], [])
+        self._log_temp_chart.set_data([], [])
         self._log_token_input.clear()
         self._log_auth_error.setVisible(False)
         self._log_inspector_stack.setCurrentIndex(0)
@@ -1043,9 +1063,11 @@ class FlywheelStudioWorkspace(QWidget):
         speed_pts: list[tuple[float, float]] = []
         time_pts: list[tuple[float, float]] = []
         acc_pts: list[tuple[float, float]] = []
+        temp_pts: list[tuple[float, float]] = []
         speed_labels: list[str] = []
         time_labels: list[str] = []
         acc_labels: list[str] = []
+        temp_labels: list[str] = []
 
         for idx, entry in enumerate(logs):
             ts = entry.get("timestamp", "")
@@ -1072,6 +1094,12 @@ class FlywheelStudioWorkspace(QWidget):
             acc_pts.append((float(idx), 1.0 if feedback == "thumbs_up" else 0.0))
             acc_labels.append(label)
 
+            gpu_temp = entry.get("gpu_temp_c")
+            if gpu_temp is not None:
+                temp_pts.append((float(idx), float(gpu_temp)))
+                temp_labels.append(label)
+
         self._log_speed_chart.set_data(speed_pts, speed_labels)
         self._log_time_chart.set_data(time_pts, time_labels)
         self._log_acc_chart.set_data(acc_pts, acc_labels)
+        self._log_temp_chart.set_data(temp_pts, temp_labels)

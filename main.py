@@ -99,7 +99,16 @@ def main():
 
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+    
+    code = app.exec()
+    
+    try:
+        from app.utils.keychain_manager import revoke_tokens
+        revoke_tokens()
+    except Exception:
+        pass
+        
+    sys.exit(code)
 
 
 if __name__ == "__main__":

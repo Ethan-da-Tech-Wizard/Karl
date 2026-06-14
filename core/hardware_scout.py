@@ -38,6 +38,41 @@ def get_cpu_flags() -> list[str]:
         pass
     return sorted(list(set(flags)))
 
+def get_hardware_uuid() -> str:
+    """Retrieves physical motherboard UUID or a stable hardware-bound fallback."""
+    system = platform.system()
+    try:
+        if system == "Linux":
+            # Prefer non-root DMI paths
+            for path in [
+                "/sys/class/dmi/id/product_uuid",
+                "/sys/devices/virtual/dmi/id/product_uuid",
+                "/etc/machine-id"
+            ]:
+                if os.path.exists(path):
+                    with open(path, "r") as f:
+                        uuid_str = f.read().strip()
+                        if uuid_str: return uuid_str
+        elif system == "Darwin":
+            cmd = "ioreg -rd1 -c IOPlatformExpertDevice | grep IOPlatformUUID"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            # Example output: "IOPlatformUUID" = "5B1E...B0D"
+            if "IOPlatformUUID" in result.stdout:
+                return result.stdout.split("=")[-1].replace('"', '').strip()
+    except Exception:
+        pass
+
+    # Fallback: Hash MAC addresses + CPU Info
+    try:
+        import uuid
+        import hashlib
+        mac = str(uuid.getnode())
+        cpu = platform.processor()
+        seed = f"{mac}-{cpu}-{system}"
+        return hashlib.sha256(seed.encode()).hexdigest()
+    except Exception:
+        return "karl-static-hardware-fallback"
+
 def get_hardware_profile():
     """
     Returns a dict of available hardware resources including CPU flags.
@@ -118,6 +153,7 @@ def get_hardware_profile():
         "vram_gb": round(vram_gb, 2),
         "storage_gb": round(storage_gb, 2),
         "gpu_temp_c": max_temp,
+        "hardware_uuid": get_hardware_uuid(),
         "cpu_flags": get_cpu_flags(),
         "arch": platform.machine(),
         "os": platform.system(),

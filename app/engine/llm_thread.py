@@ -2,6 +2,7 @@ import logging
 import os
 import time
 import psutil
+import re
 from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.hot_reload import compile_and_reload
@@ -19,6 +20,23 @@ _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
 
 logger = logging.getLogger("karl.llm_thread")
 
+# Set to True on Stage 3 emergency; cleared when GPU cools below 85°C.
+_thermal_suspended: bool = False
+
+
+def _get_gpu_temp() -> float | None:
+    """Return the hottest GPU temp across all NVML-monitored GPUs, or None."""
+    try:
+        from core.hardware_scout import get_hardware_profile
+        temps = [
+            g["temperature_c"]
+            for g in get_hardware_profile().get("gpu_list", [])
+            if "temperature_c" in g
+        ]
+        return max(temps) if temps else None
+    except Exception:
+        return None
+
 
 class LLMThread(QThread):
     new_thought_token = pyqtSignal(str)
@@ -32,6 +50,7 @@ class LLMThread(QThread):
     context_stats = pyqtSignal(int, int, int, int)  # prompt_tokens, history_tokens, rag_tokens, budget
     rag_context_used = pyqtSignal(list)             # List[dict] attribution records
     tool_call_started = pyqtSignal(str, str)        # server_name, tool_name
+    status_update = pyqtSignal(str, bool)           # (text, active)
 
     def __init__(self, system_prompt, chat_history, hyperparams,
                  retrieved_chunks=None, start_in_thought=False,
@@ -48,6 +67,10 @@ class LLMThread(QThread):
         self.adapter_name = adapter_name
         self.logger = TraceLogger()
         self.enable_tools = False
+        self._stop_requested = False
+
+    def request_stop(self):
+        self._stop_requested = True
 
     def _token_count(self, llm, text: str) -> int:
         if not text:
@@ -67,12 +90,46 @@ class LLMThread(QThread):
         # more closely than raw content length.
         return self._token_count(llm, f"<|im_start|>{role}\n{content}<|im_end|>\n")
 
+    def _strip_historical_thoughts(self, history, llm, budget):
+        """
+        Iterates through history (oldest to newest) and strips <think> blocks
+        from assistant turns until the total token count fits the budget.
+        Always preserves the very last assistant turn's thoughts if it exists.
+        """
+        # Find all assistant turns with think blocks, except the most recent one
+        assistant_indices = []
+        for i, msg in enumerate(history):
+            if msg.get("role") == "assistant" and "<think>" in msg.get("content", "") and "</think>" in msg.get("content", ""):
+                assistant_indices.append(i)
+        
+        if not assistant_indices:
+            return history
+            
+        # Don't strip the most recent one to maintain active reasoning continuity
+        targets = assistant_indices[:-1]
+        
+        optimized_history = list(history)
+        
+        for idx in targets:
+            # Check current total
+            total = sum(self._message_token_count(llm, m) for m in optimized_history)
+            if total <= budget:
+                break
+                
+            content = optimized_history[idx]["content"]
+            # Strip <think>...</think> including the tags
+            new_content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            optimized_history[idx] = {**optimized_history[idx], "content": new_content}
+            
+        return optimized_history
+
     def _trim_history(self, history, llm, system_prompt=""):
         """
         Prepares history for the prompt:
-        1. Truncates any individual message > _MAX_MSG_CHARS (keeps the tail — most recent content)
-        2. Drops oldest messages until tokenizer-measured history fits in the budget
-        3. Always keeps message[0] (the seed)
+        1. Truncates any individual message > _MAX_MSG_CHARS (keeps the tail)
+        2. Cognitive Context Pruning: strips <think> blocks from old assistant turns
+        3. Standard Trimming: drops oldest messages until history fits in the budget
+        4. Always keeps message[0] (the seed)
         """
         context_budget = ModelLoader.context_limit()
         system_tokens = self._token_count(llm, system_prompt)
@@ -85,9 +142,15 @@ class LLMThread(QThread):
             return {**msg, "content": content}
 
         capped = [_cap(m) for m in history]
+        
+        # ── Phase 1: Cognitive Context Pruning ───────────────────────────────
+        # Strip older thoughts first to reclaim space while keeping dialogue turns
+        processed = self._strip_historical_thoughts(capped, llm, history_token_limit)
+        
+        # ── Phase 2: Standard Trimming ───────────────────────────────────────
         kept = []
         running = 0
-        for msg in reversed(capped):
+        for msg in reversed(processed):
             entry_len = self._message_token_count(llm, msg)
             if running + entry_len > history_token_limit and kept:
                 break
@@ -110,6 +173,23 @@ class LLMThread(QThread):
                 logger.debug(f"LLMThread pinned to physical cores: {physical_cores}")
         except Exception as e:
             logger.warning(f"Could not set CPU affinity: {e}")
+
+        # ── Thermal config & hysteresis gate ─────────────────────────────────
+        global _thermal_suspended
+        from app.engine import config_store
+        cfg = config_store.get_ui_config()
+        thermal_enabled = cfg.get("thermal_protection_enabled", True)
+
+        if thermal_enabled and _thermal_suspended:
+            t = _get_gpu_temp()
+            if t is None or t >= 85.0:
+                self.error_occurred.emit(
+                    f"GPU thermal suspension active ({t}°C). "
+                    "Generation blocked until GPU cools below 85°C."
+                )
+                return
+            _thermal_suspended = False
+        # ─────────────────────────────────────────────────────────────────────
 
         try:
             core.interaction_loop = compile_and_reload(
@@ -191,6 +271,15 @@ class LLMThread(QThread):
 
             with open(raw_log_path, "w", encoding="utf-8") as raw_file:
                 while continuation_count <= max_continuations:
+                    # Stage 3 emergency check at each continuation boundary
+                    if thermal_enabled:
+                        _ct = _get_gpu_temp()
+                        if _ct is not None and _ct >= 100.0:
+                            _thermal_suspended = True
+                            raise RuntimeError(
+                                f"Emergency Thermal Suspension: GPU reached {_ct:.1f}°C."
+                            )
+
                     # Dynamic Parameter Scheduling
                     current_temp = self.hyperparams.get("temperature", 0.7)
                     current_top_p = self.hyperparams.get("top_p", 0.95)
@@ -414,12 +503,47 @@ class LLMThread(QThread):
             # Pass whether we ended inside a thought block so continuation knows where to resume
             ended_in_thought = in_thought
 
-            gpu_temp = None
+            gpu_temp = _get_gpu_temp()
+            throttle_reasons = []
             try:
                 from core.hardware_scout import get_hardware_profile
-                gpu_temp = get_hardware_profile().get("gpu_temp_c")
+                for gpu in get_hardware_profile().get("gpu_list", []):
+                    for alert in gpu.get("alerts", []):
+                        if alert not in throttle_reasons:
+                            throttle_reasons.append(alert)
             except Exception:
                 pass
+
+            cooling_duration = 0.0
+            # ── Multi-Stage Thermal Cooldown ──────────────────────────────────
+            if thermal_enabled and gpu_temp is not None:
+                cooling_start = time.perf_counter()
+                if gpu_temp >= 100.0:
+                    _thermal_suspended = True
+                    raise RuntimeError(
+                        f"Emergency Thermal Suspension: GPU reached {gpu_temp:.1f}°C."
+                    )
+                elif gpu_temp >= 98.0:
+                    self.status_update.emit(
+                        f"GPU temperature critical ({gpu_temp:.1f}°C). Cooling down for 15s...", True
+                    )
+                    for _ in range(150):
+                        if self._stop_requested:
+                            break
+                        time.sleep(0.1)
+                    cooling_duration = time.perf_counter() - cooling_start
+                    self.status_update.emit("idle", False)
+                elif gpu_temp >= 95.0:
+                    self.status_update.emit(
+                        f"GPU temperature hot ({gpu_temp:.1f}°C). Cooling down for 5s...", True
+                    )
+                    for _ in range(50):
+                        if self._stop_requested:
+                            break
+                        time.sleep(0.1)
+                    cooling_duration = time.perf_counter() - cooling_start
+                    self.status_update.emit("idle", False)
+            # ─────────────────────────────────────────────────────────────────
 
             self.logger.log_generation(
                 compiled_prompt=prompt,
@@ -435,6 +559,8 @@ class LLMThread(QThread):
                 template=self.template,
                 diagnostics=diagnostics,
                 gpu_temp_c=gpu_temp,
+                throttle_reasons=throttle_reasons,
+                cooling_duration_sec=cooling_duration,
             )
 
             self.generation_finished.emit(parsed_thought, parsed_response, truncated, ended_in_thought, diagnostics)

@@ -1126,6 +1126,15 @@ class SystemConfigWorkspace(QWidget):
         self.state.single_session_auth = is_checked
         self._save_appearance_config_silent()
 
+    def _on_thermal_protection_enabled_changed(self, state):
+        is_checked = (state == 2 or state == Qt.CheckState.Checked.value or state is True)
+        self.state.thermal_protection_enabled = is_checked
+        self._save_appearance_config_silent()
+
+    def _on_thermal_threshold_changed(self, val: int):
+        self.state.thermal_protection_threshold = val
+        self._save_appearance_config_silent()
+
     # ── identity tab ──────────────────────────────────────────────────────────
 
     def _build_identity_tab(self) -> QWidget:
@@ -1394,6 +1403,38 @@ class SystemConfigWorkspace(QWidget):
         hwp_layout.addWidget(refresh_btn)
 
         layout.addWidget(hw_panel)
+
+        # Thermal Protection Settings Panel
+        thermal_panel = QWidget()
+        thermal_panel.setObjectName("panel")
+        tp_layout = QVBoxLayout(thermal_panel)
+        tp_layout.setContentsMargins(16, 16, 16, 16)
+        tp_layout.setSpacing(10)
+
+        tp_layout.addWidget(_section("THERMAL PROTECTION SETTINGS"))
+
+        self._thermal_protection_check = QCheckBox("Enable Thermal Protection")
+        self._thermal_protection_check.setChecked(getattr(self.state, "thermal_protection_enabled", True))
+        self._thermal_protection_check.stateChanged.connect(self._on_thermal_protection_enabled_changed)
+        tp_layout.addWidget(self._thermal_protection_check)
+
+        threshold_row = QWidget()
+        tr_lay = QHBoxLayout(threshold_row)
+        tr_lay.setContentsMargins(0, 0, 0, 0)
+        tr_lbl = QLabel("Protection Threshold (°C):")
+        tr_lbl.setObjectName("lbl-muted")
+        tr_lbl.setFixedWidth(180)
+        tr_lay.addWidget(tr_lbl)
+        self._thermal_threshold_spin = QSpinBox()
+        self._thermal_threshold_spin.setRange(70, 105)
+        self._thermal_threshold_spin.setValue(getattr(self.state, "thermal_protection_threshold", 95))
+        self._thermal_threshold_spin.setFixedWidth(80)
+        self._thermal_threshold_spin.valueChanged.connect(self._on_thermal_threshold_changed)
+        tr_lay.addWidget(self._thermal_threshold_spin)
+        tr_lay.addStretch()
+        tp_layout.addWidget(threshold_row)
+
+        layout.addWidget(thermal_panel)
 
         # About Panel
         about_panel = QWidget()
@@ -2476,6 +2517,8 @@ class SystemConfigWorkspace(QWidget):
             "log_rotation_size_mb": getattr(self.state, "log_rotation_size_mb", 10),
             "log_retention_days": getattr(self.state, "log_retention_days", 30),
             "single_session_auth": getattr(self.state, "single_session_auth", False),
+            "thermal_protection_enabled": getattr(self.state, "thermal_protection_enabled", True),
+            "thermal_protection_threshold": getattr(self.state, "thermal_protection_threshold", 95),
         })
 
     def _save_appearance_config(self):

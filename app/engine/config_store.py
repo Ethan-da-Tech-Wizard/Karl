@@ -210,6 +210,8 @@ UI_CONFIG_DEFAULTS: dict[str, Any] = {
     "enable_dynamic_scheduling": True,
     "thinking_temperature": 0.8,
     "answering_temperature": 0.1,
+    "thermal_protection_enabled": True,
+    "thermal_protection_threshold": 95,
 }
 
 

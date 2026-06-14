@@ -31,6 +31,11 @@ class ModelLoader:
     _vocab_leak_report: dict = {}    # populated by _inspect_adapter_vocab after each load
     _load_latency_s: float | None = None   # wall-clock seconds for the last successful load
     _vram_bandwidth_gbs: float | None = None  # measured PCIe H2D bandwidth (GB/s)
+    _backend_freed: bool = False  # True after llama_backend_free(); cleared on next load
+    _last_activity_time: float = 0.0        # epoch seconds; updated on each get_instance() call
+    _adapter_offloaded: bool = False         # True when idle watcher detached the LoRA
+    _offloaded_adapter_name: str | None = None  # adapter name to restore on next inference
+    _idle_watcher_started: bool = False      # ensures only one daemon watcher thread spawns
 
 
     @classmethod
@@ -536,14 +541,77 @@ class ModelLoader:
         return plan
 
     @classmethod
+    def _touch_activity(cls) -> None:
+        """Refresh the idle timer. Call at every inference entry point."""
+        cls._last_activity_time = time.time()
+
+    @classmethod
+    def _start_idle_watcher(cls) -> None:
+        """Spawn the background adapter-offload daemon (once per process)."""
+        if cls._idle_watcher_started:
+            return
+        cls._idle_watcher_started = True
+
+        def _watcher():
+            while True:
+                time.sleep(30)
+                try:
+                    if cls._last_activity_time == 0.0:
+                        continue
+                    if time.time() - cls._last_activity_time < 300:
+                        continue
+                    with cls._lock:
+                        if (cls._adapter_offloaded
+                                or cls._active_adapter is None
+                                or cls._instance is None):
+                            continue
+                        adapter_name = cls._active_adapter
+                        # Best-effort C-layer LoRA detach before flagging offload.
+                        try:
+                            import llama_cpp.llama_cpp as _ll
+                            if (hasattr(_ll, "llama_lora_adapter_remove")
+                                    and hasattr(cls._instance, "_lora_adapter")):
+                                _ll.llama_lora_adapter_remove(
+                                    cls._instance.ctx, cls._instance._lora_adapter
+                                )
+                                logger.debug("C-layer LoRA adapter removed from context.")
+                            elif hasattr(cls._instance, "set_lora"):
+                                cls._instance.set_lora(None)
+                        except Exception as exc:
+                            logger.debug("Idle adapter C-layer detach unavailable: %s", exc)
+                        cls._offloaded_adapter_name = adapter_name
+                        cls._adapter_offloaded = True
+                        cls._active_adapter = None
+                        logger.info("Adapter unloaded to save VRAM.")
+                except Exception as exc:
+                    logger.debug("Idle watcher tick error: %s", exc)
+
+        threading.Thread(
+            target=_watcher, daemon=True, name="karl-idle-adapter-watcher"
+        ).start()
+
+    @classmethod
     def get_instance(cls, model_path: str | None = None, adapter_name: str | None = None,
                      draft_model_path: str | None = None) -> Llama:
         with cls._lock:
+            # Mark this as an active inference call for the idle watcher.
+            cls._last_activity_time = time.time()
+
             if model_path is None:
                 active = config_store.get_active_model()
                 model_path = os.path.join("data", "models", active["filename"])
                 if adapter_name is None:
                     adapter_name = active["adapter"]
+
+            # If the idle watcher offloaded the adapter, clear _active_adapter so that
+            # the needs_reload check below fires and the adapter is lazily reloaded.
+            if cls._adapter_offloaded:
+                logger.info(
+                    "Lazy adapter reload triggered for '%s'.", cls._offloaded_adapter_name
+                )
+                cls._active_adapter = None
+                cls._adapter_offloaded = False
+                cls._offloaded_adapter_name = None
 
             current_model_path = getattr(cls, "_model_path", None)
             current_adapter = getattr(cls, "_active_adapter", None)
@@ -681,6 +749,17 @@ class ModelLoader:
                             kwargs["use_mlock"] = False
                             return Llama(**kwargs)
                         raise # Re-raise OOM or other errors for the fallback loop to handle
+
+                # ── llama-cpp backend reinit after deep eviction ──────────────
+                if cls._backend_freed:
+                    try:
+                        import llama_cpp.llama_cpp as _llama_lib
+                        _llama_lib.llama_backend_init()
+                        cls._backend_freed = False
+                        logger.info("llama_backend_init() called after deep VRAM eviction.")
+                    except Exception as exc:
+                        logger.debug("llama_backend_init unavailable or failed: %s", exc)
+                # ─────────────────────────────────────────────────────────────
 
                 # ── Pre-flight VRAM Bandwidth Benchmark ──────────────────────
                 # Measure PCIe H2D throughput before the model occupies VRAM so
@@ -848,6 +927,7 @@ class ModelLoader:
                             cls._draft_instance = None
 
                     cls._draft_model_path = draft_model_path
+            cls._start_idle_watcher()
             return cls._instance
 
     @classmethod
@@ -856,30 +936,50 @@ class ModelLoader:
             if cls._instance_locked:
                 logger.warning("Resetting ModelLoader instance while VRAM lock is active.")
             cls._instance_locked = False
+
+            # 1. Close and explicitly delete Llama handles to drop all C-level refs
             if cls._instance is not None:
                 try:
                     cls._instance.close()
                 except Exception:
                     pass
+                del cls._instance
+                cls._instance = None
+
             if cls._draft_instance is not None:
                 try:
                     cls._draft_instance.close()
                 except Exception:
                     pass
+                del cls._draft_instance
                 cls._draft_instance = None
+
             cls._draft_model_path = None
-            cls._instance = None
             cls._active_adapter = None
             cls._model_path = None
-            
+
+            # 2. CPython GC pass — collects any lingering cyclic refs to the Llama object
             import gc
             gc.collect()
+
+            # 3. PyTorch CUDA defragmentation
             try:
                 import torch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
             except ImportError:
                 pass
+
+            # 4. llama-cpp C-backend teardown — forces OS to reclaim all GGML/CUDA
+            #    allocations. The backend is re-initialised automatically on next load.
+            try:
+                import llama_cpp.llama_cpp as _llama_lib
+                _llama_lib.llama_backend_free()
+                cls._backend_freed = True
+                logger.info("llama_backend_free() called; backend will reinit on next load.")
+            except Exception as exc:
+                logger.debug("llama_backend_free unavailable or failed: %s", exc)
 
     @classmethod
     def lock_instance(cls):

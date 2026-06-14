@@ -2129,6 +2129,9 @@ class TrainingStudioWorkspace(QWidget):
             self._mini_loss_history.clear()
             self._mini_loss_chart.set_loss_history([])
 
+            from app.engine.model_loader import ModelLoader
+            ModelLoader.reset_instance()
+
             config = {
                 "batch_size": 32,
                 "block_size": self._mini_block_size.value(),

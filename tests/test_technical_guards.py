@@ -204,6 +204,7 @@ class TestTechnicalGuards(unittest.TestCase):
         orchestrator.status_update.connect(lambda msg: signals["status"].append(msg))
         orchestrator.test_result.connect(lambda passed, trace: signals["test_results"].append((passed, trace)))
         orchestrator.finished_swarm.connect(lambda success, summary: signals.update({"finished": (success, summary)}))
+        orchestrator.edits_proposed.connect(lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals]))
 
         # Run orchestrator
         orchestrator.run()
@@ -221,6 +222,131 @@ class TestTechnicalGuards(unittest.TestCase):
         with open(os.path.join(self.workspace_path, "broken.py"), "r") as f:
             content = f.read()
             self.assertIn("def broken():", content)
+
+    def test_proc_maps_page_privacy(self):
+        """Test Target 1: Memory Page Sharing Verification.
+        Reads /proc/self/maps and asserts that all writable memory segments are private ('p'),
+        not shared ('s').
+        """
+        if sys.platform != "linux":
+            self.skipTest("Memory page privacy check is only relevant on Linux")
+
+        maps_path = "/proc/self/maps"
+        self.assertTrue(os.path.exists(maps_path), "proc maps file does not exist")
+
+        with open(maps_path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    perms = parts[1]
+                    if 'w' in perms:
+                        # Ensure writable pages are private, not shared
+                        self.assertNotIn('s', perms, f"Found shared writable segment: {line.strip()}")
+                        self.assertIn('p', perms, f"Found non-private writable segment: {line.strip()}")
+
+    def test_kernel_keyring_expiry_and_revocation(self):
+        """Test Target 2: Keyring Expiry & Revocation Verification.
+        Verifies that storing a token, auto-expiry, and explicit revocation behave correctly in the kernel.
+        """
+        if sys.platform != "linux":
+            self.skipTest("Linux kernel keyring is only available on Linux")
+
+        # Load libkeyutils
+        import ctypes
+        import errno
+        import time
+
+        _libkeyutils = None
+        _KEY_SPEC_SESSION_KEYRING = -3
+
+        for libname in ('libkeyutils.so.1', 'libkeyutils.so'):
+            try:
+                _libkeyutils = ctypes.CDLL(libname, use_errno=True)
+                break
+            except Exception:
+                pass
+
+        if not _libkeyutils:
+            self.skipTest("libkeyutils.so.1 not found on this system")
+
+        # Define keyutils ctypes signatures
+        _libkeyutils.add_key.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int32]
+        _libkeyutils.add_key.restype = ctypes.c_int32
+
+        _libkeyutils.keyctl_read.argtypes = [ctypes.c_int32, ctypes.c_char_p, ctypes.c_size_t]
+        _libkeyutils.keyctl_read.restype = ctypes.c_int32
+
+        _libkeyutils.keyctl_set_timeout.argtypes = [ctypes.c_int32, ctypes.c_int32]
+        _libkeyutils.keyctl_set_timeout.restype = ctypes.c_int32
+
+        _libkeyutils.keyctl_revoke.argtypes = [ctypes.c_int32]
+        _libkeyutils.keyctl_revoke.restype = ctypes.c_int32
+
+        def store_session_token(token: str, timeout_seconds: int) -> int:
+            token_bytes = token.encode('utf-8')
+            key_id = _libkeyutils.add_key(
+                b"user",
+                b"karl_test_token_temp",
+                token_bytes,
+                len(token_bytes),
+                _KEY_SPEC_SESSION_KEYRING
+            )
+            if key_id == -1:
+                err = ctypes.get_errno()
+                raise OSError(err, f"Failed to add key: {os.strerror(err)}")
+            res = _libkeyutils.keyctl_set_timeout(key_id, timeout_seconds)
+            if res == -1:
+                err = ctypes.get_errno()
+                raise OSError(err, f"Failed to set timeout: {os.strerror(err)}")
+            return key_id
+
+        def read_session_token(key_id: int) -> str:
+            needed = _libkeyutils.keyctl_read(key_id, None, 0)
+            if needed < 0:
+                err = ctypes.get_errno()
+                raise OSError(err, os.strerror(err))
+            buf = ctypes.create_string_buffer(needed)
+            read_bytes = _libkeyutils.keyctl_read(key_id, buf, needed)
+            if read_bytes < 0:
+                err = ctypes.get_errno()
+                raise OSError(err, os.strerror(err))
+            return buf.value.decode('utf-8')
+
+        def revoke_session_token(key_id: int) -> None:
+            res = _libkeyutils.keyctl_revoke(key_id)
+            if res == -1:
+                err = ctypes.get_errno()
+                raise OSError(err, os.strerror(err))
+
+        # 1. Store test token with 2-second timeout
+        test_token = "verification-session-token-123"
+        key_id = store_session_token(test_token, 2)
+        self.assertIsInstance(key_id, int)
+        self.assertGreater(key_id, 0)
+
+        # 2. Read back and verify it matches
+        val = read_session_token(key_id)
+        self.assertEqual(val, test_token)
+
+        # 3. Wait 3 seconds and confirm it expires with OSError (EKEYEXPIRED or ENOKEY)
+        time.sleep(3)
+        with self.assertRaises(OSError) as context:
+            read_session_token(key_id)
+        self.assertIn(context.exception.errno, (errno.ENOKEY, errno.EKEYEXPIRED))
+
+        # 4. Store a second token, revoke immediately, confirm failure with OSError (EKEYREVOKED or ENOKEY)
+        key_id_2 = store_session_token("revocation-test-token-456", 60)
+        self.assertGreater(key_id_2, 0)
+        
+        # Verify it exists first
+        self.assertEqual(read_session_token(key_id_2), "revocation-test-token-456")
+        
+        # Revoke
+        revoke_session_token(key_id_2)
+        
+        with self.assertRaises(OSError) as context:
+            read_session_token(key_id_2)
+        self.assertIn(context.exception.errno, (errno.ENOKEY, errno.EKEYREVOKED))
 
 
 if __name__ == "__main__":

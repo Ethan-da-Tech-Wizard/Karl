@@ -50,6 +50,10 @@ class AppState(QObject):
         self.log_retention_days: int = 30
         self.single_session_auth: bool = False
 
+        # Thermal protection
+        self.thermal_protection_enabled: bool = True
+        self.thermal_protection_threshold: int = 95
+
         # Dynamic Scheduling for reasoning models
         self.enable_dynamic_scheduling: bool = True
         self.thinking_temperature: float = 0.8

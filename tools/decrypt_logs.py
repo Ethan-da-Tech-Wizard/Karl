@@ -19,9 +19,22 @@ import shutil
 import argparse
 import getpass
 import platform
+import ctypes
 
 # Ensure we can import from the project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ── libc page locking ────────────────────────────────────────────────────────
+_libc = None
+if sys.platform != "win32":
+    try:
+        _libc = ctypes.CDLL(None)
+    except Exception:
+        _libc = None
+
+_MCL_CURRENT = 1
+_MCL_FUTURE  = 2
+# ─────────────────────────────────────────────────────────────────────────────
 
 try:
     import psutil
@@ -35,19 +48,15 @@ except ImportError as e:
 def derive_key(token: str) -> bytes:
     """Recreates the exact key derivation from TraceLogger."""
     try:
-        # 1. Gather stable hardware salt (must match TraceLogger exactly)
-        total_ram = psutil.virtual_memory().total
-        total_storage = shutil.disk_usage(os.getcwd()).total
-        cpu_flags = "".join(get_cpu_flags())
-        os_name = platform.system()
-        
-        salt_seed = f"{total_ram}-{total_storage}-{cpu_flags}-{os_name}"
+        # 1. Gather machine-locked salt (must match TraceLogger exactly)
+        from core.hardware_scout import get_hardware_uuid
+        hardware_uuid = get_hardware_uuid()
         
         # 2. PBKDF2 stretching
         k = hashlib.pbkdf2_hmac(
             'sha256', 
             token.encode(), 
-            salt_seed.encode(), 
+            hardware_uuid.encode(), 
             100000
         )
         return base64.urlsafe_b64encode(k)
@@ -77,15 +86,22 @@ def main():
         print("Error: No token provided.")
         sys.exit(1)
 
-    # 2. Derive Key
-    key = derive_key(token)
-    
-    # 3. Decrypt and Decompress
+    # 2. Derive Key & Decrypt
     if not os.path.exists(args.input):
         print(f"Error: Input file not found: {args.input}")
         sys.exit(1)
 
+    locked = False
+    if _libc and hasattr(_libc, "mlockall"):
+        res = _libc.mlockall(_MCL_CURRENT | _MCL_FUTURE)
+        if res != 0:
+            print(f"System warning: mlockall failed (code {res}). Memory pages could not be locked in RAM.")
+        else:
+            locked = True
+
     try:
+        key = derive_key(token)
+        
         print(f"Decrypting {args.input}...")
         
         with open(args.input, 'rb') as f_in:
@@ -121,6 +137,9 @@ def main():
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         sys.exit(1)
+    finally:
+        if locked and _libc and hasattr(_libc, "munlockall"):
+            _libc.munlockall()
 
 if __name__ == "__main__":
     main()

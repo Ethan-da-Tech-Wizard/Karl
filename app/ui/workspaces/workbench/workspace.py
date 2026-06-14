@@ -1185,8 +1185,10 @@ class WorkbenchWorkspace(QMainWindow):
         t.reload_notice.connect(self._show_reload_notice)
         t.context_stats.connect(self._on_context_stats)
         t.rag_context_used.connect(self._on_rag_context_used)
-        
+        t.status_update.connect(self.status_changed)
+
         # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
+
         self._active_threads.add(t)
         t.finished.connect(lambda: self._active_threads.discard(t))
         t.finished.connect(t.deleteLater)
@@ -1217,6 +1219,7 @@ class WorkbenchWorkspace(QMainWindow):
         t.error_occurred.connect(self._on_error)
         t.reload_notice.connect(self._show_reload_notice)
         t.context_stats.connect(self._on_context_stats)
+        t.status_update.connect(self.status_changed)
         
         # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
         self._active_threads.add(t)

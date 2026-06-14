@@ -288,6 +288,8 @@ class MainWindow(QMainWindow):
         self._state.log_rotation_size_mb = config.get("log_rotation_size_mb", 10)
         self._state.log_retention_days = config.get("log_retention_days", 30)
         self._state.single_session_auth = config.get("single_session_auth", False)
+        self._state.thermal_protection_enabled = config.get("thermal_protection_enabled", True)
+        self._state.thermal_protection_threshold = config.get("thermal_protection_threshold", 95)
 
         self._apply_theme_from_state()
 
@@ -388,16 +390,23 @@ class MainWindow(QMainWindow):
 
         # Safely shut down the WebSocket server connection bridge on exit
         from app.engine.websocket_server import WebSocketServerManager
+        from app.utils.keychain_manager import revoke_tokens
         try:
             WebSocketServerManager.reset_instance()
         except Exception as e:
             logger.warning(f"Error during exit teardown: {e}")
 
-        if getattr(self._state, "single_session_auth", False):
-            try:
-                import keyring
-                keyring.delete_password("KarlBridge", "BridgeToken")
-            except Exception:
-                pass
+        # Purge sensitive tokens from kernel and OS vaults on exit
+        try:
+            revoke_tokens()
+        except Exception:
+            pass
+
+        # Scrub any live shared memory segments before Qt tears down the process.
+        try:
+            from app.utils.ipc_helper import SharedMemoryManager
+            SharedMemoryManager.instance()._cleanup_all()
+        except Exception as e:
+            logger.warning("IPC shared memory cleanup failed during exit: %s", e)
 
         event.accept()

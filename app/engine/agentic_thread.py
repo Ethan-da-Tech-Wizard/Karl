@@ -2,6 +2,7 @@ import logging
 import os
 import time
 import psutil
+import re
 from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.hot_reload import compile_and_reload
@@ -17,6 +18,23 @@ RAW_LOG_DIR = "data/logs/raw"
 _RESPONSE_RESERVE = 1024  # max_tokens headroom
 
 logger = logging.getLogger("karl.agentic_thread")
+
+# Set to True on Stage 3 emergency; cleared when GPU cools below 85°C.
+_thermal_suspended: bool = False
+
+
+def _get_gpu_temp() -> float | None:
+    """Return the hottest GPU temp across all NVML-monitored GPUs, or None."""
+    try:
+        from core.hardware_scout import get_hardware_profile
+        temps = [
+            g["temperature_c"]
+            for g in get_hardware_profile().get("gpu_list", [])
+            if "temperature_c" in g
+        ]
+        return max(temps) if temps else None
+    except Exception:
+        return None
 
 
 class AgenticThread(QThread):
@@ -35,6 +53,7 @@ class AgenticThread(QThread):
     reload_notice = pyqtSignal(str)   # module name that was hot-reloaded
     error_occurred = pyqtSignal(str)
     context_stats = pyqtSignal(int, int, int, int)  # prompt_tokens, history_tokens, rag_tokens, budget
+    status_update = pyqtSignal(str, bool)           # (text, active)
 
     def __init__(self, system_prompt, initial_history, hyperparams,
                  retrieved_chunks=None, workflow="general_chat",
@@ -70,20 +89,62 @@ class AgenticThread(QThread):
         content = msg.get("content", "")
         return self._token_count(llm, f"<|im_start|>{role}\n{content}<|im_end|>\n")
 
+    def _strip_historical_thoughts(self, history, llm, budget):
+        """
+        Iterates through history (oldest to newest) and strips <think> blocks
+        from assistant turns until the total token count fits the budget.
+        Always preserves the very last assistant turn's thoughts if it exists.
+        """
+        # Find all assistant turns with think blocks, except the most recent one
+        assistant_indices = []
+        for i, msg in enumerate(history):
+            if msg.get("role") == "assistant" and "<think>" in msg.get("content", "") and "</think>" in msg.get("content", ""):
+                assistant_indices.append(i)
+        
+        if not assistant_indices:
+            return history
+            
+        # Don't strip the most recent one to maintain active reasoning continuity
+        targets = assistant_indices[:-1]
+        
+        optimized_history = list(history)
+        
+        for idx in targets:
+            # Check current total
+            total = sum(self._message_token_count(llm, m) for m in optimized_history)
+            if total <= budget:
+                break
+                
+            content = optimized_history[idx]["content"]
+            # Strip <think>...</think> including the tags
+            new_content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            optimized_history[idx] = {**optimized_history[idx], "content": new_content}
+            
+        return optimized_history
+
     def _trim_history(self, history, system_prompt, llm):
         """
         Trims the chat history so the compiled prompt stays inside the context budget.
+        
+        1. Cognitive Context Pruning: strips <think> blocks from old assistant turns
+        2. Standard Trimming: drops oldest messages until history fits in the budget
+        
         Always keeps the first user message (the seed) and the most recent turns.
         """
         context_budget = ModelLoader.context_limit()
         base_tokens = self._token_count(llm, system_prompt)
         budget = max(256, context_budget - _RESPONSE_RESERVE - base_tokens)
 
+        # ── Phase 1: Cognitive Context Pruning ───────────────────────────────
+        # Strip older thoughts first to reclaim space while keeping dialogue turns
+        processed = self._strip_historical_thoughts(history, llm, budget)
+
+        # ── Phase 2: Standard Trimming ───────────────────────────────────────
         # Walk backwards through history accumulating tokenizer-measured size.
         # Always keep at least the first message (index 0) as the seed.
         kept = []
         running = 0
-        for msg in reversed(history):
+        for msg in reversed(processed):
             entry_len = self._message_token_count(llm, msg)
             if running + entry_len > budget and kept:
                 break  # Stop adding older messages
@@ -100,8 +161,9 @@ class AgenticThread(QThread):
             )
         return kept
 
-    def _run_single_generation(self, llm, prompt, raw_file):
+    def _run_single_generation(self, llm, prompt, raw_file, thermal_enabled: bool = False):
         """Runs streaming generation, continuing automatically if truncated."""
+        global _thermal_suspended
         raw_output = ""
         parsed_thought = ""
         parsed_response = ""
@@ -118,6 +180,15 @@ class AgenticThread(QThread):
         state_transitioned = False
 
         while continuation_count <= max_continuations:
+            # Stage 3 emergency check at each continuation boundary
+            if thermal_enabled:
+                _ct = _get_gpu_temp()
+                if _ct is not None and _ct >= 100.0:
+                    _thermal_suspended = True
+                    raise RuntimeError(
+                        f"Emergency Thermal Suspension: GPU reached {_ct:.1f}°C."
+                    )
+
             # Dynamic Parameter Scheduling
             current_temp = self.hyperparams.get("temperature", 0.7)
             current_top_p = self.hyperparams.get("top_p", 0.95)
@@ -319,7 +390,23 @@ class AgenticThread(QThread):
 
             iteration = 0
 
+            global _thermal_suspended
             while not self._stop_requested:
+                # ── Thermal config & hysteresis gate ─────────────────────────────
+                from app.engine import config_store
+                cfg = config_store.get_ui_config()
+                thermal_enabled = cfg.get("thermal_protection_enabled", True)
+
+                if thermal_enabled and _thermal_suspended:
+                    t = _get_gpu_temp()
+                    if t is None or t >= 85.0:
+                        raise RuntimeError(
+                            f"GPU thermal suspension active ({t}°C). "
+                            "Generation blocked until GPU cools below 85°C."
+                        )
+                    _thermal_suspended = False
+                # ─────────────────────────────────────────────────────────────────
+
                 # Build and emit iteration header
                 self.new_thought_token.emit(f"\n{'='*40}\n[AGENTIC LOOP — Iteration {iteration + 1}]\n{'='*40}\n")
                 self.new_chat_token.emit(f"\n[Iteration {iteration + 1}]\n")
@@ -356,7 +443,9 @@ class AgenticThread(QThread):
                 ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
                 raw_log_path = os.path.join(RAW_LOG_DIR, f"agentic_{ts}_iter{iteration}.tokens")
                 with open(raw_log_path, "w", encoding="utf-8") as raw_file:
-                    raw, thought, response, first_token_time = self._run_single_generation(llm, prompt, raw_file)
+                    raw, thought, response, first_token_time = self._run_single_generation(
+                        llm, prompt, raw_file, thermal_enabled=thermal_enabled
+                    )
                 end = time.perf_counter()
 
                 prefill_time = (first_token_time - start) if first_token_time is not None else (end - start)
@@ -389,12 +478,47 @@ class AgenticThread(QThread):
                 if self._stop_requested:
                     break
 
-                gpu_temp = None
+                gpu_temp = _get_gpu_temp()
+                throttle_reasons = []
                 try:
                     from core.hardware_scout import get_hardware_profile
-                    gpu_temp = get_hardware_profile().get("gpu_temp_c")
+                    for gpu in get_hardware_profile().get("gpu_list", []):
+                        for alert in gpu.get("alerts", []):
+                            if alert not in throttle_reasons:
+                                throttle_reasons.append(alert)
                 except Exception:
                     pass
+
+                cooling_duration = 0.0
+                # ── Multi-Stage Thermal Cooldown ──────────────────────────────────
+                if thermal_enabled and gpu_temp is not None:
+                    cooling_start = time.perf_counter()
+                    if gpu_temp >= 100.0:
+                        _thermal_suspended = True
+                        raise RuntimeError(
+                            f"Emergency Thermal Suspension: GPU reached {gpu_temp:.1f}°C."
+                        )
+                    elif gpu_temp >= 98.0:
+                        self.status_update.emit(
+                            f"GPU temperature critical ({gpu_temp:.1f}°C). Cooling down for 15s...", True
+                        )
+                        for _ in range(150):
+                            if self._stop_requested:
+                                break
+                            time.sleep(0.1)
+                        cooling_duration = time.perf_counter() - cooling_start
+                        self.status_update.emit("idle", False)
+                    elif gpu_temp >= 95.0:
+                        self.status_update.emit(
+                            f"GPU temperature hot ({gpu_temp:.1f}°C). Cooling down for 5s...", True
+                        )
+                        for _ in range(50):
+                            if self._stop_requested:
+                                break
+                            time.sleep(0.1)
+                        cooling_duration = time.perf_counter() - cooling_start
+                        self.status_update.emit("idle", False)
+                # ─────────────────────────────────────────────────────────────────
 
                 # Log this iteration
                 self.logger.log_generation(
@@ -411,6 +535,8 @@ class AgenticThread(QThread):
                     template=self.template,
                     diagnostics=diagnostics,
                     gpu_temp_c=gpu_temp,
+                    throttle_reasons=throttle_reasons,
+                    cooling_duration_sec=cooling_duration,
                 )
 
                 # Store only the response — not the think block — to keep context lean

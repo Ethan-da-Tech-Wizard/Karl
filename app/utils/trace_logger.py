@@ -7,12 +7,26 @@ import shutil
 import threading
 import hashlib
 import base64
+import ctypes
+import sys
 from datetime import datetime, timezone
+from contextlib import contextmanager
 
 logger = logging.getLogger("karl.trace_logger")
 
 
 _MAX_BYTES = 50 * 1024 * 1024  # 50 MB per file before rotation
+
+# ── libc page locking ────────────────────────────────────────────────────────
+_libc = None
+if sys.platform != "win32":
+    try:
+        _libc = ctypes.CDLL(None)
+    except Exception:
+        _libc = None
+
+_MCL_CURRENT = 1
+_MCL_FUTURE  = 2
 
 
 class TraceLogger:
@@ -27,6 +41,23 @@ class TraceLogger:
         self._refresh_path()
         self.prune_logs()
 
+    @contextmanager
+    def _secure_mem_lock(self):
+        """Context manager to lock/unlock process memory in RAM on POSIX."""
+        locked = False
+        if _libc and hasattr(_libc, "mlockall"):
+            res = _libc.mlockall(_MCL_CURRENT | _MCL_FUTURE)
+            if res != 0:
+                logger.debug(f"System warning: mlockall failed (code {res}). Memory pages could not be locked in RAM.")
+            else:
+                locked = True
+        
+        try:
+            yield
+        finally:
+            if locked and _libc and hasattr(_libc, "munlockall"):
+                _libc.munlockall()
+
     def _get_max_bytes(self) -> int:
         global _MAX_BYTES
         if _MAX_BYTES != 50 * 1024 * 1024:
@@ -40,7 +71,7 @@ class TraceLogger:
             return 10 * 1024 * 1024
 
     def _get_encryption_key(self) -> bytes:
-        """Derives a Fernet-compatible encryption key from bridge token and stable hardware salt."""
+        """Derives a Fernet-compatible encryption key from bridge token and physical hardware UUID."""
         try:
             # 1. Load bridge token
             token = "karl-default-secret"
@@ -50,23 +81,16 @@ class TraceLogger:
                     token_data = json.load(f)
                     token = token_data.get("token", token)
             
-            # 2. Get STABLE hardware salt (using totals, not available/free)
-            import psutil
-            import platform
-            from core.hardware_scout import get_cpu_flags
-            
-            total_ram = psutil.virtual_memory().total
-            total_storage = shutil.disk_usage(os.getcwd()).total
-            cpu_flags = "".join(get_cpu_flags())
-            os_name = platform.system()
-            
-            salt_seed = f"{total_ram}-{total_storage}-{cpu_flags}-{os_name}"
+            # 2. Get Machine-Locked Salt (Motherboard UUID)
+            from core.hardware_scout import get_hardware_profile
+            profile = get_hardware_profile()
+            hardware_uuid = profile.get("hardware_uuid", "karl-locked-host-salt")
             
             # 3. Derive key using PBKDF2
             k = hashlib.pbkdf2_hmac(
                 'sha256', 
                 token.encode(), 
-                salt_seed.encode(), 
+                hardware_uuid.encode(), 
                 100000
             )
             # Fernet keys must be 32 url-safe base64-encoded bytes
@@ -74,6 +98,12 @@ class TraceLogger:
         except Exception as e:
             logger.error(f"Failed to derive encryption key: {e}")
             return base64.urlsafe_b64encode(b"karl-emergency-fallback-key-32b!")
+
+    @staticmethod
+    def _zero_bytes(ba: bytearray) -> None:
+        """Overwrite every byte of *ba* with 0x00 in-place (cryptographic memory sanitization)."""
+        for i in range(len(ba)):
+            ba[i] = 0
 
     def prune_logs(self):
         """Delete trace log files and archives older than log_retention_days."""
@@ -122,18 +152,22 @@ class TraceLogger:
 
             logger.info(f"Encrypting and Archiving log {filename}...")
             
-            # 1. Gzip compress in memory
-            with open(file_path, 'rb') as f_in:
-                gzipped_data = gzip.compress(f_in.read())
-            
-            # 2. Encrypt
-            key = self._get_encryption_key()
-            f = Fernet(key)
-            encrypted_data = f.encrypt(gzipped_data)
-            
-            # 3. Write encrypted archive
-            with open(archive_path, 'wb') as f_out:
-                f_out.write(encrypted_data)
+            with self._secure_mem_lock():
+                # 1. Gzip compress in memory
+                with open(file_path, 'rb') as f_in:
+                    gzipped_data = gzip.compress(f_in.read())
+                
+                # 2. Encrypt — hold key in a mutable bytearray so it can be zeroed after use
+                key_ba = bytearray(self._get_encryption_key())
+                try:
+                    fernet = Fernet(bytes(key_ba))
+                    encrypted_data = fernet.encrypt(gzipped_data)
+                finally:
+                    TraceLogger._zero_bytes(key_ba)
+                
+                # 3. Write encrypted archive
+                with open(archive_path, 'wb') as f_out:
+                    f_out.write(encrypted_data)
             
             # Verify the archive exists and is non-empty before deleting original
             if os.path.exists(archive_path) and os.path.getsize(archive_path) > 0:
@@ -211,6 +245,8 @@ class TraceLogger:
         adapter_name: str | None = None,
         diagnostics: dict | None = None,
         gpu_temp_c: float | None = None,
+        throttle_reasons: list[str] | None = None,
+        cooling_duration_sec: float = 0.0,
     ) -> str:
         """
         Logs one generation event. Returns the path of the log file written to.
@@ -262,6 +298,8 @@ class TraceLogger:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "timing": timing,
             "gpu_temp_c": gpu_temp_c,
+            "throttle_reasons": throttle_reasons or [],
+            "cooling_duration_sec": round(cooling_duration_sec, 3),
             "model": model_name or "unknown",
             "adapter": adapter_name,
             "workflow": workflow,
@@ -291,6 +329,14 @@ class TraceLogger:
         Decrypts an archived .enc log file in RAM without writing to disk.
         Returns a list of parsed JSON records.
         """
+        locked = False
+        if _libc and hasattr(_libc, "mlockall"):
+            res = _libc.mlockall(_MCL_CURRENT | _MCL_FUTURE)
+            if res != 0:
+                logger.debug(f"System warning: mlockall failed (code {res}). Memory pages could not be locked in RAM.")
+            else:
+                locked = True
+
         try:
             from cryptography.fernet import Fernet
             import hashlib
@@ -335,6 +381,28 @@ class TraceLogger:
         except Exception as e:
             logger.error(f"In-memory decryption error: {e}")
             raise RuntimeError(f"Failed to decrypt log: {e}")
+        finally:
+            if locked and _libc and hasattr(_libc, "munlockall"):
+                _libc.munlockall()
+
+    @staticmethod
+    def decrypt_to_bytearray(file_path: str, key: bytes) -> bytearray:
+        """
+        Decrypt *file_path* (Fernet-encrypted gzipped JSONL) using the provided
+        pre-derived key and return the decompressed plaintext as a mutable bytearray.
+        The caller is responsible for calling _zero_bytes() on the result when finished.
+        """
+        from cryptography.fernet import Fernet as _Fernet
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Archive not found: {file_path}")
+        with open(file_path, "rb") as fh:
+            encrypted_data = fh.read()
+        fernet = _Fernet(key)
+        try:
+            gzipped = fernet.decrypt(encrypted_data)
+        except Exception:
+            raise ValueError("Decryption failed: invalid key or corrupted archive.")
+        return bytearray(gzip.decompress(gzipped))
 
     def update_last_entry_feedback(self, feedback: str, corrected_response: str | None = None):
         """
