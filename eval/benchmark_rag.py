@@ -18,6 +18,7 @@ import re
 import math
 import collections
 from dataclasses import dataclass
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,22 +28,35 @@ from core.interaction_loop import build_prompt
 from core.cognitive_parser import parse_thought_stream
 
 
-# ── NLP Metric Helpers (Pure Python) ──────────────────────────────────────────
+# ── NLP Metric Helpers (Pure Python & NumPy) ──────────────────────────────────
 
 def _tokenize(text):
+    """
+    Tokenize text by lowercasing and splitting by whitespace/punctuation.
+    Strictly follows: lowercase + re.split by non-alphanumeric.
+    """
     if not isinstance(text, str):
         text = str(text)
-    return re.findall(r'\w+', text.lower())
+    # Lowercase and split by any sequence of non-alphanumeric characters
+    tokens = [t for t in re.split(r'[^a-z0-9]+', text.lower()) if t]
+    return tokens
 
 def _get_ngrams(tokens, n):
+    """Generates n-grams from a list of tokens."""
     return [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
 
 def compute_bleu(reference, hypothesis, n_max=2):
-    """Simple BLEU-n implementation with brevity penalty."""
+    """
+    Bilingual Evaluation Understudy (BLEU) implementation.
+    Strictly follows provided mathematical specifications.
+    """
     ref_tokens = _tokenize(reference)
     hyp_tokens = _tokenize(hypothesis)
     
-    if not hyp_tokens:
+    c = len(hyp_tokens)
+    r = len(ref_tokens)
+    
+    if c == 0:
         return 0.0
     
     precisions = []
@@ -55,29 +69,36 @@ def compute_bleu(reference, hypothesis, n_max=2):
         if hyp_ngram_count > 0:
             for ngram, count in hyp_ngrams.items():
                 if ngram in ref_ngrams:
+                    # p_n = sum(Count_clip(g)) / sum(Count(g))
                     matches += min(count, ref_ngrams[ngram])
             precision = matches / hyp_ngram_count
         else:
-            precision = 0
+            precision = 0.0
         precisions.append(precision)
     
-    # Geometric mean
-    if any(p == 0 for p in precisions):
-        geo_mean = 0
+    # Brevity Penalty (BP)
+    # BP = 1 if c > r else e^(1 - r/c)
+    if c > r:
+        bp = 1.0
     else:
-        geo_mean = math.exp(sum(math.log(p) for p in precisions) / n_max)
-    
-    # Brevity penalty
-    ref_len = len(ref_tokens)
-    hyp_len = len(hyp_tokens)
-    bp = 1.0
-    if hyp_len <= ref_len:
-        bp = math.exp(1 - ref_len / hyp_len) if hyp_len > 0 else 0
+        bp = math.exp(1 - r / c)
         
-    return bp * geo_mean
+    if n_max == 1:
+        # BLEU-1 = p_1 * BP
+        return precisions[0] * bp
+    elif n_max == 2:
+        # BLEU-2 = exp(0.5 ln(p_1) + 0.5 ln(p_2)) * BP
+        p1, p2 = precisions
+        if p1 <= 0 or p2 <= 0:
+            return 0.0
+        return math.exp(0.5 * math.log(p1) + 0.5 * math.log(p2)) * bp
+    
+    return 0.0
 
 def compute_rouge_1(reference, hypothesis):
-    """ROUGE-1: Precision, Recall, and F1 based on unigrams."""
+    """
+    ROUGE-1: Precision, Recall, and F1 based on unigrams.
+    """
     ref_tokens = _tokenize(reference)
     hyp_tokens = _tokenize(hypothesis)
     
@@ -90,37 +111,51 @@ def compute_rouge_1(reference, hypothesis):
     matches = 0
     for token, count in hyp_counts.items():
         if token in ref_counts:
+            # Overlap(1-grams)
             matches += min(count, ref_counts[token])
             
     precision = matches / len(hyp_tokens)
     recall = matches / len(ref_tokens)
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     
     return {"precision": precision, "recall": recall, "f1": f1}
 
-def compute_rouge_l(reference, hypothesis):
-    """ROUGE-L: Longest Common Subsequence."""
-    ref_tokens = _tokenize(reference)
-    hyp_tokens = _tokenize(hypothesis)
+def compute_rouge_l(reference, hypothesis, beta=1.0):
+    """
+    ROUGE-L: Longest Common Subsequence.
+    Strictly follows provided mathematical specifications.
+    """
+    X = _tokenize(reference)
+    Y = _tokenize(hypothesis)
     
-    n, m = len(ref_tokens), len(hyp_tokens)
+    n, m = len(X), len(Y)
     if n == 0 or m == 0:
-        return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "lcs": 0}
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0}
     
+    # Dynamic programming for LCS length
     dp = [[0] * (m + 1) for _ in range(n + 1)]
     for i in range(1, n + 1):
         for j in range(1, m + 1):
-            if ref_tokens[i-1] == hyp_tokens[j-1]:
+            if X[i-1] == Y[j-1]:
                 dp[i][j] = dp[i-1][j-1] + 1
             else:
                 dp[i][j] = max(dp[i-1][j], dp[i][j-1])
                 
     lcs_len = dp[n][m]
-    precision = lcs_len / m
-    recall = lcs_len / n
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
     
-    return {"precision": precision, "recall": recall, "f1": f1, "lcs": lcs_len}
+    # R_L = LCS(X, Y) / n
+    # P_L = LCS(X, Y) / m
+    recall = lcs_len / n
+    precision = lcs_len / m
+    
+    # F_L = (1 + beta^2) * R_L * P_L / (R_L + beta^2 * P_L)
+    denom = (recall + (beta**2) * precision)
+    if denom > 0:
+        f1 = (1 + beta**2) * recall * precision / denom
+    else:
+        f1 = 0.0
+    
+    return {"precision": precision, "recall": recall, "f1": f1}
 
 
 # ── Synthetic benchmark corpus ────────────────────────────────────────────────
@@ -336,18 +371,24 @@ def run_code_review_benchmark(top_k: int = 3, output_path: str = "data/rag_bench
             
             # Generation
             context_text = "\n\n".join([r["text"] for r in retrieved])
-            sys_prompt = "You are a code review assistant. Use the retrieved context to answer the user's query."
+            sys_prompt = (
+                "You are Karl, a precise and thoughtful code review assistant. "
+                "Use the following retrieved context chunks to answer the user's request. "
+                "If the context is insufficient, explain what is missing. "
+                "Always respond in English."
+            )
             prompt = build_prompt(
                 sys_prompt + "\n\nRetrieved Context:\n" + context_text,
                 [{"role": "user", "content": query_text}]
             )
             
+            # Inference (Temperature 0.0 for deterministic benchmark results)
             res = llm(prompt, max_tokens=256, temperature=0.0, stop=["<|im_end|>", "User:"])
             raw_text = res["choices"][0]["text"]
             _, final_response = parse_thought_stream(raw_text)
             if not final_response: final_response = raw_text
             
-            # NLP Scores
+            # Compute NLP Scores (strictly following math specs)
             b1 = compute_bleu(reference_answer, final_response, n_max=1)
             b2 = compute_bleu(reference_answer, final_response, n_max=2)
             r1 = compute_rouge_1(reference_answer, final_response)
@@ -372,7 +413,7 @@ def run_code_review_benchmark(top_k: int = 3, output_path: str = "data/rag_bench
         
         query_details.append(case_info)
         
-    # Aggregate metrics
+    # Aggregate metrics using NumPy
     summary = {}
     for mode in modes:
         mode_results = results_by_mode[mode]
@@ -380,13 +421,13 @@ def run_code_review_benchmark(top_k: int = 3, output_path: str = "data/rag_bench
         if n == 0: continue
         
         summary[mode] = {
-            "hit_at_1": round(sum(r["hit_at_1"] for r in mode_results) / n, 4),
-            "hit_at_3": round(sum(r["hit_at_3"] for r in mode_results) / n, 4),
-            "mrr": round(sum(r["mrr"] for r in mode_results) / n, 4),
-            "bleu_1": round(sum(r["bleu_1"] for r in mode_results) / n, 4),
-            "bleu_2": round(sum(r["bleu_2"] for r in mode_results) / n, 4),
-            "rouge_1": round(sum(r["rouge_1"] for r in mode_results) / n, 4),
-            "rouge_l": round(sum(r["rouge_l"] for r in mode_results) / n, 4),
+            "hit_at_1": round(float(np.mean([r["hit_at_1"] for r in mode_results])), 4),
+            "hit_at_3": round(float(np.mean([r["hit_at_3"] for r in mode_results])), 4),
+            "mrr": round(float(np.mean([r["mrr"] for r in mode_results])), 4),
+            "bleu_1": round(float(np.mean([r["bleu_1"] for r in mode_results])), 4),
+            "bleu_2": round(float(np.mean([r["bleu_2"] for r in mode_results])), 4),
+            "rouge_1": round(float(np.mean([r["rouge_1"] for r in mode_results])), 4),
+            "rouge_l": round(float(np.mean([r["rouge_l"] for r in mode_results])), 4),
         }
         
     # Print the aggregate summary table
@@ -401,14 +442,22 @@ def run_code_review_benchmark(top_k: int = 3, output_path: str = "data/rag_bench
     
     # Save to JSON
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    output_data = {
-        "dataset": "code_review.jsonl",
-        "top_k": top_k,
-        "modes": summary,
-        "queries": query_details
-    }
+    output_data = summary # Request specified matching this schema
+    
+    # Also save full details for audit, but wrap the summary as the root keys
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(output_data, f, indent=2)
+        json.dump(summary, f, indent=2)
+    
+    # Save extended details separately
+    ext_path = output_path.replace(".json", "_detailed.json")
+    with open(ext_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "dataset": "code_review.jsonl",
+            "top_k": top_k,
+            "modes": summary,
+            "queries": query_details
+        }, f, indent=2)
+        
     print(f"  Results successfully saved to {output_path}\n")
 
 

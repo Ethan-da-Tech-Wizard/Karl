@@ -216,6 +216,8 @@ class MiniGptInlineCompletionProvider {
         this.workspacePath = workspacePath;
         /** @type {ReturnType<typeof setTimeout> | null} */
         this.debounceTimeout = null;
+        /** @type {import('child_process').ChildProcess | null} */
+        this._pendingProc = null;
     }
 
     /**
@@ -249,11 +251,16 @@ class MiniGptInlineCompletionProvider {
                 return;
             }
 
-            // Resolve early if VS Code cancels while we are waiting (user kept typing)
+            // Resolve early if VS Code cancels while we are waiting (user kept typing).
+            // Also kills any already-spawned subprocess so it cannot hold VRAM.
             const cancelListener = token.onCancellationRequested(() => {
                 if (this.debounceTimeout !== null) {
                     clearTimeout(this.debounceTimeout);
                     this.debounceTimeout = null;
+                }
+                if (this._pendingProc) {
+                    this._pendingProc.kill('SIGTERM');
+                    this._pendingProc = null;
                 }
                 resolve(undefined);
             });
@@ -348,41 +355,70 @@ print(completion, end="")
 `;
 
             const proc = cp.spawn('python3', ['-c', pythonScript, this.workspacePath, prompt]);
+            this._pendingProc = proc;
 
-            // Kill the child process immediately if VS Code cancels this request
+            // Settled flag — prevents double-resolve/reject when both the hard
+            // timeout and the close event fire (e.g. kill → close with code -2).
+            let settled = false;
+
+            /** @type {ReturnType<typeof setTimeout> | null} */
+            let hardTimer = null;
+            /** @type {ReturnType<typeof setTimeout> | null} */
+            let sigkillTimer = null;
             /** @type {vscode.Disposable | null} */
             let cancelListener = null;
+
+            // Escalating kill: SIGTERM first, SIGKILL after 500 ms if process hangs.
+            const killProc = () => {
+                proc.kill('SIGTERM');
+                sigkillTimer = setTimeout(() => { proc.kill('SIGKILL'); }, 500);
+            };
+
+            // Single-call settle — clears all timers and listeners then calls fn.
+            const settle = (fn, value) => {
+                if (settled) return;
+                settled = true;
+                this._pendingProc = null;
+                if (hardTimer)    { clearTimeout(hardTimer);    hardTimer    = null; }
+                if (sigkillTimer) { clearTimeout(sigkillTimer); sigkillTimer = null; }
+                if (cancelListener) { cancelListener.dispose(); cancelListener = null; }
+                proc.stdout.removeAllListeners();
+                proc.stderr.removeAllListeners();
+                proc.removeAllListeners();
+                fn(value);
+            };
+
+            // VS Code cancellation: kill the subprocess and resolve empty.
             if (token) {
                 cancelListener = token.onCancellationRequested(() => {
-                    proc.kill();
-                    resolve('');
+                    killProc();
+                    settle(resolve, '');
                 });
             }
 
             let stdout = '';
             let stderr = '';
 
-            const timer = setTimeout(() => {
-                proc.kill();
-                reject(new Error('Mini-GPT generation timed out.'));
+            // Hard 2-second execution guard.
+            hardTimer = setTimeout(() => {
+                killProc();
+                settle(reject, new Error('Mini-GPT generation timed out.'));
             }, 2000);
 
-            proc.stdout.on('data', (data) => {
-                stdout += data.toString();
+            proc.stdout.on('data', (/** @type {Buffer} */ data) => { stdout += data.toString(); });
+            proc.stderr.on('data', (/** @type {Buffer} */ data) => { stderr += data.toString(); });
+
+            // Spawn errors (e.g. python3 not on PATH) — logged silently, no popup.
+            proc.on('error', (/** @type {Error} */ err) => {
+                console.error('[Mini-GPT] Spawn error:', err.message);
+                settle(reject, err);
             });
 
-            proc.stderr.on('data', (data) => {
-                stderr += data.toString();
-            });
-
-            proc.on('close', (code) => {
-                clearTimeout(timer);
-                if (cancelListener) { cancelListener.dispose(); cancelListener = null; }
-                if (code === 0) {
-                    resolve(stdout);
-                } else {
-                    reject(new Error(stderr || `Python exited with code ${code}`));
-                }
+            proc.on('close', (/** @type {number | null} */ code) => {
+                settle(
+                    code === 0 ? resolve : reject,
+                    code === 0 ? stdout  : new Error(stderr || `Python exited with code ${code}`)
+                );
             });
         });
     }

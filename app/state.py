@@ -48,6 +48,11 @@ class AppState(QObject):
         self.log_rotation_size_mb: int = 10
         self.log_retention_days: int = 30
 
+        # Dynamic Scheduling for reasoning models
+        self.enable_dynamic_scheduling: bool = True
+        self.thinking_temperature: float = 0.8
+        self.answering_temperature: float = 0.1
+
         self._initialized = True
 
     def __setattr__(self, name, value):

@@ -206,6 +206,9 @@ UI_CONFIG_DEFAULTS: dict[str, Any] = {
     "theme_mode": "midnight",
     "log_rotation_size_mb": 10,
     "log_retention_days": 30,
+    "enable_dynamic_scheduling": True,
+    "thinking_temperature": 0.8,
+    "answering_temperature": 0.1,
 }
 
 

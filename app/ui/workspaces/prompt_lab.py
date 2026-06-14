@@ -19,9 +19,10 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QTextEdit, QLabel,
     QFrame, QComboBox, QListWidget, QLineEdit,
-    QMessageBox, QTabWidget, QCheckBox,
+    QMessageBox, QTabWidget, QCheckBox, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtGui import QTextCursor
 
 from app.ui.themes import MONO
 
@@ -39,6 +40,14 @@ def _hline() -> QFrame:
     f = QFrame()
     f.setFrameShape(QFrame.Shape.HLine)
     return f
+
+
+def _scan_model_files() -> list[str]:
+    """Return sorted list of .gguf filenames found in data/models/."""
+    models_dir = "data/models"
+    if not os.path.exists(models_dir):
+        return []
+    return sorted(f for f in os.listdir(models_dir) if f.endswith(".gguf"))
 
 
 def generate_char_diff_html(a: str, b: str) -> str:
@@ -509,6 +518,245 @@ class _PromptColumn(QWidget):
         self.generation_failed.emit()
 
 
+# ── telemetry card ────────────────────────────────────────────────────────────
+
+class _TelemetryCard(QFrame):
+    """Compact metrics display shown below each model's output panel."""
+
+    def __init__(self, label: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("panel")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(3)
+
+        hdr = QLabel(f"◈ {label} Metrics")
+        hdr.setObjectName("section-header")
+        layout.addWidget(hdr)
+
+        self._file_lbl  = self._muted_label("Model: —")
+        self._size_lbl  = self._muted_label("File size: —")
+        self._speed_lbl = self._muted_label("Gen speed: —")
+        self._think_lbl = self._muted_label("Thinking time: —")
+        self._ctx_lbl   = self._muted_label("Context: —")
+
+        for lbl in (self._file_lbl, self._size_lbl, self._speed_lbl,
+                    self._think_lbl, self._ctx_lbl):
+            layout.addWidget(lbl)
+
+    @staticmethod
+    def _muted_label(text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setObjectName("lbl-muted")
+        lbl.setStyleSheet("font-size: 8.5pt;")
+        return lbl
+
+    def reset(self):
+        self._file_lbl.setText("Model: —")
+        self._size_lbl.setText("File size: —")
+        self._speed_lbl.setText("Gen speed: —")
+        self._think_lbl.setText("Thinking time: —")
+        self._ctx_lbl.setText("Context: —")
+
+    def update_from(self, telemetry: dict):
+        model_file = telemetry.get("model_file", "—")
+        display_name = model_file if len(model_file) <= 34 else "…" + model_file[-31:]
+
+        raw = telemetry.get("file_size_bytes", 0)
+        if raw >= 1_073_741_824:
+            size_str = f"{raw / 1_073_741_824:.2f} GB"
+        elif raw >= 1_048_576:
+            size_str = f"{raw / 1_048_576:.1f} MB"
+        else:
+            size_str = f"{raw:,} B"
+
+        gen_tps    = telemetry.get("generation_tps", 0.0)
+        think_secs = telemetry.get("thinking_time", 0.0)
+        p_tok      = telemetry.get("prompt_tokens", 0)
+        g_tok      = telemetry.get("generation_tokens", 0)
+        n_ctx      = telemetry.get("n_ctx", 0)
+        total_tok  = p_tok + g_tok
+        ctx_pct    = total_tok / n_ctx * 100 if n_ctx > 0 else 0.0
+
+        self._file_lbl.setText(f"Model: {display_name}")
+        self._size_lbl.setText(f"File size: {size_str}")
+        self._speed_lbl.setText(f"Gen speed: {gen_tps:.1f} t/s")
+        if think_secs > 0:
+            self._think_lbl.setText(f"Thinking time: {think_secs:.2f}s")
+        else:
+            self._think_lbl.setText("Thinking time: — (no <think> block)")
+        self._ctx_lbl.setText(
+            f"Context: {total_tok:,} / {n_ctx:,} tokens  ({ctx_pct:.1f}%)"
+        )
+
+
+# ── multi-model sequential inference thread ───────────────────────────────────
+
+class _ModelCompareThread(QThread):
+    """
+    Runs Model A then Model B sequentially on the same prompt.
+
+    Between the two runs it calls ModelLoader.reset_instance() to fully
+    release VRAM before loading the second model, preventing OOM errors.
+    After both runs it restores the previously active default model.
+    """
+
+    status      = pyqtSignal(str)   # status-bar text update
+    token_a     = pyqtSignal(str)   # streaming token for Model A
+    model_a_done = pyqtSignal(dict) # telemetry dict for Model A
+    vram_flushing = pyqtSignal()    # emitted just before reset_instance()
+    token_b     = pyqtSignal(str)   # streaming token for Model B
+    model_b_done = pyqtSignal(dict) # telemetry dict for Model B
+    finished_all = pyqtSignal()     # both passes complete
+    error       = pyqtSignal(str)
+
+    def __init__(self, model_a_filename: str, model_b_filename: str,
+                 system_prompt: str, user_prompt: str, hyperparams: dict):
+        super().__init__()
+        self.model_a_filename = model_a_filename
+        self.model_b_filename = model_b_filename
+        self.system_prompt    = system_prompt
+        self.user_prompt      = user_prompt
+        self.hyperparams      = hyperparams
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _stream(self, llm, prompt: str, token_signal: pyqtSignal) -> tuple[int, float, float, int]:
+        """
+        Run one streaming inference pass.
+
+        Returns (gen_tokens, gen_tps, thinking_time_secs, n_ctx_used).
+        thinking_time_secs is the wall-clock seconds from generation start
+        until the first ``</think>`` tag is observed in the output stream.
+        """
+        import time
+        hp = self.hyperparams
+
+        start        = time.time()
+        first_tok_t  = None
+        gen_count    = 0
+        buf          = ""
+        think_end_t  = None   # wall-clock time when </think> first appears
+
+        for chunk in llm(
+            prompt,
+            max_tokens  = hp.get("max_tokens",   1024),
+            temperature = hp.get("temperature",  0.7),
+            top_p       = hp.get("top_p",        0.95),
+            stream      = True,
+            stop        = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"],
+            echo        = False,
+        ):
+            if "choices" not in chunk:
+                continue
+            text = chunk["choices"][0].get("text", "")
+            if not text:
+                continue
+
+            if first_tok_t is None:
+                first_tok_t = time.time()
+
+            gen_count += len(llm.tokenize(text.encode("utf-8"), add_bos=False))
+
+            if think_end_t is None:
+                buf += text
+                if "</think>" in buf:
+                    think_end_t = time.time()
+                    buf = ""
+
+            token_signal.emit(text)
+
+        end       = time.time()
+        span      = end - (first_tok_t or start)
+        gen_tps   = gen_count / span if span > 0 else 0.0
+        think_sec = (think_end_t - start) if think_end_t else 0.0
+        return gen_count, gen_tps, think_sec
+
+    def run(self):
+        import os
+        import time
+        from app.engine.model_loader import ModelLoader
+        from app.engine import config_store
+        import core.interaction_loop
+        import importlib
+        importlib.reload(core.interaction_loop)
+
+        model_a_path = os.path.join("data", "models", self.model_a_filename)
+        model_b_path = os.path.join("data", "models", self.model_b_filename)
+
+        history = [{"role": "user", "content": self.user_prompt}]
+
+        try:
+            # ── Pass 1: Model A ───────────────────────────────────────────────
+            self.status.emit(f"Loading {self.model_a_filename}…")
+            llm_a = ModelLoader.get_instance(model_path=model_a_path)
+
+            file_size_a = os.path.getsize(model_a_path) if os.path.exists(model_a_path) else 0
+            n_ctx_a     = ModelLoader.n_ctx()
+            prompt_a    = core.interaction_loop.build_prompt(self.system_prompt, history)
+            p_tokens_a  = len(llm_a.tokenize(prompt_a.encode("utf-8")))
+
+            self.status.emit(f"Generating with {self.model_a_filename}…")
+            g_tok_a, tps_a, think_a = self._stream(llm_a, prompt_a, self.token_a)
+
+            telemetry_a = {
+                "model_file":        self.model_a_filename,
+                "file_size_bytes":   file_size_a,
+                "generation_tps":    tps_a,
+                "thinking_time":     think_a,
+                "prompt_tokens":     p_tokens_a,
+                "generation_tokens": g_tok_a,
+                "n_ctx":             n_ctx_a,
+            }
+            self.model_a_done.emit(telemetry_a)
+
+            # ── VRAM Flush ────────────────────────────────────────────────────
+            self.vram_flushing.emit()
+            ModelLoader.reset_instance()
+
+            # ── Pass 2: Model B ───────────────────────────────────────────────
+            self.status.emit(f"Loading {self.model_b_filename}…")
+            llm_b = ModelLoader.get_instance(model_path=model_b_path)
+
+            file_size_b = os.path.getsize(model_b_path) if os.path.exists(model_b_path) else 0
+            n_ctx_b     = ModelLoader.n_ctx()
+            prompt_b    = core.interaction_loop.build_prompt(self.system_prompt, history)
+            p_tokens_b  = len(llm_b.tokenize(prompt_b.encode("utf-8")))
+
+            self.status.emit(f"Generating with {self.model_b_filename}…")
+            g_tok_b, tps_b, think_b = self._stream(llm_b, prompt_b, self.token_b)
+
+            telemetry_b = {
+                "model_file":        self.model_b_filename,
+                "file_size_bytes":   file_size_b,
+                "generation_tps":    tps_b,
+                "thinking_time":     think_b,
+                "prompt_tokens":     p_tokens_b,
+                "generation_tokens": g_tok_b,
+                "n_ctx":             n_ctx_b,
+            }
+            self.model_b_done.emit(telemetry_b)
+
+            # ── Restore default model ─────────────────────────────────────────
+            self.status.emit("Restoring default model…")
+            ModelLoader.reset_instance()
+            try:
+                active       = config_store.get_active_model()
+                default_path = os.path.join("data", "models", active["filename"])
+                ModelLoader.get_instance(model_path=default_path)
+            except Exception as restore_err:
+                logger.warning("Could not restore default model after comparison: %s", restore_err)
+
+            self.finished_all.emit()
+
+        except Exception as exc:
+            logger.error("[ModelCompareThread] %s", exc)
+            self.error.emit(str(exc))
+
+
 # ── workspace ─────────────────────────────────────────────────────────────────
 
 class PromptLabWorkspace(QWidget):
@@ -671,6 +919,116 @@ class PromptLabWorkspace(QWidget):
         tok_layout.addWidget(self._tok_output, 1)
 
         self._main_tabs.addTab(tokenizer_tab, "Tokenizer Visualizer")
+
+        # 4. Multi-Model Comparison tab ───────────────────────────────────────
+        cmp_tab = QWidget()
+        ct_layout = QVBoxLayout(cmp_tab)
+        ct_layout.setContentsMargins(0, 8, 0, 0)
+        ct_layout.setSpacing(8)
+
+        # Model selector row
+        sel_row = QWidget()
+        sel_layout = QHBoxLayout(sel_row)
+        sel_layout.setContentsMargins(0, 0, 0, 0)
+        sel_layout.setSpacing(8)
+
+        lbl_a = QLabel("Model A (Active):")
+        lbl_a.setStyleSheet("font-size: 8.5pt; font-weight: 700;")
+        sel_layout.addWidget(lbl_a)
+        self._cmp_model_a = QComboBox()
+        self._cmp_model_a.setToolTip("First model — loaded and run before VRAM flush")
+        sel_layout.addWidget(self._cmp_model_a, 1)
+
+        lbl_b = QLabel("Model B (Comparison):")
+        lbl_b.setStyleSheet("font-size: 8.5pt; font-weight: 700;")
+        sel_layout.addWidget(lbl_b)
+        self._cmp_model_b = QComboBox()
+        self._cmp_model_b.setToolTip("Second model — loaded after VRAM flush")
+        sel_layout.addWidget(self._cmp_model_b, 1)
+
+        self._cmp_run_btn = QPushButton("▶▶ Run Comparative Lab")
+        self._cmp_run_btn.setObjectName("btn-primary")
+        self._cmp_run_btn.setToolTip(
+            "Load Model A → generate → flush VRAM → Load Model B → generate → restore default"
+        )
+        self._cmp_run_btn.clicked.connect(self._run_comparative_lab)
+        sel_layout.addWidget(self._cmp_run_btn)
+        ct_layout.addWidget(sel_row)
+
+        # Shared prompt inputs
+        prompt_row = QWidget()
+        pr_layout = QHBoxLayout(prompt_row)
+        pr_layout.setContentsMargins(0, 0, 0, 0)
+        pr_layout.setSpacing(8)
+
+        sys_col = QWidget()
+        sc_layout = QVBoxLayout(sys_col)
+        sc_layout.setContentsMargins(0, 0, 0, 0)
+        sc_layout.setSpacing(2)
+        sc_layout.addWidget(QLabel("System Prompt (shared):"))
+        self._cmp_system = QTextEdit()
+        self._cmp_system.setPlaceholderText("System instructions for both models (optional)…")
+        self._cmp_system.setFixedHeight(54)
+        sc_layout.addWidget(self._cmp_system)
+        pr_layout.addWidget(sys_col, 1)
+
+        usr_col = QWidget()
+        uc_layout = QVBoxLayout(usr_col)
+        uc_layout.setContentsMargins(0, 0, 0, 0)
+        uc_layout.setSpacing(2)
+        uc_layout.addWidget(QLabel("User Prompt (same for both models):"))
+        self._cmp_user = QTextEdit()
+        self._cmp_user.setPlaceholderText("User message to evaluate against both models…")
+        self._cmp_user.setFixedHeight(54)
+        uc_layout.addWidget(self._cmp_user)
+        pr_layout.addWidget(usr_col, 1)
+
+        ct_layout.addWidget(prompt_row)
+
+        # Status label
+        self._cmp_status = QLabel(
+            "Select two different GGUF models and enter a prompt, then click Run Comparative Lab."
+        )
+        self._cmp_status.setObjectName("lbl-muted")
+        self._cmp_status.setStyleSheet("font-size: 8.5pt; padding: 2px 0;")
+        ct_layout.addWidget(self._cmp_status)
+
+        # Output columns inside a symmetric splitter
+        cmp_splitter = QSplitter(Qt.Orientation.Horizontal)
+        cmp_splitter.setHandleWidth(1)
+
+        col_a_w = QWidget()
+        ca_layout = QVBoxLayout(col_a_w)
+        ca_layout.setContentsMargins(0, 0, 6, 0)
+        ca_layout.setSpacing(4)
+        ca_layout.addWidget(_section("◈ MODEL A OUTPUT"))
+        self._cmp_out_a = QTextBrowser()
+        self._cmp_out_a.setPlaceholderText("Model A tokens stream here…")
+        ca_layout.addWidget(self._cmp_out_a, 1)
+        self._cmp_card_a = _TelemetryCard("Model A")
+        ca_layout.addWidget(self._cmp_card_a)
+
+        col_b_w = QWidget()
+        cb_layout = QVBoxLayout(col_b_w)
+        cb_layout.setContentsMargins(6, 0, 0, 0)
+        cb_layout.setSpacing(4)
+        cb_layout.addWidget(_section("◈ MODEL B OUTPUT"))
+        self._cmp_out_b = QTextBrowser()
+        self._cmp_out_b.setPlaceholderText("Model B tokens stream here…")
+        cb_layout.addWidget(self._cmp_out_b, 1)
+        self._cmp_card_b = _TelemetryCard("Model B")
+        cb_layout.addWidget(self._cmp_card_b)
+
+        cmp_splitter.addWidget(col_a_w)
+        cmp_splitter.addWidget(col_b_w)
+        cmp_splitter.setStretchFactor(0, 1)
+        cmp_splitter.setStretchFactor(1, 1)
+        ct_layout.addWidget(cmp_splitter, 1)
+
+        self._main_tabs.addTab(cmp_tab, "Multi-Model Comparison")
+
+        # Thread reference (kept to prevent GC while running)
+        self._cmp_thread: _ModelCompareThread | None = None
 
         right_layout.addWidget(self._main_tabs, 1)
 
@@ -856,6 +1214,7 @@ class PromptLabWorkspace(QWidget):
         super().showEvent(event)
         self._col_a._refresh_model_combo()
         self._col_b._refresh_model_combo()
+        self._refresh_compare_model_combos()
 
     def _run_column(self, label: str, _user_text: str):
         self._running_both = False
@@ -1060,4 +1419,88 @@ class PromptLabWorkspace(QWidget):
         self._col_a._system_edit.blockSignals(True)
         self._col_a.set_system_text(self._col_b.system_text())
         self._col_a._system_edit.blockSignals(False)
+
+    # ── Multi-Model Comparison ────────────────────────────────────────────────
+
+    def _refresh_compare_model_combos(self):
+        """Re-scan data/models/ and repopulate both comparison dropdowns."""
+        files = _scan_model_files()
+        for combo in (self._cmp_model_a, self._cmp_model_b):
+            prev = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            for f in files:
+                combo.addItem(f)
+            # Restore previous selection if still present
+            idx = combo.findText(prev)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _run_comparative_lab(self):
+        model_a = self._cmp_model_a.currentText()
+        model_b = self._cmp_model_b.currentText()
+        user    = self._cmp_user.toPlainText().strip()
+
+        if not model_a or not model_b:
+            QMessageBox.warning(self, "No Models",
+                                "Scan returned no .gguf files in data/models/.")
+            return
+        if not user:
+            QMessageBox.warning(self, "No Prompt",
+                                "Enter a user prompt before running the comparison.")
+            return
+
+        # Reset output panels and telemetry cards
+        self._cmp_out_a.clear()
+        self._cmp_out_b.clear()
+        self._cmp_card_a.reset()
+        self._cmp_card_b.reset()
+        self._cmp_run_btn.setEnabled(False)
+        self._cmp_status.setText(f"Phase 1/2 — Loading {model_a}…")
+
+        self._cmp_thread = _ModelCompareThread(
+            model_a_filename = model_a,
+            model_b_filename = model_b,
+            system_prompt    = self._cmp_system.toPlainText().strip(),
+            user_prompt      = user,
+            hyperparams      = self._hyperparams,
+        )
+        t = self._cmp_thread
+        t.status.connect(self._cmp_status.setText)
+        t.token_a.connect(lambda tok: self._cmp_append(self._cmp_out_a, tok))
+        t.model_a_done.connect(self._on_cmp_model_a_done)
+        t.vram_flushing.connect(self._on_cmp_vram_flushing)
+        t.token_b.connect(lambda tok: self._cmp_append(self._cmp_out_b, tok))
+        t.model_b_done.connect(self._on_cmp_model_b_done)
+        t.finished_all.connect(self._on_cmp_finished)
+        t.error.connect(self._on_cmp_error)
+        t.start()
+
+    def _cmp_append(self, browser: QTextBrowser, token: str):
+        """Append a streamed token to a comparison output browser."""
+        c = browser.textCursor()
+        c.movePosition(QTextCursor.MoveOperation.End)
+        c.insertText(token)
+        browser.setTextCursor(c)
+        browser.ensureCursorVisible()
+
+    def _on_cmp_model_a_done(self, telemetry: dict):
+        self._cmp_card_a.update_from(telemetry)
+
+    def _on_cmp_vram_flushing(self):
+        self._cmp_status.setText(
+            "VRAM flush — releasing Model A from memory before loading Model B…"
+        )
+
+    def _on_cmp_model_b_done(self, telemetry: dict):
+        self._cmp_card_b.update_from(telemetry)
+
+    def _on_cmp_finished(self):
+        self._cmp_run_btn.setEnabled(True)
+        self._cmp_status.setText("Comparison complete. Default model restored.")
+
+    def _on_cmp_error(self, msg: str):
+        self._cmp_run_btn.setEnabled(True)
+        self._cmp_status.setText(f"Error: {msg}")
+        logger.error("[MultiModelComparison] %s", msg)
 

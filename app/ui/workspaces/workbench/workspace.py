@@ -84,6 +84,9 @@ class WorkbenchWorkspace(QMainWindow):
             "temperature": 0.3,
             "top_p": 0.95,
             "max_tokens": 2048,
+            "enable_dynamic_scheduling": getattr(self.state, "enable_dynamic_scheduling", True),
+            "thinking_temperature": getattr(self.state, "thinking_temperature", 0.8),
+            "answering_temperature": getattr(self.state, "answering_temperature", 0.1),
         }
         self._system_prompt = (
             "You are Karl, a precise and thoughtful AI assistant. "

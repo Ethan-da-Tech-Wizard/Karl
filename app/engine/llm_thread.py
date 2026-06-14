@@ -171,14 +171,26 @@ class LLMThread(QThread):
             max_continuations = 5
             compression_reset_count = 0
             max_compression_resets = 2
+            state_transitioned = False
 
             with open(raw_log_path, "w", encoding="utf-8") as raw_file:
                 while continuation_count <= max_continuations:
+                    # Dynamic Parameter Scheduling
+                    current_temp = self.hyperparams.get("temperature", 0.7)
+                    current_top_p = self.hyperparams.get("top_p", 0.95)
+                    
+                    if self.hyperparams.get("enable_dynamic_scheduling", True):
+                        if in_thought:
+                            current_temp = self.hyperparams.get("thinking_temperature", 0.8)
+                        else:
+                            current_temp = self.hyperparams.get("answering_temperature", 0.1)
+                            current_top_p = 0.1 # High precision for answering
+                    
                     response_generator = llm(
                         prompt + raw_output,
                         max_tokens=self.hyperparams.get("max_tokens", 2048),
-                        temperature=self.hyperparams.get("temperature", 0.7),
-                        top_p=self.hyperparams.get("top_p", 0.95),
+                        temperature=current_temp,
+                        top_p=current_top_p,
                         repeat_penalty=1.1,
                         stream=True,
                         # <|im_start|> stops the model from hallucinating a new conversation turn
@@ -188,6 +200,7 @@ class LLMThread(QThread):
 
                     finish_reason = "stop"
                     has_tokens = False
+                    state_transitioned = False
 
                     for chunk in response_generator:
                         if 'choices' not in chunk or not chunk['choices']:
@@ -237,6 +250,11 @@ class LLMThread(QThread):
                                 self.new_thought_token.emit(parts[0])
                                 parsed_thought += parts[0]
                             buffer = parts[1]
+                            
+                            if self.hyperparams.get("enable_dynamic_scheduling", True):
+                                logger.info("Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
+                                state_transitioned = True
+                                break
 
                         if in_thought:
                             if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
@@ -248,6 +266,9 @@ class LLMThread(QThread):
                                 self.new_chat_token.emit(buffer)
                                 parsed_response += buffer
                                 buffer = ""
+
+                    if state_transitioned:
+                        continue
 
                     if finish_reason != "length" or not has_tokens:
                         break
