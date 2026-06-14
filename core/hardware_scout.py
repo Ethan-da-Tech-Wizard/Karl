@@ -107,10 +107,17 @@ def get_hardware_profile():
     total, used, free = shutil.disk_usage(karl_dir)
     storage_gb = free / (1024 ** 3)
 
+    # Calculate max temperature if available
+    max_temp = None
+    temps = [g.get("temperature_c") for g in gpu_list if g.get("temperature_c") is not None]
+    if temps:
+        max_temp = max(temps)
+
     return {
         "ram_gb": round(ram_gb, 2),
         "vram_gb": round(vram_gb, 2),
         "storage_gb": round(storage_gb, 2),
+        "gpu_temp_c": max_temp,
         "cpu_flags": get_cpu_flags(),
         "arch": platform.machine(),
         "os": platform.system(),

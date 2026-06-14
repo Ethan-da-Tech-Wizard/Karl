@@ -210,6 +210,7 @@ class TraceLogger:
         model_name: str | None = None,
         adapter_name: str | None = None,
         diagnostics: dict | None = None,
+        gpu_temp_c: float | None = None,
     ) -> str:
         """
         Logs one generation event. Returns the path of the log file written to.
@@ -224,22 +225,43 @@ class TraceLogger:
         timing = {
             "total_seconds": round(execution_time, 3),
         }
+        gen_tps = 0.0
         if diagnostics:
+            gen_tps = diagnostics.get("generation_tps", 0.0)
             timing.update({
                 "prefill_seconds": round(diagnostics.get("prefill_time", 0), 3),
                 "prefill_tps": round(diagnostics.get("prefill_tps", 0), 1),
                 "generation_seconds": round(diagnostics.get("generation_time", 0), 3),
-                "generation_tps": round(diagnostics.get("generation_tps", 0), 1),
+                "generation_tps": round(gen_tps, 1),
                 "prompt_tokens": diagnostics.get("prompt_tokens", 0),
                 "generation_tokens": diagnostics.get("generation_tokens", 0),
                 "total_tps": round(diagnostics.get("total_tps", 0), 1),
             })
+
+        # ── Thermal Warning Check ───────────────────────────────────────────
+        warning = None
+        try:
+            from core.hardware_scout import get_hardware_profile
+            profile = get_hardware_profile()
+            throttled = False
+            for gpu in profile.get("gpu_list", []):
+                if "Thermal Throttling Active" in gpu.get("alerts", []):
+                    throttled = True
+                    break
+            
+            if throttled and gen_tps < 2.0:
+                warning = f"Low-Throughput Thermal Throttle Degradation (Speed: {gen_tps:.1f} tok/sec)"
+                logger.warning(f"Logging degraded generation: {warning}")
+        except Exception as e:
+            logger.debug(f"Could not perform thermal warning check: {e}")
+        # ────────────────────────────────────────────────────────────────────
 
         entry = {
             "id": str(uuid.uuid4()),
             "session_id": self._session_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "timing": timing,
+            "gpu_temp_c": gpu_temp_c,
             "model": model_name or "unknown",
             "adapter": adapter_name,
             "workflow": workflow,
@@ -254,6 +276,8 @@ class TraceLogger:
             "feedback": feedback,          # none | thumbs_up | thumbs_down | corrected
             "corrected_response": corrected_response,
         }
+        if warning:
+            entry["warning"] = warning
 
         with self._lock:
             with open(self._log_file, "a", encoding="utf-8") as f:

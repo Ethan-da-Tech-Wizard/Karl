@@ -71,6 +71,11 @@ def get_stats() -> dict:
     }
 
 
+def _is_degraded(record: dict) -> bool:
+    """Return True if the record carries a thermal/latency warning flag."""
+    return "warning" in record
+
+
 def _classify_example(prompt: str) -> str:
     prompt_lower = prompt.lower()
     if "python" in prompt_lower or "code block" in prompt_lower or "def solve" in prompt_lower:
@@ -88,8 +93,11 @@ def export_unsloth(output_path: str = "data/training/export_unsloth.jsonl"):
     Maintains balanced classes by down-sampling over-represented categories.
     """
     _ensure_dir()
-    examples = get_all_examples()
-    
+    raw = get_all_examples()
+    examples = [ex for ex in raw if not _is_degraded(ex)]
+    skipped = len(raw) - len(examples)
+    print(f"Curation Curation: Exported {len(examples)} examples. Filtered out {skipped} degraded examples.")
+
     # Classify all examples
     categorized = {}
     for ex in examples:
@@ -127,8 +135,11 @@ def export_dpo(output_path: str = "data/training/export_unsloth_dpo.jsonl") -> s
     Maintains balanced classes by down-sampling over-represented categories.
     """
     _ensure_dir()
-    examples = get_all_examples()
-    
+    raw = get_all_examples()
+    examples = [ex for ex in raw if not _is_degraded(ex)]
+    skipped = len(raw) - len(examples)
+    print(f"Curation Curation: Exported {len(examples)} examples. Filtered out {skipped} degraded examples.")
+
     # Group examples by prompt key: (system_prompt, user_msg)
     groups = {}
     for ex in examples:

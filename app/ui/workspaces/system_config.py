@@ -1072,6 +1072,20 @@ class SystemConfigWorkspace(QWidget):
         self._settings_rows.append(("Log Retention (Days)", row7))
         pp_layout.addWidget(row7)
 
+        pp_layout.addWidget(_hline())
+        pp_layout.addWidget(_section("SECURITY"))
+
+        self._single_session_auth_check = QCheckBox("Enforce Single-Session Authorization")
+        self._single_session_auth_check.setChecked(getattr(self.state, "single_session_auth", False))
+        self._single_session_auth_check.setToolTip(
+            "Wipe cached bridge token from OS keychain immediately upon exiting the application."
+        )
+        self._single_session_auth_check.stateChanged.connect(self._on_single_session_auth_changed)
+
+        row8 = _row("Session Security", self._single_session_auth_check)
+        self._settings_rows.append(("Session Security", row8))
+        pp_layout.addWidget(row8)
+
         apply_btn = QPushButton("apply defaults")
         apply_btn.setObjectName("btn-primary")
         apply_btn.setToolTip("Save and apply default generation limits")
@@ -1105,6 +1119,11 @@ class SystemConfigWorkspace(QWidget):
 
     def _on_log_retention_changed(self, val):
         self.state.log_retention_days = val
+        self._save_appearance_config_silent()
+
+    def _on_single_session_auth_changed(self, state):
+        is_checked = (state == 2 or state == Qt.CheckState.Checked.value or state is True)
+        self.state.single_session_auth = is_checked
         self._save_appearance_config_silent()
 
     # ── identity tab ──────────────────────────────────────────────────────────
@@ -2456,6 +2475,7 @@ class SystemConfigWorkspace(QWidget):
             "theme_mode": getattr(self.state, "theme_mode", "midnight"),
             "log_rotation_size_mb": getattr(self.state, "log_rotation_size_mb", 10),
             "log_retention_days": getattr(self.state, "log_retention_days", 30),
+            "single_session_auth": getattr(self.state, "single_session_auth", False),
         })
 
     def _save_appearance_config(self):

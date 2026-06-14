@@ -4,6 +4,7 @@ from app.utils.memory_manager import MemoryManager
 from app.utils.trace_logger import TraceLogger
 from app.utils.training_curator import TrainingCurator
 from app.vision.image_store import ImageStore
+from app.utils.keychain_manager import load_cached_token
 
 
 class AppState(QObject):
@@ -47,6 +48,7 @@ class AppState(QObject):
         self.glow_strength: float = 1.0
         self.log_rotation_size_mb: int = 10
         self.log_retention_days: int = 30
+        self.single_session_auth: bool = False
 
         # Dynamic Scheduling for reasoning models
         self.enable_dynamic_scheduling: bool = True
@@ -54,6 +56,10 @@ class AppState(QObject):
         self.answering_temperature: float = 0.1
 
         self._initialized = True
+
+    @property
+    def cached_bridge_token(self) -> str | None:
+        return load_cached_token()
 
     def __setattr__(self, name, value):
         if name.startswith('_') or not getattr(self, '_initialized', False):

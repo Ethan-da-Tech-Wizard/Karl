@@ -58,7 +58,20 @@ class StatusBar(QWidget):
         self._load_stats_sep.setVisible(False)
         self._load_stats_lbl.setVisible(False)
 
+        self._thermal_lbl = QLabel("⚠️ GPU Overheated (Throttling)", self)
+        self._thermal_lbl.setStyleSheet(
+            "color: #FF3B30; font-weight: bold;"
+        )
+        self._thermal_lbl.setVisible(False)
+        self._thermal_blink_on = True
+
+        self._thermal_timer = QTimer(self)
+        self._thermal_timer.setInterval(600)
+        self._thermal_timer.timeout.connect(self._toggle_thermal_visibility)
+
         layout.addStretch()
+        layout.addWidget(self._thermal_lbl)
+        layout.addWidget(_sep(self))
         layout.addWidget(self._ram_lbl)
         layout.addWidget(_sep(self))
         layout.addWidget(self._bridge_dot)
@@ -70,6 +83,11 @@ class StatusBar(QWidget):
         self._tick()
 
     # ── internal ──────────────────────────────────────────────────────────────
+
+    def _toggle_thermal_visibility(self):
+        self._thermal_blink_on = not self._thermal_blink_on
+        color = "#FF3B30" if self._thermal_blink_on else "#7A1A14"
+        self._thermal_lbl.setStyleSheet(f"color: {color}; font-weight: bold;")
 
     def _tick(self):
         try:
@@ -89,8 +107,36 @@ class StatusBar(QWidget):
                 self.set_bridge_status("listening")
         except Exception:
             self.set_bridge_status("offline")
+        try:
+            from core.hardware_scout import get_hardware_profile
+
+            hw = get_hardware_profile()
+            thermal = any(
+                "Thermal Throttling Active" in gpu.get("alerts", [])
+                for gpu in hw.get("gpu_list", [])
+            )
+            self._set_thermal_warning(thermal)
+        except Exception:
+            pass
 
     # ── public API ────────────────────────────────────────────────────────────
+
+    def set_thermal_throttling(self, active: bool) -> None:
+        """Show/hide the blinking GPU thermal warning. Also callable externally."""
+        self._set_thermal_warning(active)
+
+    def _set_thermal_warning(self, active: bool) -> None:
+        if active:
+            self._thermal_lbl.setVisible(True)
+            if not self._thermal_timer.isActive():
+                self._thermal_blink_on = True
+                self._thermal_lbl.setStyleSheet("color: #FF3B30; font-weight: bold;")
+                self._thermal_timer.start()
+        else:
+            self._thermal_timer.stop()
+            self._thermal_lbl.setVisible(False)
+            self._thermal_blink_on = True
+            self._thermal_lbl.setStyleSheet("color: #FF3B30; font-weight: bold;")
 
     def set_model(self, name: str):
         self._model_lbl.setText(f"● {name}")

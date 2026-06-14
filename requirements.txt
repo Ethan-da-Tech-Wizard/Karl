@@ -8,6 +8,7 @@ psutil
 GPUtil
 tqdm
 requests
+keyring
 
 # training — optional; Training Studio gracefully degrades without these
 peft

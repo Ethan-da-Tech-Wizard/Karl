@@ -25,6 +25,7 @@ from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QLinearGradient, 
 
 from app.ui.themes import MONO
 from app.ui.widgets.glow_panel import GlowPanel
+from app.utils.keychain_manager import save_cached_token, load_cached_token
 
 logger = logging.getLogger("karl.flywheel_studio")
 
@@ -443,6 +444,8 @@ class FlywheelStudioWorkspace(QWidget):
         
         self._build_ui()
         self.reload_dashboard()
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._auto_authorize_logs)
 
     def _build_ui(self):
         root = QHBoxLayout(self)
@@ -965,14 +968,25 @@ class FlywheelStudioWorkspace(QWidget):
 
         return w
 
-    def _on_authorize_logs(self) -> None:
-        from app.utils.trace_logger import TraceLogger
+    def _auto_authorize_logs(self) -> None:
+        """Attempt to automatically authorize log access using cached OS keychain token."""
+        token = load_cached_token()
+        if token:
+            logger.info("Auto-authorizing log access with cached token.")
+            # We bypass the UI input and call a shared logic
+            self._do_authorize_with_token(token)
 
+    def _on_authorize_logs(self) -> None:
         token_text = self._log_token_input.text().strip()
         if not token_text:
             self._log_auth_error.setText("Please enter a security token.")
             self._log_auth_error.setVisible(True)
             return
+        
+        self._do_authorize_with_token(token_text, manual=True)
+
+    def _do_authorize_with_token(self, token_text: str, manual: bool = False) -> None:
+        from app.utils.trace_logger import TraceLogger
 
         archive_dir = "data/logs/archive"
         enc_files = sorted(
@@ -982,8 +996,9 @@ class FlywheelStudioWorkspace(QWidget):
         )
 
         if not enc_files:
-            self._log_auth_error.setText("No encrypted log archives found.")
-            self._log_auth_error.setVisible(True)
+            if manual:
+                self._log_auth_error.setText("No encrypted log archives found.")
+                self._log_auth_error.setVisible(True)
             return
 
         all_entries: list[dict] = []
@@ -994,15 +1009,20 @@ class FlywheelStudioWorkspace(QWidget):
                 all_entries.extend(entries)
                 auth_ok = True
             except ValueError:
-                # Wrong token — stop immediately rather than trying remaining archives
+                # Wrong token — stop immediately
                 break
             except Exception as e:
                 logger.warning("Could not decrypt %s: %s", path, e)
 
         if not auth_ok:
-            self._log_auth_error.setText("Authorization Failed: Invalid token.")
-            self._log_auth_error.setVisible(True)
+            if manual:
+                self._log_auth_error.setText("Authorization Failed: Invalid token.")
+                self._log_auth_error.setVisible(True)
             return
+
+        # If successful and manual, cache it
+        if manual:
+            save_cached_token(token_text)
 
         self._log_auth_error.setVisible(False)
         self._populate_log_dashboard(all_entries)

@@ -163,7 +163,7 @@ class LLMThread(QThread):
             ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
             raw_log_path = os.path.join(RAW_LOG_DIR, f"{ts}.tokens")
 
-            start_time = time.time()
+            start_time = time.perf_counter()
             first_token_time = None
             gen_token_count = 0
             raw_output = ""
@@ -234,11 +234,11 @@ class LLMThread(QThread):
                             continue
 
                         if first_token_time is None:
-                            first_token_time = time.time()
+                            first_token_time = time.perf_counter()
 
                         chunk_tokens = len(llm.tokenize(text.encode('utf-8'), add_bos=False))
                         gen_token_count += chunk_tokens
-                        elapsed = time.time() - first_token_time
+                        elapsed = time.perf_counter() - first_token_time
                         speed = gen_token_count / elapsed if elapsed > 0 else 0.0
                         self.live_stats.emit(gen_token_count, speed)
 
@@ -382,7 +382,7 @@ class LLMThread(QThread):
                     raw_output = continuation
                     tool_turn += 1
 
-            end_time = time.time()
+            end_time = time.perf_counter()
             prefill_time = (first_token_time - start_time) if first_token_time is not None else (end_time - start_time)
             if prefill_time <= 0:
                 prefill_time = 0.001
@@ -414,6 +414,13 @@ class LLMThread(QThread):
             # Pass whether we ended inside a thought block so continuation knows where to resume
             ended_in_thought = in_thought
 
+            gpu_temp = None
+            try:
+                from core.hardware_scout import get_hardware_profile
+                gpu_temp = get_hardware_profile().get("gpu_temp_c")
+            except Exception:
+                pass
+
             self.logger.log_generation(
                 compiled_prompt=prompt,
                 hyperparams=self.hyperparams,
@@ -427,6 +434,7 @@ class LLMThread(QThread):
                 workflow=self.workflow,
                 template=self.template,
                 diagnostics=diagnostics,
+                gpu_temp_c=gpu_temp,
             )
 
             self.generation_finished.emit(parsed_thought, parsed_response, truncated, ended_in_thought, diagnostics)

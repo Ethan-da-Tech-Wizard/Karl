@@ -29,6 +29,7 @@ from app.engine.model_loader import ModelLoader
 from app.utils.rag_pipeline import RAGPipeline
 from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
 from app.ui.workspaces.prompt_lab import generate_char_diff_html
+from app.utils.keychain_manager import save_cached_token
 
 
 logger = logging.getLogger("karl.websocket")
@@ -115,6 +116,8 @@ class WebSocketServerManager:
                 # Rotate immediately if the stored token has already expired
                 if time.time() - self._token_created_at > self._TOKEN_LIFETIME:
                     self._rotate_token()
+                else:
+                    save_cached_token(self.bridge_token)
             except Exception:
                 self._rotate_token()
         else:
@@ -142,6 +145,7 @@ class WebSocketServerManager:
             os.makedirs("data", exist_ok=True)
             with open(self._TOKEN_PATH, "w", encoding="utf-8") as f:
                 json.dump({"token": self.bridge_token, "created_at": self._token_created_at}, f)
+            save_cached_token(self.bridge_token)
         except Exception as e:
             logger.warning(f"Could not save bridge token: {e}")
 

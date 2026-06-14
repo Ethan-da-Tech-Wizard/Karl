@@ -27,6 +27,7 @@ try:
     import psutil
     from cryptography.fernet import Fernet
     from core.hardware_scout import get_cpu_flags
+    from app.utils.keychain_manager import load_cached_token, save_cached_token
 except ImportError as e:
     print(f"Error: Missing dependencies. Please ensure you are running in the Karl venv. ({e})")
     sys.exit(1)
@@ -62,8 +63,13 @@ def main():
     
     args = parser.parse_args()
 
-    # 1. Get Token
+    # 1. Get Token (check env, then keychain, then prompt)
     token = args.token or os.environ.get("KARL_BRIDGE_TOKEN")
+    if not token:
+        token = load_cached_token()
+        if token:
+            print("Using cached token from OS keychain.")
+            
     if not token:
         token = getpass.getpass("Enter Karl Bridge Token: ")
     
@@ -100,6 +106,10 @@ def main():
             print(f"Error: Decryption succeeded but decompression failed. The file may be corrupt. ({e})")
             sys.exit(1)
             
+        # 3b. Successful manual auth -> cache in keyring
+        if not args.token and not os.environ.get("KARL_BRIDGE_TOKEN"):
+             save_cached_token(token)
+
         # 4. Write Output
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         with open(args.output, 'wb') as f_out:

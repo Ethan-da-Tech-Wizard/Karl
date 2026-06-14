@@ -287,6 +287,7 @@ class MainWindow(QMainWindow):
         self._state.glow_strength = config["glow_strength"]
         self._state.log_rotation_size_mb = config.get("log_rotation_size_mb", 10)
         self._state.log_retention_days = config.get("log_retention_days", 30)
+        self._state.single_session_auth = config.get("single_session_auth", False)
 
         self._apply_theme_from_state()
 
@@ -391,5 +392,12 @@ class MainWindow(QMainWindow):
             WebSocketServerManager.reset_instance()
         except Exception as e:
             logger.warning(f"Error during exit teardown: {e}")
+
+        if getattr(self._state, "single_session_auth", False):
+            try:
+                import keyring
+                keyring.delete_password("KarlBridge", "BridgeToken")
+            except Exception:
+                pass
 
         event.accept()

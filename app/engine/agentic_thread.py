@@ -160,11 +160,11 @@ class AgenticThread(QThread):
                     continue
 
                 if first_token_time is None:
-                    first_token_time = time.time()
+                    first_token_time = time.perf_counter()
 
                 chunk_tokens = len(llm.tokenize(text.encode('utf-8'), add_bos=False))
                 gen_token_count += chunk_tokens
-                elapsed = time.time() - first_token_time
+                elapsed = time.perf_counter() - first_token_time
                 speed = gen_token_count / elapsed if elapsed > 0 else 0.0
                 self.live_stats.emit(gen_token_count, speed)
 
@@ -350,14 +350,14 @@ class AgenticThread(QThread):
                 # Tokenize prompt to get accurate prompt token count
                 prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
 
-                start = time.time()
+                start = time.perf_counter()
                 # M7: open raw archive file for this iteration
                 os.makedirs(RAW_LOG_DIR, exist_ok=True)
                 ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
                 raw_log_path = os.path.join(RAW_LOG_DIR, f"agentic_{ts}_iter{iteration}.tokens")
                 with open(raw_log_path, "w", encoding="utf-8") as raw_file:
                     raw, thought, response, first_token_time = self._run_single_generation(llm, prompt, raw_file)
-                end = time.time()
+                end = time.perf_counter()
 
                 prefill_time = (first_token_time - start) if first_token_time is not None else (end - start)
                 if prefill_time <= 0:
@@ -389,6 +389,13 @@ class AgenticThread(QThread):
                 if self._stop_requested:
                     break
 
+                gpu_temp = None
+                try:
+                    from core.hardware_scout import get_hardware_profile
+                    gpu_temp = get_hardware_profile().get("gpu_temp_c")
+                except Exception:
+                    pass
+
                 # Log this iteration
                 self.logger.log_generation(
                     compiled_prompt=prompt,
@@ -403,6 +410,7 @@ class AgenticThread(QThread):
                     workflow=self.workflow,
                     template=self.template,
                     diagnostics=diagnostics,
+                    gpu_temp_c=gpu_temp,
                 )
 
                 # Store only the response — not the think block — to keep context lean
