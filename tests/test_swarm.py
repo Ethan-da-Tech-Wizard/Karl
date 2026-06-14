@@ -110,6 +110,7 @@ class TestSwarmOrchestrator(unittest.TestCase):
         orchestrator.file_edited.connect(lambda path, content: signals["edited_files"].update({path: content}))
         orchestrator.test_result.connect(lambda passed, trace: signals["test_results"].append((passed, trace)))
         orchestrator.finished_swarm.connect(lambda success, summary: signals.update({"finished": (success, summary)}))
+        orchestrator.edits_proposed.connect(lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals]))
 
         # Run QThread synchronously in test thread to simplify assertions
         orchestrator.run()
@@ -189,6 +190,7 @@ class TestSwarmOrchestrator(unittest.TestCase):
         orchestrator.dependency_layers_built.connect(lambda layers: signals.update({"layers": layers}))
         orchestrator.file_edited.connect(lambda path, content: signals["edited_files"].update({path: content}))
         orchestrator.finished_swarm.connect(lambda success, summary: signals.update({"finished": (success, summary)}))
+        orchestrator.edits_proposed.connect(lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals]))
 
         orchestrator.run()
 

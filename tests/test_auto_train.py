@@ -100,8 +100,20 @@ class TestAutoTrain(unittest.TestCase):
         manager = WebSocketServerManager.get_instance(port=port)
         manager.started_event.wait(timeout=5.0)
 
+        # Get token and SSL configuration
+        token = manager.bridge_token
+        proto = "ws"
+        ssl_context = None
+        if os.path.exists(manager._SSL_CERT_PATH):
+            proto = "wss"
+            import ssl
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        uri = f"{proto}://localhost:{port}/?token={token}"
+
         async def run_client():
-            async with websockets.connect(f"ws://localhost:{port}", close_timeout=2) as ws:
+            async with websockets.connect(uri, ssl=ssl_context, close_timeout=2) as ws:
                 # Mock Popen inside websocket_server to run a dummy/no-op python command
                 with patch("subprocess.Popen") as mock_popen:
                     mock_proc = MagicMock()

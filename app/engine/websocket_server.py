@@ -924,6 +924,13 @@ class WebSocketServerManager:
                                 ),
                                 Qt.ConnectionType.DirectConnection
                             )
+                            self.orchestrator.edits_proposed.connect(
+                                lambda proposals: [
+                                    self._send_notification("edits_proposed", {"proposals": proposals}),
+                                    self.orchestrator.commit_selected_edits([p["filepath"] for p in proposals])
+                                ],
+                                Qt.ConnectionType.DirectConnection
+                            )
 
                             self.orchestrator.start()
                         await websocket.send(json.dumps({

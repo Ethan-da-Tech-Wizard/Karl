@@ -425,6 +425,10 @@ class TestWebSocketBridge(unittest.TestCase):
     def test_websocket_chat_flow(self, mock_get_llm):
         def mock_llm_stream(prompt, **kwargs):
             if kwargs.get("stream"):
+                if prompt.count("</think>") > 1:
+                    return [
+                        {"choices": [{"text": "Hello world", "finish_reason": "stop"}]}
+                    ]
                 return [
                     {"choices": [{"text": "<think>", "finish_reason": None}]},
                     {"choices": [{"text": "Thinking", "finish_reason": None}]},

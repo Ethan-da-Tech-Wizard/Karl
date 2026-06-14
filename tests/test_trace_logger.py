@@ -55,7 +55,8 @@ def test_schema_fields():
             "id", "session_id", "timestamp", "timing", "model", "adapter",
             "workflow", "template", "hyperparams", "system_prompt",
             "compiled_prompt", "thinking", "response", "raw_output",
-            "rag_chunks", "feedback", "corrected_response"
+            "rag_chunks", "feedback", "corrected_response",
+            "gpu_temp_c", "throttle_reasons", "cooling_duration_sec"
         }
         assert set(record.keys()) == expected_keys, f"Missing or extra keys: {record.keys()}"
         
@@ -101,12 +102,13 @@ def test_file_rotation():
     try:
         logger = TraceLogger(log_dir=temp_dir)
         
-        # Write one entry. This file will exceed 50 bytes.
-        file1 = logger.log_generation("prompt 1", {}, "raw 1", "thought 1", "resp 1", 1.0)
-        
-        # Next entry should be written to rotated file
-        file2 = logger.log_generation("prompt 2", {}, "raw 2", "thought 2", "resp 2", 1.0)
-        
+        with patch.object(logger, "_archive_log", return_value=None):
+            # Write one entry. This file will exceed 50 bytes.
+            file1 = logger.log_generation("prompt 1", {}, "raw 1", "thought 1", "resp 1", 1.0)
+            
+            # Next entry should be written to rotated file
+            file2 = logger.log_generation("prompt 2", {}, "raw 2", "thought 2", "resp 2", 1.0)
+            
         assert file1 != file2, f"Expected rotation, but both wrote to {file1}"
         assert os.path.exists(file1)
         assert os.path.exists(file2)

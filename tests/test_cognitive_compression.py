@@ -7,6 +7,7 @@ from PyQt6.QtCore import QCoreApplication
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from unittest.mock import patch
 from app.engine.model_loader import ModelLoader
 from app.engine.llm_thread import LLMThread
 from app.engine.agentic_thread import AgenticThread
@@ -209,8 +210,9 @@ def test_agentic_cognitive_compression_and_live_stats():
         thread.iteration_finished.connect(on_iteration_finished)
         thread.loop_finished.connect(on_loop_finished)
 
-        # Run thread logic synchronously
-        thread.run()
+        # Run thread logic synchronously with compile_and_reload patched to avoid mock eviction
+        with patch("app.engine.agentic_thread.compile_and_reload", side_effect=lambda module, *args, **kwargs: module):
+            thread.run()
 
         # Assertions
         assert mock_llama.compress_called, "Cognitive compression should have been triggered in AgenticThread"
