@@ -844,6 +844,7 @@ class KarlSidebarProvider {
             <button class="tab" data-workspace="knowledge">Knowledge</button>
             <button class="tab" data-workspace="vision">Vision</button>
             <button class="tab" data-workspace="lab">Lab</button>
+            <button class="tab" data-workspace="sandbox">Sandbox</button>
             <button class="tab" data-workspace="settings">Settings</button>
             <button class="tab" data-workspace="logs">Logs</button>
         </nav>
@@ -1098,6 +1099,82 @@ class KarlSidebarProvider {
                 </div>
                 <button id="diffBtn" style="margin-top: 8px;">Recompute Diff</button>
                 <div id="labDiff" class="diff-view" style="margin-top: 8px;">Diff comparisons will render here.</div>
+            </section>
+
+            <section id="workspace-sandbox" class="workspace">
+                <div class="section-head">
+                    <div><div class="eyebrow">Educational Sandbox</div><h2>Vector Sandbox & Mini-GPT</h2></div>
+                </div>
+                
+                <nav class="subtabs" aria-label="Sandbox Mode">
+                    <button class="subtab active" data-subworkspace="vector-sandbox">Vector Sandbox</button>
+                    <button class="subtab" data-subworkspace="minigpt-sandbox">Mini-GPT Telemetry</button>
+                </nav>
+
+                <div id="subworkspace-vector-sandbox" class="subworkspace active" style="margin-top: 8px;">
+                    <div class="glow-panel" style="padding: 10px; margin-bottom: 10px;">
+                        <div class="eyebrow">Corpus / Input Documents</div>
+                        <p style="font-size: 8.5pt; color: var(--karl-muted); margin: 4px 0 8px 0;">
+                            Enter one document per line. The vectorizer will construct a vocabulary, compute IDF scores, and generate TF-IDF representations.
+                        </p>
+                        <textarea id="sandboxDocs" rows="6" style="width: 100%; font-family: monospace; resize: vertical; border: 1px solid var(--karl-border); border-radius: 4px; padding: 6px; background: rgba(0,0,0,0.2); color: var(--karl-text);" placeholder="Document 1: Karl is a local multi-agent software engineering environment.&#10;Document 2: The system uses local models and runs entirely offline.&#10;Document 3: Multi-agent systems can perform complex autonomous workflows."></textarea>
+                        
+                        <div class="action-row" style="margin-top: 8px;">
+                            <button id="fitVectorizerBtn" class="primary">Fit Vectorizer</button>
+                        </div>
+                    </div>
+
+                    <div id="vectorizerOutput" class="result-card" style="display: none;">
+                        <div class="eyebrow">Fitted Vocabulary & IDF Scores</div>
+                        <div style="max-height: 150px; overflow-y: auto; border: 1px solid var(--karl-border); border-radius: 4px; padding: 6px; background: rgba(0,0,0,0.2); margin-top: 6px;">
+                            <table id="vocabTable" style="width: 100%; border-collapse: collapse; font-family: monospace; font-size: 9pt;">
+                                <thead>
+                                    <tr style="border-bottom: 1px solid var(--karl-border); color: var(--karl-accent);">
+                                        <th style="text-align: left; padding: 4px;">Word</th>
+                                        <th style="text-align: right; padding: 4px;">DF</th>
+                                        <th style="text-align: right; padding: 4px;">IDF</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+
+                        <div class="eyebrow" style="margin-top: 12px;">Document TF-IDF Vectors</div>
+                        <div id="tfidfVectors" style="max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 8.5pt; white-space: pre-wrap; padding: 6px; border: 1px solid var(--karl-border); border-radius: 4px; background: rgba(0,0,0,0.2); margin-top: 6px;"></div>
+                    </div>
+                </div>
+
+                <div id="subworkspace-minigpt-sandbox" class="subworkspace" style="margin-top: 8px; display: none;">
+                    <div class="settings-grid glow-panel" style="padding: 10px; margin-bottom: 10px;">
+                        <label>Learning Rate <input id="miniLr" type="number" step="0.0001" min="0.0001" max="0.01" value="0.001" style="border: 1px solid var(--karl-border); border-radius: 4px; padding: 4px; background: rgba(0,0,0,0.2); color: var(--karl-text);"></label>
+                        <label>Max Iterations <input id="miniIters" type="number" min="10" max="1000" step="10" value="100" style="border: 1px solid var(--karl-border); border-radius: 4px; padding: 4px; background: rgba(0,0,0,0.2); color: var(--karl-text);"></label>
+                        <label>Batch Size <input id="miniBatchSize" type="number" min="2" max="64" step="2" value="16" style="border: 1px solid var(--karl-border); border-radius: 4px; padding: 4px; background: rgba(0,0,0,0.2); color: var(--karl-text);"></label>
+                        
+                        <div class="action-row" style="margin-top: 8px;">
+                            <button id="startMiniGptBtn" class="primary">Start Mini-GPT Training</button>
+                        </div>
+                    </div>
+
+                    <div id="miniGptTrainingStatus" class="result-card" style="display: none;">
+                        <div class="eyebrow">Training Telemetry</div>
+                        <div class="runtime-grid" style="grid-template-columns: repeat(2, 1fr); margin-top: 6px; display: grid; gap: 8px;">
+                            <div class="metric" style="padding: 8px; border: 1px solid var(--karl-border); border-radius: 4px; background: rgba(0,0,0,0.1);">
+                                <span style="font-size: 8pt; color: var(--karl-muted); display: block;">Current Iteration</span>
+                                <strong id="miniCurrentStep" style="font-size: 14pt; color: var(--karl-accent);">--</strong>
+                            </div>
+                            <div class="metric" style="padding: 8px; border: 1px solid var(--karl-border); border-radius: 4px; background: rgba(0,0,0,0.1);">
+                                <span style="font-size: 8pt; color: var(--karl-muted); display: block;">Current Loss</span>
+                                <strong id="miniCurrentLoss" style="font-size: 14pt; color: var(--karl-accent);">--</strong>
+                            </div>
+                        </div>
+
+                        <div class="eyebrow" style="margin-top: 12px;">Real-Time Loss Curve</div>
+                        <div id="miniLossHistory" class="studio-log" style="height: 100px; overflow-y: auto; font-family: monospace; font-size: 8.5pt; margin-top: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--karl-border); border-radius: 4px; padding: 6px;"></div>
+
+                        <div class="eyebrow" style="margin-top: 12px;">Real-Time Typewriter Generation</div>
+                        <div id="miniTypewriterOutput" class="studio-log" style="height: 120px; overflow-y: auto; font-family: monospace; font-size: 9pt; white-space: pre-wrap; margin-top: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--karl-border); border-radius: 4px; padding: 6px;"></div>
+                    </div>
+                </div>
             </section>
 
             <section id="workspace-settings" class="workspace">

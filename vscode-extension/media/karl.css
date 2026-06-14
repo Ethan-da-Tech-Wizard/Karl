@@ -1596,3 +1596,28 @@ button,
     transition: border-color 0.2s ease, background 0.2s ease;
 }
 
+/* ── Educational Sandbox Workspace Custom Styles ─────────────────── */
+#vocabTable th {
+    border-bottom: 1px solid var(--karl-border);
+    padding: 6px;
+    font-size: 9pt;
+}
+
+#vocabTable td {
+    padding: 4px 6px;
+    border-bottom: 1px dashed rgba(0, 194, 255, 0.1);
+}
+
+#vocabTable tr:hover {
+    background: rgba(0, 194, 255, 0.05);
+}
+
+.studio-log::-webkit-scrollbar {
+    width: 6px;
+}
+.studio-log::-webkit-scrollbar-thumb {
+    background: var(--karl-border);
+    border-radius: 3px;
+}
+
+

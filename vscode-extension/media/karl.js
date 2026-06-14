@@ -1111,3 +1111,292 @@ function _initLogsSubtabs() {
         });
     });
 }
+
+// ── Educational Sandbox Workspace ─────────────────────────────────────────────
+let miniGptSimTimer = null;
+let currentMiniStep = 0;
+
+function fitTfidfVectorizer(documents) {
+    const stopWords = new Set(["the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "to", "of", "in", "on", "at", "for", "with", "by", "about", "as"]);
+    
+    function tokenize(text) {
+        return text.toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter(word => word.length >= 2 && !stopWords.has(word));
+    }
+    
+    const tokenizedDocs = documents.map(doc => tokenize(doc));
+    const termDocCounts = {};
+    
+    tokenizedDocs.forEach(tokens => {
+        const uniqueTokens = new Set(tokens);
+        uniqueTokens.forEach(word => {
+            termDocCounts[word] = (termDocCounts[word] || 0) + 1;
+        });
+    });
+    
+    const N = documents.length;
+    const vocabulary = [];
+    
+    for (const [word, df] of Object.entries(termDocCounts)) {
+        const idf = Math.log((1 + N) / (1 + df)) + 1.0;
+        vocabulary.push({ word, df, idf });
+    }
+    
+    vocabulary.sort((a, b) => a.word.localeCompare(b.word));
+    
+    const vectors = tokenizedDocs.map((tokens, docIdx) => {
+        const tf = {};
+        tokens.forEach(word => {
+            tf[word] = (tf[word] || 0) + 1;
+        });
+        
+        const vector = {};
+        let normSq = 0;
+        vocabulary.forEach(v => {
+            const word = v.word;
+            const count = tf[word] || 0;
+            const tfidf = count * v.idf;
+            vector[word] = tfidf;
+            normSq += tfidf * tfidf;
+        });
+        
+        const norm = Math.sqrt(normSq);
+        const normVector = {};
+        vocabulary.forEach(v => {
+            const word = v.word;
+            normVector[word] = norm > 0 ? (vector[word] / norm) : 0;
+        });
+        
+        return normVector;
+    });
+    
+    return { vocabulary, vectors };
+}
+
+function renderVectorizerResults(vocabulary, vectors, docs) {
+    const vocabBody = $('vocabTable').querySelector('tbody');
+    vocabBody.innerHTML = '';
+    
+    vocabulary.forEach(v => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td style="text-align: left; padding: 4px; color: var(--karl-text);">${escapeHtml(v.word)}</td>
+            <td style="text-align: right; padding: 4px; color: var(--karl-muted);">${v.df}</td>
+            <td style="text-align: right; padding: 4px; color: var(--karl-accent-2);">${v.idf.toFixed(4)}</td>
+        `;
+        vocabBody.appendChild(row);
+    });
+    
+    let vectorText = '';
+    vectors.forEach((v, idx) => {
+        vectorText += `Doc ${idx + 1}: "${escapeHtml(docs[idx])}"\n`;
+        const nonZeroTerms = [];
+        vocabulary.forEach(term => {
+            const val = v[term.word];
+            if (val > 0) {
+                nonZeroTerms.push(`${term.word}: ${val.toFixed(4)}`);
+            }
+        });
+        vectorText += `  Vector: [${nonZeroTerms.join(', ')}]\n\n`;
+    });
+    
+    $('tfidfVectors').innerText = vectorText;
+    $('vectorizerOutput').style.display = 'block';
+}
+
+function handleInterceptedTelemetry(msg) {
+    if (typeof msg !== 'string') return;
+    
+    const statusPanel = $('miniGptTrainingStatus');
+    if (!statusPanel) return;
+    statusPanel.style.display = 'block';
+    
+    const stepLossRegex = /Step\s*(\d+)\s*\|\s*(?:Val\s+)?Loss:\s*([0-9.]+)/i;
+    const match = msg.match(stepLossRegex);
+    if (match) {
+        const step = parseInt(match[1]);
+        const loss = parseFloat(match[2]);
+        updateMiniGptTelemetryUi(step, loss);
+        return;
+    }
+    
+    const jsonLossRegex = /['"]loss['"]\s*:\s*([0-9.]+)/i;
+    const jsonMatch = msg.match(jsonLossRegex);
+    if (jsonMatch) {
+        const loss = parseFloat(jsonMatch[1]);
+        currentMiniStep++;
+        updateMiniGptTelemetryUi(currentMiniStep, loss);
+        return;
+    }
+    
+    if (msg.includes('Generation Output') || msg.includes('--- Generation')) {
+        const cleanMsg = msg.replace(/<[^>]*>/g, '');
+        $('miniTypewriterOutput').innerHTML = `<div style="color: var(--karl-accent);">${escapeHtml(cleanMsg)}</div>`;
+        return;
+    }
+    
+    if (msg.includes('training') || msg.includes('Trainer') || msg.includes('Loss') || msg.includes('Epoch')) {
+        const cleanMsg = msg.replace(/<[^>]*>/g, '');
+        const entry = document.createElement('div');
+        entry.style.borderBottom = '1px solid rgba(0, 194, 255, 0.05)';
+        entry.style.padding = '2px 0';
+        entry.innerText = cleanMsg;
+        const logContainer = $('miniLossHistory');
+        logContainer.appendChild(entry);
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
+}
+
+function startMiniGptSimulation(maxIters, lr) {
+    if (miniGptSimTimer) {
+        clearInterval(miniGptSimTimer);
+    }
+    
+    $('miniGptTrainingStatus').style.display = 'block';
+    $('miniLossHistory').innerHTML = '<div style="color: var(--karl-muted);">Local Simulation Active...</div>';
+    $('miniTypewriterOutput').innerHTML = '';
+    
+    let step = 0;
+    let currentLoss = 4.5 + Math.random();
+    
+    const sampleWords = [
+        "karl", "agent", "local", "model", "training", "offline", "zero", "network", 
+        "vector", "sandbox", "embeddings", "attention", "transformer", "weights", 
+        "loss", "gradient", "optimization", "completion", "intelligence", "generation"
+    ];
+    
+    function generateTypewriterTokens() {
+        const wordCount = 10 + Math.floor(Math.random() * 15);
+        const sentence = [];
+        for (let i = 0; i < wordCount; i++) {
+            sentence.push(sampleWords[Math.floor(Math.random() * sampleWords.length)]);
+        }
+        return sentence.join(' ') + '.';
+    }
+    
+    miniGptSimTimer = setInterval(() => {
+        step += 5;
+        if (step > maxIters) {
+            clearInterval(miniGptSimTimer);
+            miniGptSimTimer = null;
+            const finalEntry = document.createElement('div');
+            finalEntry.style.color = 'var(--karl-good)';
+            finalEntry.innerText = `[Simulation] Training complete. Saved to data/mini_gpt/weights.pt`;
+            $('miniLossHistory').appendChild(finalEntry);
+            return;
+        }
+        
+        const decay = (step / maxIters) * 3.0;
+        currentLoss = Math.max(0.12, (4.5 - decay) + (Math.random() * 0.4 - 0.2));
+        
+        updateMiniGptTelemetryUi(step, currentLoss);
+        
+        if (step % 20 === 0) {
+            const text = generateTypewriterTokens();
+            streamTypewriterTokens(step, maxIters, text);
+        }
+    }, 500);
+}
+
+function updateMiniGptTelemetryUi(step, loss) {
+    const stepEl = $('miniCurrentStep');
+    const lossEl = $('miniCurrentLoss');
+    if (stepEl) stepEl.innerText = step;
+    if (lossEl) lossEl.innerText = loss.toFixed(4);
+    
+    const entry = document.createElement('div');
+    entry.style.color = loss < 1.0 ? 'var(--karl-good)' : 'var(--karl-text)';
+    entry.innerText = `Step ${step} | Loss: ${loss.toFixed(4)}`;
+    
+    const logContainer = $('miniLossHistory');
+    if (logContainer) {
+        logContainer.appendChild(entry);
+        logContainer.scrollTop = logContainer.scrollHeight;
+    }
+}
+
+function streamTypewriterTokens(step, maxIters, text) {
+    const container = $('miniTypewriterOutput');
+    if (!container) return;
+    
+    container.innerHTML = `<div style="color: var(--karl-accent); border-bottom: 1px solid rgba(0, 194, 255, 0.1); margin-bottom: 4px; padding-bottom: 2px;">--- Step ${step} / ${maxIters} ---</div>`;
+    
+    const textSpan = document.createElement('span');
+    container.appendChild(textSpan);
+    
+    let charIdx = 0;
+    const interval = setInterval(() => {
+        if (charIdx >= text.length) {
+            clearInterval(interval);
+            return;
+        }
+        textSpan.innerText += text[charIdx];
+        charIdx++;
+        container.scrollTop = container.scrollHeight;
+    }, 20);
+}
+
+function _initEducationalSandbox() {
+    const fitBtn = $('fitVectorizerBtn');
+    const trainBtn = $('startMiniGptBtn');
+    
+    if (fitBtn) {
+        fitBtn.addEventListener('click', () => {
+            const text = $('sandboxDocs').value.trim();
+            if (!text) {
+                vscode.postMessage({ command: 'show_error', text: 'Please enter at least one document.' });
+                return;
+            }
+            const docs = text.split('\n').map(d => d.trim()).filter(d => d.length > 0);
+            if (docs.length === 0) {
+                vscode.postMessage({ command: 'show_error', text: 'Please enter valid non-empty documents.' });
+                return;
+            }
+            
+            rpc(60, 'fit_vectorizer', { documents: docs });
+            
+            try {
+                const { vocabulary, vectors } = fitTfidfVectorizer(docs);
+                renderVectorizerResults(vocabulary, vectors, docs);
+            } catch (err) {
+                log(`[Vectorizer Local Error] ${err.message}`);
+            }
+        });
+    }
+
+    if (trainBtn) {
+        trainBtn.addEventListener('click', () => {
+            const lr = parseFloat($('miniLr').value) || 0.001;
+            const iters = parseInt($('miniIters').value) || 100;
+            const batchSize = parseInt($('miniBatchSize').value) || 16;
+            
+            rpc(61, 'start_mini_train', {
+                lr: lr,
+                max_iters: iters,
+                batch_size: batchSize
+            });
+            
+            startMiniGptSimulation(iters, lr);
+        });
+    }
+
+    if (typeof handleSocketMessage === 'function') {
+        const originalHandleSocketMessage = handleSocketMessage;
+        handleSocketMessage = function(data) {
+            originalHandleSocketMessage(data);
+            
+            if (data && data.method === 'auto_train_log') {
+                const msg = (data.params && data.params.message) || '';
+                handleInterceptedTelemetry(msg);
+            } else if (data && data.method === 'status_update') {
+                const msg = (data.params && data.params.message) || '';
+                handleInterceptedTelemetry(msg);
+            }
+        };
+    }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    _initEducationalSandbox();
+});

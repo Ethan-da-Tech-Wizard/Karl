@@ -13,7 +13,8 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onView:karl.sidebarView"
+    "onView:karl.sidebarView",
+    "*"
   ],
   "main": "./extension.js",
   "contributes": {

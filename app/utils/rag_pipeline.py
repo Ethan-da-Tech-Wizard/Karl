@@ -251,6 +251,7 @@ class RAGPipeline:
         source_filter: str | None = None,
         threshold: float = 1.0,
         with_attribution: bool = False,
+        mode: str = "dense",
     ) -> list[str] | list[dict]:
         """
         Retrieve relevant chunks. 
@@ -262,6 +263,7 @@ class RAGPipeline:
             top_k=top_k,
             source_filter=source_filter,
             threshold=threshold,
+            mode=mode,
         )
 
         formatted = []
@@ -289,10 +291,108 @@ class RAGPipeline:
         top_k: int = 5,
         source_filter: str | None = None,
         threshold: float = 1.0,
+        mode: str = "dense",
     ) -> list[dict]:
         """Always returns List[dict] with full attribution metadata."""
-        return self.retrieve(query, top_k, source_filter, threshold, with_attribution=True)
+        return self.retrieve(query, top_k, source_filter, threshold, with_attribution=True, mode=mode)
 
+    def retrieve_sparse(
+        self,
+        query: str,
+        top_k: int = 3,
+        source_filter: str | None = None,
+    ) -> list[dict]:
+        """Retrieve relevant chunks using pure TF-IDF sparse matching."""
+        if not self.documents:
+            return []
+
+        # Fit TF-IDF on current documents
+        from app.utils.custom_embeddings import TfidfEmbedder
+        tfidf = TfidfEmbedder()
+        texts = [doc["text"] for doc in self.documents]
+        tfidf.fit(texts)
+
+        # Transform query and docs
+        q_vec = tfidf.transform(query)
+        if len(q_vec) == 0 or np.linalg.norm(q_vec) == 0.0:
+            return []
+
+        scored_docs = []
+        for idx, doc in enumerate(self.documents):
+            if source_filter and doc.get("source_file") != source_filter:
+                continue
+            d_vec = tfidf.transform(doc["text"])
+            sim = tfidf.cosine_similarity(q_vec, d_vec)
+            if sim > 0.0:
+                scored_docs.append({
+                    **doc,
+                    "distance": float(1.0 - sim),  # convert similarity to a distance-like metric (0 is closest)
+                    "similarity": sim
+                })
+
+        # Sort by similarity descending
+        scored_docs.sort(key=lambda x: x["similarity"], reverse=True)
+        
+        # Add rank
+        for rank, doc in enumerate(scored_docs, 1):
+            doc["rank"] = rank
+
+        return scored_docs[:top_k]
+
+    def retrieve_hybrid(
+        self,
+        query: str,
+        top_k: int = 3,
+        source_filter: str | None = None,
+        rrf_constant: int = 60,
+    ) -> list[dict]:
+        """
+        Combine Dense (FAISS) and Sparse (TF-IDF) results using Reciprocal Rank Fusion (RRF).
+        """
+        # Get dense results (fetch more than top_k to allow RRF to select best overlaps)
+        dense_results = self.retrieve_with_metadata(
+            query, top_k=top_k * 2, source_filter=source_filter, mode="dense"
+        )
+        # Get sparse results
+        sparse_results = self.retrieve_sparse(
+            query, top_k=top_k * 2, source_filter=source_filter
+        )
+
+        # Compute RRF scores
+        rrf_scores = {}  # key: chunk_id -> float score
+        docs_map = {}    # key: chunk_id -> doc dict
+
+        # Process dense
+        for rank, doc in enumerate(dense_results, 1):
+            cid = doc["chunk_id"]
+            docs_map[cid] = doc
+            rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rrf_constant + rank)
+
+        # Process sparse
+        for rank, doc in enumerate(sparse_results, 1):
+            cid = doc["chunk_id"]
+            if cid not in docs_map:
+                docs_map[cid] = doc
+            rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rrf_constant + rank)
+
+        # Sort documents by RRF score descending
+        sorted_cids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
+
+        results = []
+        for rank, cid in enumerate(sorted_cids[:top_k], 1):
+            doc = docs_map[cid]
+            # Synthesize distance: use rrf_score mapped back to a distance-like range [0, 1]
+            max_score = 2.0 / (rrf_constant + 1)
+            rrf_score_val = rrf_scores[cid]
+            distance = float(max(0.0, 1.0 - (rrf_score_val / max_score)))
+            results.append({
+                **doc,
+                "rank": rank,
+                "distance": distance,
+                "rrf_score": rrf_score_val
+            })
+
+        return results
 
     def retrieve_with_metadata(
         self,
@@ -300,13 +400,19 @@ class RAGPipeline:
         top_k: int = 3,
         source_filter: str | None = None,
         threshold: float = 0.0,
+        mode: str = "dense",
     ) -> list[dict]:
         """
         Like retrieve() but returns full metadata dicts including distance scores.
-        Used by benchmark_rag.py and retrieval eval metrics.
+        Supports dense, sparse, and hybrid retrieval.
         """
         if self.index.ntotal == 0:
             return []
+
+        if mode == "sparse":
+            return self.retrieve_sparse(query, top_k=top_k, source_filter=source_filter)
+        elif mode == "hybrid":
+            return self.retrieve_hybrid(query, top_k=top_k, source_filter=source_filter)
 
         # Hybrid Search: check if query wants to list/show all workers in a specific department
         exact_matches = []

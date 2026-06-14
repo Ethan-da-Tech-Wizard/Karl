@@ -1,5 +1,8 @@
 // @ts-check
 const vscode = require('vscode');
+const fs = require('fs');
+const path = require('path');
+const cp = require('child_process');
 const { KarlSidebarProvider, sendActiveStateToWebview } = require('./src/sidebarProvider');
 const {
     WORKFLOW_REGISTRY,
@@ -189,6 +192,151 @@ function activate(context) {
             sendActiveStateToWebview(sidebarProvider);
         })
     );
+
+    // Register Mini-GPT Inline Completion Provider
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    const workspacePath = workspaceFolders && workspaceFolders.length > 0
+        ? workspaceFolders[0].uri.fsPath
+        : '/home/ethan/karl';
+
+    const inlineProvider = new MiniGptInlineCompletionProvider(workspacePath);
+    context.subscriptions.push(
+        vscode.languages.registerInlineCompletionItemProvider(
+            { pattern: '**' },
+            inlineProvider
+        )
+    );
+}
+
+class MiniGptInlineCompletionProvider {
+    /**
+     * @param {string} workspacePath
+     */
+    constructor(workspacePath) {
+        this.workspacePath = workspacePath;
+    }
+
+    /**
+     * @param {vscode.TextDocument} document
+     * @param {vscode.Position} position
+     * @param {vscode.InlineCompletionContext} context
+     * @param {vscode.CancellationToken} token
+     */
+    async provideInlineCompletionItems(document, position, context, token) {
+        const weightsPath = path.join(this.workspacePath, "data", "mini_gpt", "weights.pt");
+        if (!fs.existsSync(weightsPath)) {
+            return undefined;
+        }
+
+        const lineText = document.lineAt(position.line).text.substring(0, position.character);
+        if (!lineText.trim()) {
+            return undefined;
+        }
+
+        try {
+            const completion = await this.generateCompletion(lineText);
+            if (completion && completion.trim().length > 0) {
+                const item = new vscode.InlineCompletionItem(completion);
+                item.range = new vscode.Range(position, position);
+                return [item];
+            }
+        } catch (err) {
+            console.error('[Mini-GPT Inline Completion Error]:', err);
+        }
+
+        return undefined;
+    }
+
+    /**
+     * @param {string} prompt
+     * @returns {Promise<string>}
+     */
+    generateCompletion(prompt) {
+        return new Promise((resolve, reject) => {
+            const pythonScript = `
+import os
+import sys
+import json
+import torch
+
+workspace_root = sys.argv[1]
+sys.path.insert(0, workspace_root)
+
+from app.engine.mini_transformer import MiniGPT, CharTokenizer
+
+save_dir = os.path.join(workspace_root, "data", "mini_gpt")
+weights_path = os.path.join(save_dir, "weights.pt")
+config_path = os.path.join(save_dir, "config.json")
+tokenizer_path = os.path.join(save_dir, "tokenizer.json")
+
+if not os.path.exists(weights_path) or not os.path.exists(config_path) or not os.path.exists(tokenizer_path):
+    sys.exit(1)
+
+with open(config_path, "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+with open(tokenizer_path, "r", encoding="utf-8") as f:
+    tok_data = json.load(f)
+
+tokenizer = CharTokenizer()
+tokenizer.chars = tok_data["chars"]
+tokenizer.stoi = tok_data["stoi"]
+tokenizer.itos = {int(k): v for k, v in tok_data["itos"].items()}
+tokenizer.vocab_size = len(tokenizer.chars)
+
+model = MiniGPT(
+    vocab_size=tokenizer.vocab_size,
+    n_embd=config["n_embd"],
+    n_heads=config["n_heads"],
+    n_layers=config["n_layers"],
+    block_size=config["block_size"]
+)
+model.load_state_dict(torch.load(weights_path, map_location="cpu"))
+model.eval()
+
+prompt = sys.argv[2]
+encoded = tokenizer.encode(prompt)
+encoded = encoded[-config["block_size"]:]
+
+if not encoded:
+    encoded = [0]
+
+idx = torch.tensor([encoded], dtype=torch.long)
+generated_ids = model.generate(idx, max_new_tokens=40, temperature=0.7, top_k=5)[0].tolist()
+
+completion_ids = generated_ids[len(encoded):]
+completion = tokenizer.decode(completion_ids)
+print(completion, end="")
+`;
+
+            const proc = cp.spawn('python3', ['-c', pythonScript, this.workspacePath, prompt]);
+
+            let stdout = '';
+            let stderr = '';
+
+            const timer = setTimeout(() => {
+                proc.kill();
+                reject(new Error('Mini-GPT generation timed out.'));
+            }, 2000);
+
+            proc.stdout.on('data', (data) => {
+                stdout += data.toString();
+            });
+
+            proc.stderr.on('data', (data) => {
+                stderr += data.toString();
+            });
+
+            proc.on('close', (code) => {
+                clearTimeout(timer);
+                if (code === 0) {
+                    resolve(stdout);
+                } else {
+                    reject(new Error(stderr || `Python exited with code ${code}`));
+                }
+            });
+        });
+    }
 }
 
 function deactivate() {

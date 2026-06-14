@@ -117,5 +117,73 @@ def get_examples():
         
         <h4 style='{STYLE_H4}'>2. Keyword & Regex Fallback</h4>
         <p style='{STYLE_P}'>If the vector engine is offline, Karl falls back to high-speed alphanumeric pattern matching to find specific IDs or technical terms.</p>
+    """,
+    "Mathematical Introspection": f"""
+        <h2 style='{STYLE_H2}'>◈ Mathematical Introspection</h2>
+        <p style='{STYLE_P}'>This reference guide details the mathematical foundations underlying Karl\'s vector space search retrieval and deep learning transformer self-attention mechanisms.</p>
+        
+        <h4 style='{STYLE_H4}'>1. Sparse Vector Retrieval (TF-IDF)</h4>
+        <p style='{STYLE_P}'>TF-IDF (Term Frequency-Inverse Document Frequency) measures term importance within a document relative to a corpus:</p>
+        <ul>
+          <li style='{STYLE_LI}'><b>Term Frequency (TF):</b> The density of a term <i>t</i> in document <i>d</i>:
+            <pre style='{STYLE_PRE}'>TF(t, d) = count(t in d) / total_words(d)</pre>
+          </li>
+          <li style='{STYLE_LI}'><b>Inverse Document Frequency (IDF):</b> Penalizes terms that appear frequently across the entire corpus:
+            <pre style='{STYLE_PRE}'>IDF(t, D) = ln((1 + N) / (1 + DF(t))) + 1.0</pre>
+            where <i>N</i> is the total document count in corpus <i>D</i>, and <i>DF(t)</i> is the count of documents containing term <i>t</i>.
+          </li>
+          <li style='{STYLE_LI}'><b>TF-IDF Weighting:</b> The composite representation score:
+            <pre style='{STYLE_PRE}'>TF-IDF(t, d, D) = TF(t, d) × IDF(t, D)</pre>
+          </li>
+        </ul>
+        
+        <h4 style='{STYLE_H4}'>2. Vector Space Proximity (Cosine Similarity)</h4>
+        <p style='{STYLE_P}'>To evaluate alignment between query vector <i>A</i> and document vector <i>B</i>, Karl calculates their Cosine Similarity:</p>
+        <pre style='{STYLE_PRE}'>
+                         A · B         ∑ (A_i × B_i)
+CosineSimilarity(A, B) = ─────── = ─────────────────────
+                        ‖A‖ ‖B‖    √(∑ A_i²) × √(∑ B_i²)
+        </pre>
+        <p style='{STYLE_P}'>Since Karl L2-normalizes all document and query vectors (rendering <i>‖A‖ = ‖B‖ = 1.0</i>), the cosine similarity simplifies to a simple dot product:</p>
+        <pre style='{STYLE_PRE}'>CosineSimilarity(A, B) = A · B = ∑ (A_i × B_i)</pre>
+        
+        <h4 style='{STYLE_H4}'>3. Multi-Head Self-Attention (MHSA) Layers</h4>
+        <p style='{STYLE_P}'>Transformer self-attention layers route information dynamically between tokens. For input tokens <i>X ∈ ℝ^(T × d_model)</i>:</p>
+        <ul>
+          <li style='{STYLE_LI}'><b>Linear Projections (Q, K, V):</b> Projections to Query, Key, and Value matrices:
+            <pre style='{STYLE_PRE}'>Q = X W^Q,   K = X W^K,   V = X W^V</pre>
+            where <i>W^Q, W^K ∈ ℝ^(d_model × d_k)</i> and <i>W^V ∈ ℝ^(d_model × d_v)</i>.
+          </li>
+          <li style='{STYLE_LI}'><b>Scaled Dot-Product Attention:</b> Derives attention weights and routes values:
+            <pre style='{STYLE_PRE}'>Attention(Q, K, V) = softmax( (Q Kᵀ) / √d_k ) V</pre>
+            The scaling factor <i>1 / √d_k</i> prevents the dot products from growing excessively large in magnitude, which would push the softmax function into regions with vanishing gradients.
+          </li>
+          <li style='{STYLE_LI}'><b>Multi-Head Assembly:</b> Aggregates parallel heads representing different aspects of context:
+            <pre style='{STYLE_PRE}'>
+MultiHead(Q, K, V) = Concat(head_1, ..., head_h) W^O
+where head_i = Attention(Q W_i^Q, K W_i^K, V W_i^V)
+            </pre>
+          </li>
+          <li style='{STYLE_LI}'><b>MLP / Feed-Forward Projections:</b> Modern LLM architectures (like DeepSeek-R1) follow this with a <b>SwiGLU</b> Feed-Forward Network:
+            <pre style='{STYLE_PRE}'>FFN(x) = ( Swish(x W_gate) ⊙ (x W_up) ) W_down</pre>
+            where <i>⊙</i> is the element-wise Hadamard product.
+          </li>
+        </ul>
     """
 }
+
+# Auto-force version upgrade by removing cached .version file when docs_data is imported
+import os
+try:
+    version_filepath = "data/codex_library/.version"
+    if os.path.exists(version_filepath):
+        os.remove(version_filepath)
+    # Also write it directly if the directory exists so it shows up without requiring UI reload
+    lib_dir = "data/codex_library"
+    if os.path.exists(lib_dir):
+        topic_file = os.path.join(lib_dir, "Mathematical Introspection.html")
+        with open(topic_file, "w", encoding="utf-8") as f:
+            f.write(DEFAULT_LIBRARY["Mathematical Introspection"])
+except Exception:
+    pass
+

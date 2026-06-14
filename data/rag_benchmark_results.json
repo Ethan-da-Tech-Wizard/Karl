@@ -1,0 +1,363 @@
+{
+  "dataset": "code_review.jsonl",
+  "top_k": 3,
+  "modes": {
+    "dense": {
+      "hit_at_1": 0.5,
+      "hit_at_3": 0.9,
+      "mrr": 0.6333
+    },
+    "sparse": {
+      "hit_at_1": 0.2,
+      "hit_at_3": 0.2,
+      "mrr": 0.2
+    },
+    "hybrid": {
+      "hit_at_1": 0.6,
+      "hit_at_3": 0.8,
+      "mrr": 0.6667
+    }
+  },
+  "queries": [
+    {
+      "case_id": "code_001",
+      "query": "Review this Python function for bugs, security issues, and style problems.",
+      "expected_chunk_ids": [
+        0
+      ],
+      "dense": {
+        "retrieved_ids": [
+          9,
+          6,
+          1
+        ],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      },
+      "sparse": {
+        "retrieved_ids": [
+          2
+        ],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          9,
+          2,
+          6
+        ],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      }
+    },
+    {
+      "case_id": "code_002",
+      "query": "Review this Python function for bugs and style issues.",
+      "expected_chunk_ids": [
+        1
+      ],
+      "dense": {
+        "retrieved_ids": [
+          9,
+          6,
+          1
+        ],
+        "hit_at_1": false,
+        "hit_at_3": true,
+        "mrr": 0.3333
+      },
+      "sparse": {
+        "retrieved_ids": [
+          2
+        ],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          9,
+          2,
+          6
+        ],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      }
+    },
+    {
+      "case_id": "code_003",
+      "query": "Review this JavaScript for correctness and best practices.",
+      "expected_chunk_ids": [
+        2
+      ],
+      "dense": {
+        "retrieved_ids": [
+          6,
+          5,
+          2
+        ],
+        "hit_at_1": false,
+        "hit_at_3": true,
+        "mrr": 0.3333
+      },
+      "sparse": {
+        "retrieved_ids": [],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          6,
+          5,
+          2
+        ],
+        "hit_at_1": false,
+        "hit_at_3": true,
+        "mrr": 0.3333
+      }
+    },
+    {
+      "case_id": "code_004",
+      "query": "Review this Python class for security and design issues.",
+      "expected_chunk_ids": [
+        3
+      ],
+      "dense": {
+        "retrieved_ids": [
+          9,
+          7,
+          3
+        ],
+        "hit_at_1": false,
+        "hit_at_3": true,
+        "mrr": 0.3333
+      },
+      "sparse": {
+        "retrieved_ids": [
+          3
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          3,
+          9,
+          7
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      }
+    },
+    {
+      "case_id": "code_005",
+      "query": "Review this Python snippet for memory and performance issues.",
+      "expected_chunk_ids": [
+        4
+      ],
+      "dense": {
+        "retrieved_ids": [
+          4,
+          9,
+          6
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      },
+      "sparse": {
+        "retrieved_ids": [],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          4,
+          9,
+          6
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      }
+    },
+    {
+      "case_id": "code_006",
+      "query": "Review this bash script for correctness and safety.",
+      "expected_chunk_ids": [
+        5
+      ],
+      "dense": {
+        "retrieved_ids": [
+          5,
+          6,
+          8
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      },
+      "sparse": {
+        "retrieved_ids": [
+          5
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          5,
+          6,
+          8
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      }
+    },
+    {
+      "case_id": "code_007",
+      "query": "Review this Python function for correctness.",
+      "expected_chunk_ids": [
+        6
+      ],
+      "dense": {
+        "retrieved_ids": [
+          6,
+          1,
+          4
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      },
+      "sparse": {
+        "retrieved_ids": [
+          2
+        ],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          6,
+          2,
+          1
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      }
+    },
+    {
+      "case_id": "code_008",
+      "query": "Review this Python code for exception handling issues.",
+      "expected_chunk_ids": [
+        7
+      ],
+      "dense": {
+        "retrieved_ids": [
+          4,
+          9,
+          7
+        ],
+        "hit_at_1": false,
+        "hit_at_3": true,
+        "mrr": 0.3333
+      },
+      "sparse": {
+        "retrieved_ids": [],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          4,
+          9,
+          7
+        ],
+        "hit_at_1": false,
+        "hit_at_3": true,
+        "mrr": 0.3333
+      }
+    },
+    {
+      "case_id": "code_009",
+      "query": "Review this SQL for correctness and security.",
+      "expected_chunk_ids": [
+        8
+      ],
+      "dense": {
+        "retrieved_ids": [
+          8,
+          0,
+          3
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      },
+      "sparse": {
+        "retrieved_ids": [],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          8,
+          0,
+          3
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      }
+    },
+    {
+      "case_id": "code_010",
+      "query": "Review this Python decorator for correctness.",
+      "expected_chunk_ids": [
+        9
+      ],
+      "dense": {
+        "retrieved_ids": [
+          9,
+          6,
+          1
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      },
+      "sparse": {
+        "retrieved_ids": [],
+        "hit_at_1": false,
+        "hit_at_3": false,
+        "mrr": 0.0
+      },
+      "hybrid": {
+        "retrieved_ids": [
+          9,
+          6,
+          1
+        ],
+        "hit_at_1": true,
+        "hit_at_3": true,
+        "mrr": 1.0
+      }
+    }
+  ]
+}

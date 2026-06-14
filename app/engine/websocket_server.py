@@ -57,6 +57,7 @@ class WebSocketServerManager:
         self.loop_thread: Optional[threading.Thread] = None
         self.orchestrator: Optional[SwarmOrchestratorThread] = None
         self.chat_thread = None
+        self.mini_train_thread = None
         # Guards orchestrator/chat_thread hand-off: the asyncio handler
         # (loop thread) and stop() (Qt thread) both stop/replace them.
         self._threads_lock = threading.Lock()
@@ -568,6 +569,11 @@ class WebSocketServerManager:
                         self.chat_thread.request_stop()
                     self.chat_thread.wait()
 
+                # Stop mini train thread if running
+                if hasattr(self, "mini_train_thread") and self.mini_train_thread and self.mini_train_thread.isRunning():
+                    self.mini_train_thread.stop()
+                    self.mini_train_thread.wait()
+
             # Stop websockets server
             future = asyncio.run_coroutine_threadsafe(self._stop_server(), self.loop)
             try:
@@ -1053,6 +1059,146 @@ class WebSocketServerManager:
                             "jsonrpc": "2.0",
                             "id": req_id,
                             "result": {"status": "started"}
+                        }))
+
+                    elif method == "fit_vectorizer":
+                        documents = params.get("documents", [])
+                        if not documents:
+                            await websocket.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": "Invalid params: documents list is required."
+                                }
+                            }))
+                            continue
+                        
+                        from app.utils.custom_embeddings import TfidfEmbedder
+                        tfidf = TfidfEmbedder()
+                        tfidf.fit(documents)
+                        
+                        vectors = []
+                        for doc in documents:
+                            v = tfidf.transform(doc)
+                            vectors.append(v.tolist())
+                            
+                        vocab_sorted = [word for word, idx in sorted(tfidf.vocabulary.items(), key=lambda item: item[1])]
+                        
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "vocabulary": vocab_sorted,
+                                "vectors": vectors
+                            }
+                        }))
+
+                    elif method == "start_mini_train":
+                        lr = float(params.get("lr", 0.001))
+                        max_iters = int(params.get("max_iters", 100))
+                        batch_size = int(params.get("batch_size", 16))
+                        
+                        shakespeare_path = "data/tiny_shakespeare.txt"
+                        if os.path.exists(shakespeare_path):
+                            with open(shakespeare_path, "r", encoding="utf-8") as f:
+                                dataset_text = f.read()
+                        else:
+                            dataset_text = (
+                                "ROMEO:\n"
+                                "But, soft! what light through yonder window breaks?\n"
+                                "It is the east, and Juliet is the sun.\n"
+                                "Arise, fair sun, and kill the envious moon,\n"
+                                "Who is already sick and pale with grief,\n"
+                                "That thou her maid art far more fair than she:\n"
+                                "Be not her maid, since she is envious;\n"
+                                "Her vestal livery is but sick and green\n"
+                                "And none but fools do wear it; cast it off.\n"
+                                "It is my lady, O, it is my love!\n"
+                                "O, that she knew she were!\n"
+                                "She speaks yet she says nothing: what of that?\n"
+                                "Her eye discourses; I will answer it.\n"
+                                "I am too bold, 'tis not to me she speaks:\n"
+                                "Two of the fairest stars in all the heaven,\n"
+                                "Having some business, do entreat her eyes\n"
+                                "To twinkle in their spheres till they return.\n"
+                                "What if her eyes were there, they in her head?\n"
+                                "The brightness of her cheek would shame those stars,\n"
+                                "As daylight doth a lamp; her eyes in heaven\n"
+                                "Would through the airy region stream so bright\n"
+                                "That birds would sing and think it were not night.\n"
+                                "See, how she leans her cheek upon her hand!\n"
+                                "O, that I were a glove upon that hand,\n"
+                                "That I might touch that cheek!\n\n"
+                                "JULIET:\n"
+                                "Ay me!\n\n"
+                                "ROMEO:\n"
+                                "She speaks:\n"
+                                "O, speak again, bright angel! for thou art\n"
+                                "As glorious to this night, being o'er my head\n"
+                                "As is a winged messenger of heaven\n"
+                                "Unto the white-upturned wondering eyes\n"
+                                "Of mortals that fall back to gaze on him\n"
+                                "When he bestrides the lazy-pacing clouds\n"
+                                "And sails upon the bosom of the air.\n"
+                            ) * 20
+                            os.makedirs("data", exist_ok=True)
+                            with open(shakespeare_path, "w", encoding="utf-8") as f:
+                                f.write(dataset_text)
+
+                        config = {
+                            "batch_size": batch_size,
+                            "block_size": 64,
+                            "n_embd": 128,
+                            "n_heads": 4,
+                            "n_layers": 4,
+                            "lr": lr,
+                            "max_iters": max_iters,
+                            "eval_interval": 20,
+                            "sample_interval": 50
+                        }
+
+                        with self._threads_lock:
+                            if hasattr(self, "mini_train_thread") and self.mini_train_thread and self.mini_train_thread.isRunning():
+                                self.mini_train_thread.stop()
+                                self.mini_train_thread.wait()
+                            
+                            from app.engine.mini_train_thread import MiniTrainThread
+                            self.mini_train_thread = MiniTrainThread(
+                                dataset_text=dataset_text,
+                                config=config
+                            )
+                            
+                            self.mini_train_thread.log.connect(
+                                lambda msg: self._send_notification("status_update", {"message": msg}),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.mini_train_thread.loss.connect(
+                                lambda step, loss_val: self._send_notification("status_update", {"message": f"Step {step} | Loss: {loss_val:.4f}"}),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.mini_train_thread.progress.connect(
+                                lambda step, max_steps, sample_text: self._send_notification("status_update", {"message": f"--- Generation Output (Step {step} / {max_steps}) ---\n{sample_text}"}),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.mini_train_thread.done.connect(
+                                lambda save_dir: self._send_notification("status_update", {"message": f"Training completed. Saved to {save_dir}"}),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.mini_train_thread.error.connect(
+                                lambda err: self._send_notification("status_update", {"message": f"[Mini-GPT Error] {err}"}),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            
+                            self.mini_train_thread.start()
+                            
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "status": "started",
+                                "task_id": "mini-gpt-train"
+                            }
                         }))
 
                     elif method == "stop_task":
