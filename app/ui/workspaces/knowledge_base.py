@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QComboBox,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QFont, QMouseEvent
 from app.utils.custom_embeddings import TfidfEmbedder
 
@@ -70,23 +70,45 @@ class VectorProjectionWidget(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("vector-projection-widget")
-        self.setMinimumHeight(280)
+        self.setMinimumHeight(200)  # Reduced minimum height to avoid sizing conflicts on collapse/smaller windows
+        from PyQt6.QtWidgets import QSizePolicy
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.query_point = None  # (x, y)
         self.doc_points = []     # list of dicts
         self.axis_labels = ("", "") # (label_x, label_y)
         self.hovered_point = None
         self.setMouseTracking(True)
+        
+        # Smooth fade-in animation
+        self.opacity = 1.0
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self._animate_step)
+
+    def start_fade_in(self):
+        self.opacity = 0.0
+        self.animation_timer.start(25)  # ~40 FPS
+
+    def _animate_step(self):
+        self.opacity += 0.08
+        if self.opacity >= 1.0:
+            self.opacity = 1.0
+            self.animation_timer.stop()
+        self.update()
 
     def set_query(self, x: float, y: float):
         self.query_point = (x, y)
-        self.update()
+        self.start_fade_in()
 
     def set_documents(self, docs: list[dict]):
         self.doc_points = docs
-        self.update()
+        self.start_fade_in()
 
     def set_axes(self, label_x: str, label_y: str):
         self.axis_labels = (label_x, label_y)
+        self.start_fade_in()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -94,7 +116,8 @@ class VectorProjectionWidget(QFrame):
         px = pos.x()
         py = pos.y()
         
-        margin_left = 60
+        # Expanded margins matching the paintEvent coordinates
+        margin_left = 85
         margin_right = 40
         margin_top = 40
         margin_bottom = 60
@@ -141,7 +164,8 @@ class VectorProjectionWidget(QFrame):
         w = self.width()
         h = self.height()
         
-        margin_left = 60
+        # Polished, perfectly aligned layout margins
+        margin_left = 85
         margin_right = 40
         margin_top = 40
         margin_bottom = 60
@@ -149,7 +173,7 @@ class VectorProjectionWidget(QFrame):
         plot_w = w - margin_left - margin_right
         plot_h = h - margin_top - margin_bottom
         
-        # Draw background
+        # Draw background card
         painter.setBrush(QBrush(QColor("#0B0B16")))
         painter.setPen(QPen(QColor("#1F1F3D"), 1))
         painter.drawRoundedRect(0, 0, w, h, 8.0, 8.0)
@@ -157,8 +181,14 @@ class VectorProjectionWidget(QFrame):
         if plot_w <= 0 or plot_h <= 0:
             return
             
+        # Helper for applying fade opacity to colors
+        def apply_alpha(color_val, default_alpha: int = 255) -> QColor:
+            col = QColor(color_val)
+            col.setAlpha(int(default_alpha * self.opacity))
+            return col
+            
         # Draw grid lines & tick marks
-        grid_pen = QPen(QColor("#15152F"), 1, Qt.PenStyle.DashLine)
+        grid_pen = QPen(apply_alpha("#15152F"), 1, Qt.PenStyle.DashLine)
         painter.setPen(grid_pen)
         
         font = QFont("JetBrains Mono", 8)
@@ -166,49 +196,57 @@ class VectorProjectionWidget(QFrame):
         
         ticks = [0.0, 0.25, 0.5, 0.75, 1.0]
         for tick in ticks:
-            # Vertical lines
             tx = margin_left + tick * plot_w
-            painter.drawLine(int(tx), margin_top, int(tx), margin_top + plot_h)
-            # Horizontal lines
             ty = margin_top + (1.0 - tick) * plot_h
-            painter.drawLine(margin_left, int(ty), margin_left + plot_w, int(ty))
             
-            # Draw tick text
-            painter.setPen(QPen(QColor("#70708F")))
+            # Skip drawing dashed lines directly on top of the solid main axes (tick = 0.0)
+            if tick > 0.0:
+                # Vertical grid line
+                painter.drawLine(int(tx), margin_top, int(tx), margin_top + plot_h)
+                # Horizontal grid line
+                painter.drawLine(margin_left, int(ty), margin_left + plot_w, int(ty))
+            
+            # Draw tick label text
+            painter.setPen(QPen(apply_alpha("#70708F")))
             # X tick labels
-            painter.drawText(int(tx) - 15, margin_top + plot_h + 15, 30, 15, Qt.AlignmentFlag.AlignCenter, f"{tick:.2f}")
+            painter.drawText(int(tx) - 20, margin_top + plot_h + 5, 40, 15, Qt.AlignmentFlag.AlignCenter, f"{tick:.2f}")
             # Y tick labels
             painter.drawText(margin_left - 45, int(ty) - 7, 40, 15, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{tick:.2f}")
             painter.setPen(grid_pen)
 
-        # Draw main X and Y axis lines
-        axis_pen = QPen(QColor("#3A3A6A"), 2)
+        # Draw main X and Y solid axis lines
+        axis_pen = QPen(apply_alpha("#3A3A6A"), 2)
         painter.setPen(axis_pen)
         # X Axis
         painter.drawLine(margin_left, margin_top + plot_h, margin_left + plot_w, margin_top + plot_h)
         # Y Axis
         painter.drawLine(margin_left, margin_top, margin_left, margin_top + plot_h)
         
-        # Axis labels
+        # Axis labels (truncated dynamically based on screen width to prevent overlap)
         label_font = QFont("JetBrains Mono", 8, QFont.Weight.Bold)
         painter.setFont(label_font)
-        painter.setPen(QPen(QColor("#00C2FF")))
+        painter.setPen(QPen(apply_alpha("#00C2FF")))
+        
+        max_chars = max(5, int(plot_w / 15))
         
         # X label
         x_lbl = self.axis_labels[0]
         if x_lbl:
-            x_text = f"X: {x_lbl} (DF)"
+            x_trunc = x_lbl[:max_chars] + "..." if len(x_lbl) > max_chars else x_lbl
+            x_text = f"X: {x_trunc}" if plot_w < 220 else f"X: {x_trunc} (DF)"
             painter.drawText(margin_left, margin_top + plot_h + 25, plot_w, 20, Qt.AlignmentFlag.AlignCenter, x_text)
             
         # Y label
         y_lbl = self.axis_labels[1]
         if y_lbl:
-            # Draw vertical Y label
+            y_trunc = y_lbl[:max_chars] + "..." if len(y_lbl) > max_chars else y_lbl
+            y_text = f"Y: {y_trunc}" if plot_h < 220 else f"Y: {y_trunc} (DF)"
+            # Draw vertical Y label centered within the plot height boundaries
             painter.save()
-            painter.translate(margin_left - 45, margin_top + plot_h / 2)
+            painter.translate(margin_left - 68, margin_top + plot_h / 2)
             painter.rotate(-90)
-            y_text = f"Y: {y_lbl} (DF)"
-            painter.drawText(-100, -10, 200, 20, Qt.AlignmentFlag.AlignCenter, y_text)
+            y_box_w = int(plot_h)
+            painter.drawText(-int(y_box_w / 2), -10, y_box_w, 20, Qt.AlignmentFlag.AlignCenter, y_text)
             painter.restore()
 
         # Draw lines and elements
@@ -222,7 +260,7 @@ class VectorProjectionWidget(QFrame):
                 dy = margin_top + (1.0 - dp["y"]) * plot_h
                 
                 # Draw dashed projection line
-                line_pen = QPen(QColor(0, 194, 255, 60), 1, Qt.PenStyle.DashLine)
+                line_pen = QPen(apply_alpha("#00C2FF", 60), 1, Qt.PenStyle.DashLine)
                 painter.setPen(line_pen)
                 painter.drawLine(int(qx), int(qy), int(dx), int(dy))
                 
@@ -243,53 +281,74 @@ class VectorProjectionWidget(QFrame):
                 rw = int(tw + 6)
                 rh = int(th + 2)
                 
-                painter.setBrush(QBrush(QColor("#141424")))
-                painter.setPen(QPen(QColor("#28283F"), 1))
+                painter.setBrush(QBrush(apply_alpha("#141424")))
+                painter.setPen(QPen(apply_alpha("#28283F"), 1))
                 painter.drawRoundedRect(rx, ry, rw, rh, 3.0, 3.0)
                 
-                painter.setPen(QColor("#00C2FF"))
+                painter.setPen(apply_alpha("#00C2FF"))
                 painter.drawText(rx, ry, rw, rh, Qt.AlignmentFlag.AlignCenter, sim_text)
                 painter.restore()
 
-            # Draw query point
-            painter.setBrush(QBrush(QColor("#00C2FF")))
-            painter.setPen(QPen(QColor("#FFFFFF"), 1.5))
+            # Draw query point with neon glow and correct thin white border
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(apply_alpha("#00C2FF", 40)))
+            painter.drawEllipse(int(qx) - 12, int(qy) - 12, 24, 24)
+            painter.setBrush(QBrush(apply_alpha("#00C2FF", 80)))
+            painter.drawEllipse(int(qx) - 9, int(qy) - 9, 18, 18)
+
+            painter.setBrush(QBrush(apply_alpha("#00C2FF")))
+            painter.setPen(QPen(apply_alpha("#FFFFFF", 220), 1))
             painter.drawEllipse(int(qx) - 6, int(qy) - 6, 12, 12)
             
             # Query point text label next to it
             painter.setFont(QFont("JetBrains Mono", 7, QFont.Weight.Bold))
-            painter.setPen(QColor("#00C2FF"))
+            painter.setPen(apply_alpha("#00C2FF"))
             painter.drawText(int(qx) + 8, int(qy) - 5, "Query")
 
-        # Draw doc points
+        # Draw doc points with neon glow and correct thin white border
         for dp in self.doc_points:
             dx = margin_left + dp["x"] * plot_w
             dy = margin_top + (1.0 - dp["y"]) * plot_h
             
-            painter.setBrush(QBrush(QColor("#2DD4A0")))
-            painter.setPen(QPen(QColor("#FFFFFF"), 1))
+            # Subtle neon green glow
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(apply_alpha("#00FF88", 40)))
+            painter.drawEllipse(int(dx) - 10, int(dy) - 10, 20, 20)
+
+            painter.setBrush(QBrush(apply_alpha("#00FF88")))
+            painter.setPen(QPen(apply_alpha("#FFFFFF", 220), 1))
             painter.drawEllipse(int(dx) - 5, int(dy) - 5, 10, 10)
             
             # Label
             painter.setFont(QFont("JetBrains Mono", 7))
-            painter.setPen(QColor("#9090A8"))
+            painter.setPen(apply_alpha("#9090A8"))
             painter.drawText(int(dx) + 8, int(dy) + 4, f"D{dp['id']}")
 
-        # Draw Hover Tooltip Card
+        # Draw Hover Tooltip Card with Similarity Math
         if self.hovered_point is not None:
             hp = self.hovered_point
-            card_x = margin_left + 15
-            card_y = margin_top + 15
-            card_w = 230
-            card_h = 80
+            card_w = 320
+            card_h = 120
+            
+            # Determine card position dynamically to avoid overlap
+            hx = margin_left + hp["x"] * plot_w
+            if hx < margin_left + plot_w / 2:
+                card_x = w - margin_right - card_w - 15
+            else:
+                card_x = margin_left + 15
+            card_y = margin_top + 10
+            
+            # Clamp card position to ensure it is always rendered inside the widget bounds
+            card_x = max(10, min(card_x, w - card_w - 10))
+            card_y = max(10, min(card_y, h - card_h - 10))
             
             painter.save()
-            # Draw card background
-            painter.setBrush(QBrush(QColor("#14142B")))
+            # Draw card background with a translucent Obsidian glass appearance
+            painter.setBrush(QBrush(QColor(15, 15, 30, 225)))
             if hp.get("is_query"):
-                painter.setPen(QPen(QColor("#00C2FF"), 1))
+                painter.setPen(QPen(QColor(0, 194, 255, 180), 1.5))
             else:
-                painter.setPen(QPen(QColor("#2DD4A0"), 1))
+                painter.setPen(QPen(QColor(0, 255, 136, 180), 1.5))
             painter.drawRoundedRect(card_x, card_y, card_w, card_h, 6.0, 6.0)
             
             # Write card content
@@ -299,23 +358,58 @@ class VectorProjectionWidget(QFrame):
                 painter.drawText(card_x + 10, card_y + 18, "Query Point")
                 painter.setFont(QFont("JetBrains Mono", 7.5))
                 painter.setPen(QColor("#9090A8"))
+                
+                norm_q = math.hypot(hp["x"], hp["y"])
                 painter.drawText(card_x + 10, card_y + 36, f"X ({self.axis_labels[0]}): {hp['x']:.4f}")
                 painter.drawText(card_x + 10, card_y + 52, f"Y ({self.axis_labels[1]}): {hp['y']:.4f}")
+                painter.drawText(card_x + 10, card_y + 68, f"Norm ||Q||₂: {norm_q:.4f}")
+                
+                painter.setFont(QFont("JetBrains Mono", 7))
+                painter.setPen(QColor("#00C2FF"))
+                painter.drawText(card_x + 10, card_y + 86, "Active search query vector (2D projection)")
             else:
+                # Hovered document point math
+                x = hp["x"]
+                y = hp["y"]
+                qx, qy = self.query_point[0], self.query_point[1] if self.query_point else (0.0, 0.0)
+                
+                # Math calculations
+                dot_prod = x * qx + y * qy
+                norm_a = math.hypot(x, y)
+                norm_b = math.hypot(qx, qy)
+                denom = norm_a * norm_b
+                sim_2d = dot_prod / denom if denom > 0.0 else 0.0
+                
+                # Clip similarity to [-1.0, 1.0] for arccos safety
+                sim_2d_clipped = max(-1.0, min(1.0, sim_2d))
+                angle_rad = math.acos(sim_2d_clipped)
+                angle_deg = math.degrees(angle_rad)
+                
                 painter.setFont(QFont("JetBrains Mono", 8, QFont.Weight.Bold))
-                painter.drawText(card_x + 10, card_y + 18, f"Document {hp['id']}")
+                painter.setPen(QColor("#00FF88"))
+                painter.drawText(card_x + 10, card_y + 16, f"Document D{hp['id']} Projection Math")
                 
                 painter.setFont(QFont("JetBrains Mono", 7.5))
                 painter.setPen(QColor("#9090A8"))
                 
-                # Truncate text to fit
-                max_len = 28
-                txt = hp["text"]
-                if len(txt) > max_len:
-                    txt = txt[:max_len] + "..."
-                painter.drawText(card_x + 10, card_y + 34, f"Text: \"{txt}\"")
-                painter.drawText(card_x + 10, card_y + 48, f"Similarity: {hp['similarity']:.4f}")
-                painter.drawText(card_x + 10, card_y + 62, f"Coords: ({hp['x']:.2f}, {hp['y']:.2f})")
+                # Line 1: Dot Product components
+                painter.drawText(card_x + 10, card_y + 32, f"A · B = ({x:.2f} × {qx:.2f}) + ({y:.2f} × {qy:.2f}) = {dot_prod:.4f}")
+                
+                # Line 2: Norms
+                painter.drawText(card_x + 10, card_y + 48, f"||A||₂ = {norm_a:.4f}  |  ||B||₂ = {norm_b:.4f}")
+                
+                # Line 3: Cosine Similarity Equation
+                painter.drawText(card_x + 10, card_y + 64, f"Cosine Sim (2D) = A·B / (||A||₂×||B||₂) = {sim_2d:.4f}")
+                
+                # Line 4: Angle
+                painter.setPen(QColor("#00FF88"))
+                painter.setFont(QFont("JetBrains Mono", 7.5, QFont.Weight.Bold))
+                painter.drawText(card_x + 10, card_y + 82, f"Angle θ = {angle_deg:.1f}° (2D Space)")
+                
+                # Line 5: Full vocabulary similarity (semantic RAG score)
+                painter.setPen(QColor("#00C2FF"))
+                painter.drawText(card_x + 10, card_y + 100, f"Global Cosine Sim (N-Dim) = {hp['similarity']:.4f}")
+                
             painter.restore()
 
 
@@ -1017,12 +1111,18 @@ class KnowledgeBaseWorkspace(QWidget):
         query_row.addWidget(sim_btn)
         sim_layout.addLayout(query_row)
 
+        sim_splitter = QSplitter(Qt.Orientation.Vertical)
+        sim_splitter.setHandleWidth(1)
+        sim_splitter.setStyleSheet("QSplitter::handle { background-color: #1F1F3D; }")
+
         self._sandbox_similarity_browser = QTextBrowser()
         self._sandbox_similarity_browser.setPlaceholderText("Vector similarity math breakdown will appear here...")
-        sim_layout.addWidget(self._sandbox_similarity_browser, 1)
+        sim_splitter.addWidget(self._sandbox_similarity_browser)
 
         self._sandbox_projection = VectorProjectionWidget()
-        sim_layout.addWidget(self._sandbox_projection, 1)
+        sim_splitter.addWidget(self._sandbox_projection)
+        
+        sim_layout.addWidget(sim_splitter, 1)
 
         self._sandbox_res_tabs.addTab(sim_widget, "Similarity Playground")
 

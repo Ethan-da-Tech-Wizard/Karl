@@ -214,6 +214,8 @@ class MiniGptInlineCompletionProvider {
      */
     constructor(workspacePath) {
         this.workspacePath = workspacePath;
+        /** @type {ReturnType<typeof setTimeout> | null} */
+        this.debounceTimeout = null;
     }
 
     /**
@@ -221,37 +223,73 @@ class MiniGptInlineCompletionProvider {
      * @param {vscode.Position} position
      * @param {vscode.InlineCompletionContext} context
      * @param {vscode.CancellationToken} token
+     * @returns {Promise<vscode.InlineCompletionItem[] | undefined>}
      */
-    async provideInlineCompletionItems(document, position, context, token) {
+    provideInlineCompletionItems(document, position, context, token) {
         const weightsPath = path.join(this.workspacePath, "data", "mini_gpt", "weights.pt");
         if (!fs.existsSync(weightsPath)) {
-            return undefined;
+            return Promise.resolve(undefined);
         }
 
         const lineText = document.lineAt(position.line).text.substring(0, position.character);
         if (!lineText.trim()) {
-            return undefined;
+            return Promise.resolve(undefined);
         }
 
-        try {
-            const completion = await this.generateCompletion(lineText);
-            if (completion && completion.trim().length > 0) {
-                const item = new vscode.InlineCompletionItem(completion);
-                item.range = new vscode.Range(position, position);
-                return [item];
+        // Clear any pending debounce from the previous keypress
+        if (this.debounceTimeout !== null) {
+            clearTimeout(this.debounceTimeout);
+            this.debounceTimeout = null;
+        }
+
+        return new Promise((resolve) => {
+            // Abort immediately if VS Code has already cancelled this request
+            if (token.isCancellationRequested) {
+                resolve(undefined);
+                return;
             }
-        } catch (err) {
-            console.error('[Mini-GPT Inline Completion Error]:', err);
-        }
 
-        return undefined;
+            // Resolve early if VS Code cancels while we are waiting (user kept typing)
+            const cancelListener = token.onCancellationRequested(() => {
+                if (this.debounceTimeout !== null) {
+                    clearTimeout(this.debounceTimeout);
+                    this.debounceTimeout = null;
+                }
+                resolve(undefined);
+            });
+
+            this.debounceTimeout = setTimeout(async () => {
+                this.debounceTimeout = null;
+                cancelListener.dispose();
+
+                if (token.isCancellationRequested) {
+                    resolve(undefined);
+                    return;
+                }
+
+                try {
+                    const completion = await this.generateCompletion(lineText, token);
+                    if (!token.isCancellationRequested && completion && completion.trim().length > 0) {
+                        const item = new vscode.InlineCompletionItem(completion);
+                        item.range = new vscode.Range(position, position);
+                        resolve([item]);
+                    } else {
+                        resolve(undefined);
+                    }
+                } catch (err) {
+                    console.error('[Mini-GPT Inline Completion Error]:', err);
+                    resolve(undefined);
+                }
+            }, 500);
+        });
     }
 
     /**
      * @param {string} prompt
+     * @param {vscode.CancellationToken} [token]
      * @returns {Promise<string>}
      */
-    generateCompletion(prompt) {
+    generateCompletion(prompt, token) {
         return new Promise((resolve, reject) => {
             const pythonScript = `
 import os
@@ -311,6 +349,16 @@ print(completion, end="")
 
             const proc = cp.spawn('python3', ['-c', pythonScript, this.workspacePath, prompt]);
 
+            // Kill the child process immediately if VS Code cancels this request
+            /** @type {vscode.Disposable | null} */
+            let cancelListener = null;
+            if (token) {
+                cancelListener = token.onCancellationRequested(() => {
+                    proc.kill();
+                    resolve('');
+                });
+            }
+
             let stdout = '';
             let stderr = '';
 
@@ -329,6 +377,7 @@ print(completion, end="")
 
             proc.on('close', (code) => {
                 clearTimeout(timer);
+                if (cancelListener) { cancelListener.dispose(); cancelListener = null; }
                 if (code === 0) {
                     resolve(stdout);
                 } else {

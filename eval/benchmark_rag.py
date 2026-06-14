@@ -2,29 +2,128 @@
 RAG Retrieval Benchmark — Karl Workbench
 ==========================================
 Compares retrieval quality metrics on a fixed query set.
-Does NOT require the LLM to be loaded — pure embedding + search benchmark.
+Now includes generation-level BLEU and ROUGE metrics using the local LLM.
 
 Usage:
   python eval/benchmark_rag.py
   python eval/benchmark_rag.py --top-k 5 --headers
-
-The benchmark uses an internal synthetic corpus. To test your own documents,
-ingest them first via the UI and run with --live flag to query the live index.
 """
 
 import os
 import sys
 import time
 import textwrap
+import json
+import re
+import math
+import collections
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.utils.rag_pipeline import RAGPipeline
+from app.engine.model_loader import ModelLoader
+from core.interaction_loop import build_prompt
+from core.cognitive_parser import parse_thought_stream
+
+
+# ── NLP Metric Helpers (Pure Python) ──────────────────────────────────────────
+
+def _tokenize(text):
+    if not isinstance(text, str):
+        text = str(text)
+    return re.findall(r'\w+', text.lower())
+
+def _get_ngrams(tokens, n):
+    return [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+
+def compute_bleu(reference, hypothesis, n_max=2):
+    """Simple BLEU-n implementation with brevity penalty."""
+    ref_tokens = _tokenize(reference)
+    hyp_tokens = _tokenize(hypothesis)
+    
+    if not hyp_tokens:
+        return 0.0
+    
+    precisions = []
+    for n in range(1, n_max + 1):
+        ref_ngrams = collections.Counter(_get_ngrams(ref_tokens, n))
+        hyp_ngrams = collections.Counter(_get_ngrams(hyp_tokens, n))
+        
+        matches = 0
+        hyp_ngram_count = len(_get_ngrams(hyp_tokens, n))
+        if hyp_ngram_count > 0:
+            for ngram, count in hyp_ngrams.items():
+                if ngram in ref_ngrams:
+                    matches += min(count, ref_ngrams[ngram])
+            precision = matches / hyp_ngram_count
+        else:
+            precision = 0
+        precisions.append(precision)
+    
+    # Geometric mean
+    if any(p == 0 for p in precisions):
+        geo_mean = 0
+    else:
+        geo_mean = math.exp(sum(math.log(p) for p in precisions) / n_max)
+    
+    # Brevity penalty
+    ref_len = len(ref_tokens)
+    hyp_len = len(hyp_tokens)
+    bp = 1.0
+    if hyp_len <= ref_len:
+        bp = math.exp(1 - ref_len / hyp_len) if hyp_len > 0 else 0
+        
+    return bp * geo_mean
+
+def compute_rouge_1(reference, hypothesis):
+    """ROUGE-1: Precision, Recall, and F1 based on unigrams."""
+    ref_tokens = _tokenize(reference)
+    hyp_tokens = _tokenize(hypothesis)
+    
+    if not ref_tokens or not hyp_tokens:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+    
+    ref_counts = collections.Counter(ref_tokens)
+    hyp_counts = collections.Counter(hyp_tokens)
+    
+    matches = 0
+    for token, count in hyp_counts.items():
+        if token in ref_counts:
+            matches += min(count, ref_counts[token])
+            
+    precision = matches / len(hyp_tokens)
+    recall = matches / len(ref_tokens)
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    
+    return {"precision": precision, "recall": recall, "f1": f1}
+
+def compute_rouge_l(reference, hypothesis):
+    """ROUGE-L: Longest Common Subsequence."""
+    ref_tokens = _tokenize(reference)
+    hyp_tokens = _tokenize(hypothesis)
+    
+    n, m = len(ref_tokens), len(hyp_tokens)
+    if n == 0 or m == 0:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "lcs": 0}
+    
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            if ref_tokens[i-1] == hyp_tokens[j-1]:
+                dp[i][j] = dp[i-1][j-1] + 1
+            else:
+                dp[i][j] = max(dp[i-1][j], dp[i][j-1])
+                
+    lcs_len = dp[n][m]
+    precision = lcs_len / m
+    recall = lcs_len / n
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    
+    return {"precision": precision, "recall": recall, "f1": f1, "lcs": lcs_len}
 
 
 # ── Synthetic benchmark corpus ────────────────────────────────────────────────
-# Small, controlled corpus so the benchmark is reproducible without loading files.
 
 CORPUS = [
     ("doc_a", "The quarterly revenue for Q3 2025 was $42 million, up 18% from Q3 2024."),
@@ -41,7 +140,6 @@ CORPUS = [
     ("doc_d", "Patient was discharged April 5 with follow-up scheduled in two weeks."),
 ]
 
-# Each query: (query_text, list_of_expected_chunk_indices_in_CORPUS)
 BENCHMARK_QUERIES = [
     ("What was Q3 2025 revenue?",                  [0, 1]),
     ("What is the return window for electronics?",  [4]),
@@ -70,17 +168,12 @@ def run_benchmark(top_k: int = 3, contextual_headers: bool = False) -> list[Quer
     print(f"  top_k={top_k} | contextual_headers={contextual_headers}")
     print(f"{'─'*60}")
 
-    # Build a fresh in-memory RAG index (does NOT touch the persisted index)
     rag = RAGPipeline(contextual_headers=contextual_headers)
-    rag.index.reset()  # Start fresh — don't load persisted
+    rag.index.reset()
     rag.documents = []
 
-    # Ingest synthetic corpus via ingest_text
     print(f"\n  Ingesting {len(CORPUS)} synthetic chunks...")
     for source, text in CORPUS:
-        # Ingest as single-chunk items (don't split these short sentences further)
-        from sentence_transformers import SentenceTransformer
-        import numpy as np
         vec = rag.encoder.encode([text]).astype("float32")
         rag.index.add(vec)
         rag.documents.append({
@@ -166,8 +259,6 @@ def calculate_metrics(retrieved_ids: list[int], expected_ids: list[int], top_k: 
 
 
 def run_code_review_benchmark(top_k: int = 3, output_path: str = "data/rag_benchmark_results.json"):
-    import json
-    
     dataset_path = "eval/datasets/code_review.jsonl"
     if not os.path.exists(dataset_path):
         print(f"Error: Dataset not found at {dataset_path}")
@@ -187,6 +278,14 @@ def run_code_review_benchmark(top_k: int = 3, output_path: str = "data/rag_bench
     print(f"  Karl RAG Retrieval Benchmark — code_review.jsonl")
     print(f"  Loaded {len(cases)} cases | top_k={top_k}")
     print(f"{'─'*60}")
+
+    # Load local LLM
+    print("\n  Loading local LLM for generation scoring...")
+    llm = ModelLoader.get_instance()
+    if not llm:
+        print("  Error: No model loaded in ModelLoader. Please load a model first.")
+        return
+    print(f"  Model active: {ModelLoader.model_name()}\n")
     
     # Build a fresh in-memory RAG index
     rag = RAGPipeline(contextual_headers=False)
@@ -194,7 +293,7 @@ def run_code_review_benchmark(top_k: int = 3, output_path: str = "data/rag_bench
     rag.documents = []
     
     # Ingest contexts
-    print(f"\n  Ingesting {len(cases)} code contexts...")
+    print(f"  Ingesting {len(cases)} code contexts...")
     for i, case in enumerate(cases):
         text = case.get("context", case.get("code", ""))
         doc_id = case.get("id", f"code_{i:03d}")
@@ -217,25 +316,58 @@ def run_code_review_benchmark(top_k: int = 3, output_path: str = "data/rag_bench
     for i, case in enumerate(cases):
         query_text = case["prompt"]
         expected_ids = [i]
+        reference_answer = str(case.get("expected", ""))
         
         case_info = {
             "case_id": case.get("id", f"code_{i:03d}"),
             "query": query_text,
             "expected_chunk_ids": expected_ids,
+            "reference": reference_answer
         }
+        
+        print(f"  [{i+1}/{len(cases)}] Query: {textwrap.shorten(query_text, 50)}")
         
         for mode in modes:
             retrieved = rag.retrieve_with_metadata(query_text, top_k=top_k, mode=mode)
             retrieved_ids = [r["chunk_id"] for r in retrieved]
             
-            metrics = calculate_metrics(retrieved_ids, expected_ids, top_k)
-            results_by_mode[mode].append(metrics)
+            # Retrieval metrics
+            retr_metrics = calculate_metrics(retrieved_ids, expected_ids, top_k)
+            
+            # Generation
+            context_text = "\n\n".join([r["text"] for r in retrieved])
+            sys_prompt = "You are a code review assistant. Use the retrieved context to answer the user's query."
+            prompt = build_prompt(
+                sys_prompt + "\n\nRetrieved Context:\n" + context_text,
+                [{"role": "user", "content": query_text}]
+            )
+            
+            res = llm(prompt, max_tokens=256, temperature=0.0, stop=["<|im_end|>", "User:"])
+            raw_text = res["choices"][0]["text"]
+            _, final_response = parse_thought_stream(raw_text)
+            if not final_response: final_response = raw_text
+            
+            # NLP Scores
+            b1 = compute_bleu(reference_answer, final_response, n_max=1)
+            b2 = compute_bleu(reference_answer, final_response, n_max=2)
+            r1 = compute_rouge_1(reference_answer, final_response)
+            rl = compute_rouge_l(reference_answer, final_response)
+            
+            mode_metrics = {
+                "hit_at_1": retr_metrics["hit_at_1"],
+                "hit_at_3": retr_metrics["hit_at_3"],
+                "mrr": retr_metrics["reciprocal_rank"],
+                "bleu_1": round(b1, 4),
+                "bleu_2": round(b2, 4),
+                "rouge_1": round(r1["f1"], 4),
+                "rouge_l": round(rl["f1"], 4)
+            }
+            results_by_mode[mode].append(mode_metrics)
             
             case_info[mode] = {
                 "retrieved_ids": retrieved_ids,
-                "hit_at_1": metrics["hit_at_1"],
-                "hit_at_3": metrics["hit_at_3"],
-                "mrr": metrics["reciprocal_rank"]
+                "response": final_response,
+                **mode_metrics
             }
         
         query_details.append(case_info)
@@ -245,24 +377,27 @@ def run_code_review_benchmark(top_k: int = 3, output_path: str = "data/rag_bench
     for mode in modes:
         mode_results = results_by_mode[mode]
         n = len(mode_results)
-        hit_1 = sum(1 for r in mode_results if r["hit_at_1"]) / n if n > 0 else 0.0
-        hit_3 = sum(1 for r in mode_results if r["hit_at_3"]) / n if n > 0 else 0.0
-        mrr = sum(r["reciprocal_rank"] for r in mode_results) / n if n > 0 else 0.0
+        if n == 0: continue
         
         summary[mode] = {
-            "hit_at_1": round(hit_1, 4),
-            "hit_at_3": round(hit_3, 4),
-            "mrr": round(mrr, 4),
+            "hit_at_1": round(sum(r["hit_at_1"] for r in mode_results) / n, 4),
+            "hit_at_3": round(sum(r["hit_at_3"] for r in mode_results) / n, 4),
+            "mrr": round(sum(r["mrr"] for r in mode_results) / n, 4),
+            "bleu_1": round(sum(r["bleu_1"] for r in mode_results) / n, 4),
+            "bleu_2": round(sum(r["bleu_2"] for r in mode_results) / n, 4),
+            "rouge_1": round(sum(r["rouge_1"] for r in mode_results) / n, 4),
+            "rouge_l": round(sum(r["rouge_l"] for r in mode_results) / n, 4),
         }
         
     # Print the aggregate summary table
-    print(f"  Aggregate ({len(cases)} queries):")
-    print(f"    {'Mode':<10} Hit@1    Hit@3    MRR")
-    print(f"    {'─'*10} ─────    ─────    ───")
+    print(f"\n  Aggregate ({len(cases)} queries):")
+    print(f"    {'Mode':<10} Hit@1    Hit@3    MRR     B-1     B-2     R-1     R-L")
+    print(f"    {'─'*10} ─────    ─────    ───     ───     ───     ───     ───")
     for mode in modes:
         s = summary[mode]
-        print(f"    {mode:<10} {s['hit_at_1']:<8.1%} {s['hit_at_3']:<8.1%} {s['mrr']:<8.3f}")
-    print(f"  {'─'*60}\n")
+        print(f"    {mode:<10} {s['hit_at_1']:<8.1%} {s['hit_at_3']:<8.1%} {s['mrr']:<7.3f} "
+              f"{s['bleu_1']:<7.3f} {s['bleu_2']:<7.3f} {s['rouge_1']:<7.3f} {s['rouge_l']:<7.3f}")
+    print(f"  {'─'*70}\n")
     
     # Save to JSON
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -311,4 +446,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
