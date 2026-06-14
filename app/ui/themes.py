@@ -461,6 +461,19 @@ def _tint_hex_color(hex_str: str, r_mod: int, g_mod: int, b_mod: int) -> str:
     except ValueError:
         return "#" + hex_str
 
+def hex_to_rgba(hex_str: str, alpha: float) -> str:
+    """Convert a hex color string to rgba format."""
+    hex_str = hex_str.lstrip('#')
+    if len(hex_str) != 6:
+        return f"rgba(0, 194, 255, {alpha})"
+    try:
+        r = int(hex_str[0:2], 16)
+        g = int(hex_str[2:4], 16)
+        b = int(hex_str[4:6], 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    except ValueError:
+        return f"rgba(0, 194, 255, {alpha})"
+
 def get_theme_colors(state_or_name, custom_accent=None, bg_tone="Default", mode: str = None) -> dict:
     """Get the palette colors dictionary for the given theme, custom accent and background overlays."""
     if hasattr(state_or_name, "theme_preset"):
@@ -537,6 +550,15 @@ def get_theme_colors(state_or_name, custom_accent=None, bg_tone="Default", mode:
         "yellow":      raw["warning"],
         "sidebar_bg":  darken_hex_color(raw["bg_deep"], 0.85),
         "sidebar_sel": darken_hex_color(raw["bg_raised"], 0.9),
+        
+        # Glassmorphism / Heavenscape extensions
+        "bg_surface_glass": hex_to_rgba(raw["bg_surface"], 0.75),
+        "bg_raised_glass":  hex_to_rgba(raw["bg_raised"], 0.75),
+        "border_glass":     hex_to_rgba(raw["accent"], 0.15),
+        "accent_glow":      hex_to_rgba(raw["accent"], 0.3),
+        "idle_border":      hex_to_rgba(raw["accent"], 0.8),
+        "generating_border": "rgba(255, 140, 0, 0.8)",
+        "error_border":     "rgba(255, 59, 48, 0.9)",
     }
     
     p["description"] = raw.get("description", "")
@@ -665,22 +687,36 @@ QWidget {{
 #workspace-root {{
     background: {bg_base};
     padding: {margin}px;
+    border: 1px solid transparent;
 }}
 
 #panel {{
-    background: {bg_surface};
-    border: 1px solid {border};
+    background: {bg_surface_glass};
+    border: 1px solid {border_glass};
     border-radius: 4px;
 }}
 
 #panel-header {{
-    background: {bg_raised};
-    border-bottom: 1px solid {border};
+    background: {bg_raised_glass};
+    border-bottom: 1px solid {border_glass};
     border-radius: 4px 4px 0 0;
     padding: 5px 12px;
     color: {text_lo};
     font-size: 8pt;
     letter-spacing: 2px;
+}}
+
+/* State-driven QSS styles for dynamic glow borders */
+#panel[modelState="idle"], #workspace-root[modelState="idle"], #settings-overlay[modelState="idle"] {{
+    border-color: {accent};
+}}
+
+#panel[modelState="generating"], #workspace-root[modelState="generating"], #settings-overlay[modelState="generating"] {{
+    border-color: #FF9F00;
+}}
+
+#panel[modelState="error"], #workspace-root[modelState="error"], #settings-overlay[modelState="error"] {{
+    border-color: #FF3B30;
 }}
 
 /* ── Text Displays ────────────────────────────────────────── */
@@ -1064,6 +1100,110 @@ QToolTip {{
     border-radius: 4px;
     font-size: 9pt;
     font-family: {mono};
+}}
+
+/* ── Scrollbars ────────────────────────────────────────────── */
+QScrollBar:vertical {{
+    background: transparent;
+    width: 6px;
+    margin: 0px;
+}}
+
+QScrollBar::handle:vertical {{
+    background: {accent_glow};
+    min-height: 20px;
+    border-radius: 3px;
+}}
+
+QScrollBar::handle:vertical:hover {{
+    background: {accent};
+}}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+    background: transparent;
+}}
+
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent;
+}}
+
+QScrollBar:horizontal {{
+    background: transparent;
+    height: 6px;
+    margin: 0px;
+}}
+
+QScrollBar::handle:horizontal {{
+    background: {accent_glow};
+    min-width: 20px;
+    border-radius: 3px;
+}}
+
+QScrollBar::handle:horizontal:hover {{
+    background: {accent};
+}}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+    background: transparent;
+}}
+
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: transparent;
+}}
+
+/* ── HUD Toolbar ─────────────────────────────────────────── */
+#hud-toolbar {{
+    background: {bg_surface_glass};
+    border-bottom: 1px solid {border_glass};
+    padding: 6px 12px;
+}}
+
+#hud-btn {{
+    background: transparent;
+    border: 1px solid {border_glass};
+    border-radius: 4px;
+    color: {text_mid};
+    padding: 4px 10px;
+    font-size: 8.5pt;
+    font-family: {mono};
+}}
+
+#hud-btn:hover {{
+    background: {bg_raised_glass};
+    border-color: {accent};
+    color: {text_hi};
+}}
+
+#hud-btn[active="true"] {{
+    background: {sidebar_sel};
+    border-color: {accent};
+    color: {accent};
+    font-weight: bold;
+}}
+
+/* ── Settings Overlay ─────────────────────────────────────── */
+#settings-overlay {{
+    background: rgba(16, 20, 30, 0.95);
+    border: 1px solid {border_glass};
+    border-radius: 8px;
+}}
+
+#settings-overlay-header {{
+    background: {bg_raised_glass};
+    border-bottom: 1px solid {border_glass};
+    border-radius: 8px 8px 0 0;
+    padding: 6px 12px;
+    color: {accent};
+    font-size: 8.5pt;
+    font-weight: bold;
+    letter-spacing: 2px;
+    font-family: {mono};
+}}
+
+#settings-overlay QLabel {{
+    font-size: 8.5pt;
 }}
 """
 

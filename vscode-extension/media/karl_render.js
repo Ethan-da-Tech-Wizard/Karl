@@ -40,12 +40,16 @@ function removeStreamingCursor() {
 
 // Append plain text to a chat bubble's content element, keeping the cursor at
 // the very end of the text at all times so it appears to advance with output.
+// Each batch is wrapped in .token-appear for the CSS entrance animation.
 function _appendChatText(el, text) {
     if (!text) return;
     const cursor = document.getElementById('streaming-cursor');
     const cursorOwned = cursor && cursor.parentElement === el;
     if (cursorOwned) cursor.remove();
-    el.appendChild(document.createTextNode(text));
+    const span = document.createElement('span');
+    span.className = 'token-appear';
+    span.textContent = text;
+    el.appendChild(span);
     if (cursorOwned || _streamingTarget === el) {
         _streamingTarget = el;
         el.appendChild(_getOrCreateCursor());
@@ -67,6 +71,12 @@ function appendThoughtToken(token) {
     if (countEl) countEl.textContent = `~${_thoughtTokenCount.toLocaleString()} tokens`;
     const dot = $('thoughtsPulseDot');
     if (dot && !dot.classList.contains('active')) dot.classList.add('active');
+    // Mirror content to the full-view reasoning panel (Reasoning tab)
+    const fullView = $('reasoningFullView');
+    if (fullView) {
+        fullView.textContent += str;
+        fullView.scrollTop = fullView.scrollHeight;
+    }
 }
 
 function resetThoughtsPanel() {
@@ -79,6 +89,8 @@ function resetThoughtsPanel() {
     if (dot) dot.classList.remove('active');
     const box = $('introspectionBox');
     if (box) box.classList.remove('active');
+    const fullView = $('reasoningFullView');
+    if (fullView) fullView.textContent = '';
 }
 
 function finalizeThoughts() {
@@ -357,6 +369,24 @@ function addTimeline(title, detail) {
     item.className = 'timeline-item';
     item.innerHTML = `<strong>${escapeHtml(title)}</strong><br>${escapeHtml(detail)}`;
     $('timeline').prepend(item);
+    // Mirror to the Swarm Progress tab feed
+    const feed = $('swarmFeed');
+    if (feed) {
+        const placeholder = feed.querySelector('[data-swarm-empty]');
+        if (placeholder) placeholder.remove();
+        const now = new Date();
+        const t = now.toLocaleTimeString('en', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const entry = document.createElement('div');
+        entry.className = 'swarm-entry';
+        entry.innerHTML = `
+            <span class="swarm-entry-time">${escapeHtml(t)}</span>
+            <div class="swarm-entry-text">
+                <strong>${escapeHtml(title)}</strong>
+                <span>${escapeHtml(detail)}</span>
+            </div>`;
+        feed.appendChild(entry);
+        feed.scrollTop = feed.scrollHeight;
+    }
 }
 
 function log(message) {

@@ -1,11 +1,28 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>⬡ Training Studio Workspace</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Training Studio houses dataset configuration tools and the local PEFT LoRA training configurator.</p>
-        
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. SFT & DPO Dataset Exports</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Export examples in HuggingFace/Unsloth formats:</p>
+        <h2 style='color:#00C2FF; margin-top:0; border-bottom: 1px solid #1F1F3D; padding-bottom: 4px;'>⬡ Training Studio: Local Fine-Tuning</h2>
+        <p style='color:#9090A8; line-height:1.6;'>Perform hardware-accelerated LoRA and QLoRA fine-tuning on your curated datasets without leaving Karl.</p>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px; margin-top:16px;'>LoRA/QLoRA Configuration</h4>
+        <table style='width:100%; border-collapse:collapse; margin:10px 0;'>
+          <tr><th style='text-align:left; color:#00C2FF; border-bottom:1px solid #1F1F3D; padding:8px;'>Parameter</th><th style='text-align:left; color:#00C2FF; border-bottom:1px solid #1F1F3D; padding:8px;'>Description</th></tr>
+          <tr><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'><b>Rank (R)</b></td><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'>Dimension of the update matrices. Higher = more capacity, more VRAM.</td></tr>
+          <tr><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'><b>Alpha</b></td><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'>Scaling factor for LoRA updates. Typically 2x Rank.</td></tr>
+          <tr><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'><b>Learning Rate</b></td><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'>Step size for weight updates. Default: 2e-4.</td></tr>
+          <tr><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'><b>Dropout</b></td><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'>Regularization to prevent overfitting by randomly zeroing weights.</td></tr>
+        </table>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px; margin-top:16px;'>Burst & Auto-Train Pipelines</h4>
+        <p style='color:#9090A8; line-height:1.6;'>Karl provides two pathways for rapid iteration:</p>
         <ul>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>SFT (Supervised Fine-Tuning):</b> Exports single/multi-turn messages in conversational chat templates.</li>
-          <li style='color:#9090A8; margin-bottom:4px;'><b>DPO (Direct Preference Optimization):</b> Groups queries, pairing chosen and rejected examples.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Auto-Train:</b> A one-click pipeline that generates synthetic tasks, verifies them in the Docker sandbox, and trains an adapter on the fly.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Burst Train:</b> High-intensity training on small, high-quality "fixtures" to rapidly steer model behavior for specific niche tasks.</li>
         </ul>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px; margin-top:16px;'>Example Burst Fixture (<code>*.burst.py</code>)</h4>
+        <pre style='background:#050510; border:1px solid #1F1F3D; color:#A0AEC0; padding:12px; font-family:'JetBrains Mono', monospace; border-radius:4px; margin: 10px 0;'># Custom fixture for steering model towards strict JSON output
+def get_examples():
+    return [
+        {"instruction": "Parse user name", "output": "{\"name\": \"Karl\"}"},
+        {"instruction": "Extract date", "output": "{\"date\": \"2026-06-13\"}"}
+    ]</pre>
     

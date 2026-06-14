@@ -1262,3 +1262,337 @@ code {
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   HEAVENSCAPE LAYER — glassmorphic surfaces, ws-state chat border,
+   inner tabs, token animation, swarm feed, log subtabs
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── glassmorphic blur on primary surfaces ────────────────────────── */
+
+.glow-panel,
+.workspace,
+.subpanel,
+.metric,
+.chat,
+.thoughts,
+.queue-card,
+.change-card,
+.result-card,
+.model-card {
+    backdrop-filter: blur(12px) saturate(1.15);
+    -webkit-backdrop-filter: blur(12px) saturate(1.15);
+}
+
+/* Semi-transparent so the blur effect is visible through the surface */
+.glow-panel {
+    background: linear-gradient(
+        160deg,
+        color-mix(in srgb, var(--karl-panel) 80%, transparent),
+        color-mix(in srgb, var(--karl-panel) 72%, #000)
+    );
+    box-shadow:
+        0 0 0 1px rgba(0, 194, 255, 0.06),
+        0 0 10px rgba(0, 194, 255, 0.2),
+        0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.chat,
+.thoughts {
+    background: color-mix(in srgb, var(--karl-panel) 74%, transparent);
+}
+
+/* ── chat window ws-state reactive border ─────────────────────────── */
+
+.chat {
+    transition: border-color 0.45s ease, box-shadow 0.45s ease;
+}
+
+body[data-ws-state="connected"] .chat {
+    border-color: color-mix(in srgb, var(--karl-good) 52%, transparent);
+    box-shadow:
+        0 0 16px color-mix(in srgb, var(--karl-good) 14%, transparent),
+        inset 0 0 0 1px color-mix(in srgb, var(--karl-good) 10%, transparent);
+}
+
+body[data-ws-state="generating"] .chat {
+    border-color: color-mix(in srgb, var(--karl-warn) 72%, transparent);
+    animation: chat-gen-pulse 1.5s ease-in-out infinite;
+}
+
+body[data-ws-state="offline"] .chat,
+body[data-ws-state="error"] .chat {
+    border-color: color-mix(in srgb, var(--karl-danger) 35%, transparent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--karl-danger) 8%, transparent);
+}
+
+body[data-ws-state="connecting"] .chat {
+    border-color: color-mix(in srgb, var(--karl-warn) 40%, transparent);
+}
+
+@keyframes chat-gen-pulse {
+    0%, 100% {
+        box-shadow:
+            0 0 16px color-mix(in srgb, var(--karl-warn) 16%, transparent),
+            inset 0 0 0 1px color-mix(in srgb, var(--karl-warn) 12%, transparent);
+    }
+    50% {
+        box-shadow:
+            0 0 28px color-mix(in srgb, var(--karl-warn) 38%, transparent),
+            inset 0 0 0 1px color-mix(in srgb, var(--karl-warn) 22%, transparent);
+    }
+}
+
+/* ── token stream entrance animation ──────────────────────────────── */
+
+@keyframes token-in {
+    from { opacity: 0; transform: translateY(2px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.token-appear {
+    display: inline;
+    animation: token-in 0.085s ease-out both;
+}
+
+body[data-motion="reduced"] .token-appear {
+    animation: none;
+}
+
+/* ── inner chat tab bar ────────────────────────────────────────────── */
+
+.chat-inner-tabs {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 8px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid color-mix(in srgb, var(--karl-border) 38%, transparent);
+    flex-wrap: wrap;
+}
+
+.chat-inner-tab {
+    min-height: 23px;
+    padding: 2px 10px;
+    font-size: 10px;
+    border-radius: 5px;
+    font-weight: 700;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease,
+                background 0.18s ease, color 0.18s ease;
+}
+
+.chat-inner-tab.active {
+    color: #00131c;
+    background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--karl-accent) 58%, #fff),
+        var(--karl-accent)
+    );
+    border-color: color-mix(in srgb, var(--karl-accent) 48%, #fff);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--karl-accent) 26%, transparent);
+}
+
+/* Thoughts visibility toggle — sits at the right of the inner tab bar */
+.chat-toggle {
+    margin-left: auto;
+    min-height: 22px;
+    padding: 1px 8px;
+    font-size: 9px;
+    border-radius: 5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    opacity: 0.58;
+    transition: opacity 0.2s, box-shadow 0.2s, border-color 0.2s;
+}
+
+.chat-toggle.active {
+    opacity: 1;
+    border-color: color-mix(in srgb, var(--karl-accent) 55%, transparent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--karl-accent) 20%, transparent);
+}
+
+/* Panel switching */
+.chat-tab-panel {
+    display: none;
+}
+
+.chat-tab-panel.active {
+    display: block;
+}
+
+/* ── reasoning full-view panel ─────────────────────────────────────── */
+
+.reasoning-full {
+    max-height: 400px;
+    min-height: 80px;
+    overflow: auto;
+    padding: 10px;
+    margin: 0;
+    color: var(--karl-accent-2);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    border-radius: var(--karl-radius);
+    background: color-mix(in srgb, var(--karl-panel) 78%, transparent);
+    border: 1px solid color-mix(in srgb, var(--karl-accent) 18%, transparent);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+/* ── swarm progress feed ───────────────────────────────────────────── */
+
+.swarm-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 4px 0;
+    max-height: 340px;
+    overflow-y: auto;
+}
+
+.swarm-entry {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 8px;
+    align-items: baseline;
+    padding: 5px 8px;
+    border-left: 2px solid var(--karl-accent);
+    background: color-mix(in srgb, var(--karl-accent) 6%, transparent);
+    border-radius: 0 5px 5px 0;
+    animation: token-in 0.14s ease-out both;
+}
+
+.swarm-entry-time {
+    color: var(--karl-muted);
+    font-size: 8px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    padding-top: 2px;
+}
+
+.swarm-entry-text strong {
+    display: block;
+    color: var(--karl-accent-2);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.swarm-entry-text span {
+    color: var(--karl-muted);
+    font-size: 10px;
+    line-height: 1.4;
+}
+
+/* ── log subtabs (inside Logs workspace) ───────────────────────────── */
+
+.log-subtabs {
+    display: flex;
+    gap: 5px;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid color-mix(in srgb, var(--karl-border) 32%, transparent);
+}
+
+.log-subtab {
+    min-height: 22px;
+    padding: 2px 10px;
+    font-size: 10px;
+    border-radius: 5px;
+    font-weight: 700;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease,
+                background 0.18s ease, color 0.18s ease;
+}
+
+.log-subtab.active {
+    color: #00131c;
+    background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--karl-accent) 58%, #fff),
+        var(--karl-accent)
+    );
+    border-color: color-mix(in srgb, var(--karl-accent) 48%, #fff);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--karl-accent) 22%, transparent);
+}
+
+.log-panel {
+    display: none;
+}
+
+.log-panel.active {
+    display: block;
+}
+
+/* ── button & tab hover/focus transitions ──────────────────────────── */
+
+button,
+.tab,
+.chat-inner-tab,
+.log-subtab,
+.subtab {
+    transition: border-color 0.18s ease, box-shadow 0.18s ease,
+                background 0.18s ease, color 0.18s ease, opacity 0.18s ease;
+}
+
+/* ── message role tag — vibrant HSL accents ────────────────────────── */
+
+.message-role {
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-bottom: 4px;
+    background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--karl-accent) 14%, transparent),
+        transparent 80%
+    );
+}
+
+.message.user .message-role {
+    color: hsl(198, 100%, 70%);
+}
+
+.message.assistant .message-role {
+    color: hsl(160, 78%, 62%);
+}
+
+/* ── chat bubble hover polish ──────────────────────────────────────── */
+
+.message {
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.message.assistant:hover {
+    background: color-mix(in srgb, var(--vscode-editor-foreground, #fff) 6%, transparent);
+    border-color: color-mix(in srgb, var(--karl-accent-2) 28%, transparent);
+}
+
+/* ── thoughts smooth cubic collapse ───────────────────────────────── */
+
+.thoughts-body {
+    transition:
+        max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+        padding    0.3s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity    0.25s ease;
+}
+
+/* ── quick-action hover glow ───────────────────────────────────────── */
+
+.quick-action:hover {
+    background: color-mix(in srgb, var(--karl-accent) 14%, var(--vscode-button-secondaryBackground, #243241));
+    box-shadow: 0 0 14px color-mix(in srgb, var(--karl-accent) 18%, transparent);
+}
+
+/* ── source-item selection highlight ───────────────────────────────── */
+
+.source-item {
+    transition: background 0.15s ease;
+}
+
+/* ── task-item border entrance ─────────────────────────────────────── */
+
+.task-item,
+.recent-item {
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+

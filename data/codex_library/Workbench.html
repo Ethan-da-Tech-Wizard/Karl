@@ -1,13 +1,31 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>◈ Workbench Workspace</h2>
-        <p style='color:#9090A8; line-height:1.4;'>The Workbench is Karl's command center. It features a responsive triple-pane layout: Sessions (Left), Live Reasoning Thought Stream (Center), and Chat Interface (Right).</p>
+        <h2 style='color:#00C2FF; margin-top:0; border-bottom: 1px solid #1F1F3D; padding-bottom: 4px;'>◈ Workbench: Primary Interaction Space</h2>
+        <p style='color:#9090A8; line-height:1.6;'>The Workbench is Karl's central nervous system, providing a high-bandwidth interface for local LLM introspection and generation.</p>
         
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. Live Reasoning Thought Stream</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>DeepSeek-R1 models reason step-by-step. To ensure the model enters reasoning mode, Karl pre-seeds the assistant prompt with a <code>&lt;think&gt;\n</code> tag. Reasoning tokens stream in real time to the Center panel. Upon detecting the closing <code>&lt;/think&gt;</code> tag, Karl switches routing, sending the final answer to the Right chat panel.</p>
-        
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. Parameters Drawer</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Click the chevron next to the user input bar to collapse/expand the parameters drawer. Here, you can adjust hyperparameters (Temperature, Top-P, Max Tokens), enable/disable RAG context retrieval, toggle multi-pass agentic loops, and select model/adapter combinations on the fly.</p>
-        
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>3. Conversation Branching Tree</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Karl represents chat history as a tree rather than a flat list. Every message bubble has a <b>branch</b> link. Clicking it lets you fork the conversation from that exact message, allowing you to explore alternate prompting paths. You can switch between branches using the <b>Branches Tree</b> widget on the Left panel.</p>
+        <h4 style='color:#E4E4F0; margin-bottom:4px; margin-top:16px;'>Toggleable HUD Panels</h4>
+        <p style='color:#9090A8; line-height:1.6;'>Customize your concentration by toggling various workspace elements. Hiding HUD panels creates a decluttered, "Focused" environment for deep work.</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Sessions Panel (Dock):</b> Manage your conversation history tree. Quickly jump between alternate generation paths or rename session branches.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Reasoning Log (Dock):</b> Dedicated real-time stream for the model's <code>&lt;think&gt;</code> blocks. See the raw logic before the final answer arrives.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>RAG Attribution View:</b> When Knowledge Base is active, this view shows exactly which document chunks were injected into the prompt context.</li>
+        </ul>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px; margin-top:16px;'>Keyboard Shortcuts</h4>
+        <table style='width:100%; border-collapse:collapse; margin:10px 0;'>
+          <tr><th style='text-align:left; color:#00C2FF; border-bottom:1px solid #1F1F3D; padding:8px;'>Shortcut</th><th style='text-align:left; color:#00C2FF; border-bottom:1px solid #1F1F3D; padding:8px;'>Action</th></tr>
+          <tr><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'><code style='color:#00C2FF; background:#10101C; padding:2px 4px; border-radius:3px;'>Ctrl+Return</code></td><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'>Submit current prompt to model</td></tr>
+          <tr><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'><code style='color:#00C2FF; background:#10101C; padding:2px 4px; border-radius:3px;'>Ctrl+L</code></td><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'>Focus active input field</td></tr>
+          <tr><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'><code style='color:#00C2FF; background:#10101C; padding:2px 4px; border-radius:3px;'>Ctrl+Shift+N</code></td><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'>Create new session branch</td></tr>
+          <tr><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'><code style='color:#00C2FF; background:#10101C; padding:2px 4px; border-radius:3px;'>Ctrl+Shift+S</code></td><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'>Save session snapshot to disk</td></tr>
+          <tr><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'><code style='color:#00C2FF; background:#10101C; padding:2px 4px; border-radius:3px;'>Ctrl+K</code> / <code style='color:#00C2FF; background:#10101C; padding:2px 4px; border-radius:3px;'>Ctrl+P</code></td><td style='padding:8px; border-bottom:1px solid #10101C; color:#9090A8;'>Open Command Palette</td></tr>
+        </table>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px; margin-top:16px;'>Settings & Parameters</h4>
+        <p style='color:#9090A8; line-height:1.6;'>The settings drawer allows granular control over the generation engine:</p>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Temperature:</b> Controls randomness. 0.0 is deterministic, 1.0 is creative.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Top-P:</b> Nucleus sampling threshold. Filters low-probability tokens.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Max Tokens:</b> Hard limit on generation length per turn.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Feedback Curation:</b> Use the 👍/👎/✎ buttons to rate responses. Thumbs up saves to SFT curator; Thumbs down for DPO; Correct (✎) saves the user's manual fix as the new ground truth.</li>
+        </ul>
     

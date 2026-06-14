@@ -2,6 +2,9 @@ window.addEventListener('DOMContentLoaded', () => {
     initializeAppearance();
     hydrate();
     _initThoughtsPanel();
+    _initChatInnerTabs();
+    _initLogsSubtabs();
+    _initWsStateObserver();
     bindEvents();
     renderQuickActions();
     renderRecentTasks();
@@ -553,6 +556,7 @@ function sendChatMessage() {
     $('chatInput').dataset.lastSent = $('chatInput').value;
     input.value = '';
     chatFinished = false;
+    document.body.dataset.wsState = 'generating';
     $('chatSendBtn').disabled = true;
     // Reset the reasoning panel for this new generation
     resetThoughtsPanel();
@@ -606,6 +610,12 @@ function handleChatFinished() {
     finalizeThoughts();
     chatFinished = true;
     $('chatSendBtn').disabled = false;
+    // Restore ws-state indicator (use statusDot class as source of truth)
+    const _dot = $('statusDot');
+    if (_dot) {
+        const _st = [..._dot.classList].find(c => c !== 'status-dot') || 'connected';
+        document.body.dataset.wsState = _st;
+    }
     const lastAssistant = $('chatMessages').querySelector('.message.assistant:last-child .message-content');
     recordConversationTurn(currentConversationInput, lastAssistant ? lastAssistant.innerText : '');
     currentConversationInput = '';
@@ -927,4 +937,177 @@ function hyperparams() {
         rag_top_k: Number($('kbTopK').value) || 5,
         rag_threshold: Number($('kbThreshold').value) || 0
     };
+}
+
+// ── WS-state MutationObserver ─────────────────────────────────────────────────
+// Watches #statusDot className changes and mirrors the state to
+// body.dataset.wsState so CSS can drive the chat-border animation.
+function _initWsStateObserver() {
+    const dot = $('statusDot');
+    if (!dot) return;
+    function _sync() {
+        const state = [...dot.classList].find(c => c !== 'status-dot') || 'offline';
+        if (document.body.dataset.wsState !== 'generating') {
+            document.body.dataset.wsState = state;
+        }
+    }
+    _sync();
+    new MutationObserver(_sync).observe(dot, { attributes: true, attributeFilter: ['class'] });
+}
+
+// ── Chat workspace inner tabs ─────────────────────────────────────────────────
+// Injects a 3-tab sub-layout (Chat / Reasoning / Swarm) inside #workspace-chat.
+// Runs after _initThoughtsPanel() so #introspectionBox already has its header.
+function _initChatInnerTabs() {
+    const chatSection = $('workspace-chat');
+    if (!chatSection || chatSection.dataset.innerTabsReady) return;
+    chatSection.dataset.innerTabsReady = '1';
+
+    const thoughtsBox  = $('introspectionBox');
+    const chatMessages = $('chatMessages');
+    const composer     = chatSection.querySelector('.composer');
+    const sectionHead  = chatSection.querySelector('.section-head');
+    if (!thoughtsBox || !chatMessages || !composer) return;
+
+    // ── Tab bar ────────────────────────────────────────────────────────────────
+    const tabBar = document.createElement('div');
+    tabBar.className = 'chat-inner-tabs';
+    tabBar.innerHTML = `
+        <button class="chat-inner-tab active" data-inner-tab="chatPanel">Chat</button>
+        <button class="chat-inner-tab" data-inner-tab="reasoningPanel">Reasoning</button>
+        <button class="chat-inner-tab" data-inner-tab="swarmPanel">Swarm</button>
+        <button class="chat-toggle active" id="thoughtsVisToggle" title="Show / hide inline thought stream">◈ Thoughts</button>
+    `;
+
+    // ── Panel 1: chat messages + composer ─────────────────────────────────────
+    const chatPanel = document.createElement('div');
+    chatPanel.id = 'chatPanel';
+    chatPanel.className = 'chat-tab-panel active';
+    chatPanel.appendChild(thoughtsBox);
+    chatPanel.appendChild(chatMessages);
+    chatPanel.appendChild(composer);
+
+    // ── Panel 2: full reasoning view ──────────────────────────────────────────
+    const reasoningPanel = document.createElement('div');
+    reasoningPanel.id = 'reasoningPanel';
+    reasoningPanel.className = 'chat-tab-panel';
+    reasoningPanel.innerHTML = `
+        <div style="margin-bottom:8px;">
+            <div class="eyebrow">Full Reasoning Stream</div>
+            <div style="color:var(--karl-muted);font-size:10px;margin-top:3px;">Complete thought stream — updated live during generation</div>
+        </div>
+        <pre id="reasoningFullView" class="reasoning-full">No reasoning yet. Start a chat to see thoughts here.</pre>
+    `;
+
+    // ── Panel 3: swarm progress feed ──────────────────────────────────────────
+    const swarmPanel = document.createElement('div');
+    swarmPanel.id = 'swarmPanel';
+    swarmPanel.className = 'chat-tab-panel';
+    swarmPanel.innerHTML = `
+        <div style="margin-bottom:8px;">
+            <div class="eyebrow">Swarm Progress Feed</div>
+            <div style="color:var(--karl-muted);font-size:10px;margin-top:3px;">Real-time agent execution timeline</div>
+        </div>
+        <div id="swarmFeed" class="swarm-feed">
+            <div style="color:var(--karl-muted);padding:8px;font-size:11px;" data-swarm-empty>No swarm activity yet.</div>
+        </div>
+    `;
+
+    // Insert all panels right after the section-head
+    if (sectionHead) {
+        sectionHead.after(tabBar, chatPanel, reasoningPanel, swarmPanel);
+    } else {
+        chatSection.prepend(swarmPanel, reasoningPanel, chatPanel, tabBar);
+    }
+
+    // ── Tab switching ──────────────────────────────────────────────────────────
+    tabBar.querySelectorAll('.chat-inner-tab').forEach(btn => {
+        btn.addEventListener('click', () => _switchChatInnerTab(btn.dataset.innerTab));
+    });
+
+    // ── Thoughts inline visibility toggle ─────────────────────────────────────
+    const toggleBtn = $('thoughtsVisToggle');
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
+            const hidden = thoughtsBox.style.display === 'none';
+            thoughtsBox.style.display = hidden ? '' : 'none';
+            toggleBtn.classList.toggle('active', hidden);
+        });
+    }
+}
+
+function _switchChatInnerTab(panelId) {
+    const panels = ['chatPanel', 'reasoningPanel', 'swarmPanel'];
+    panels.forEach(id => {
+        const el = $(id);
+        if (el) el.classList.toggle('active', el.id === panelId);
+    });
+    const chatSection = $('workspace-chat');
+    if (chatSection) {
+        chatSection.querySelectorAll('.chat-inner-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.innerTab === panelId);
+        });
+    }
+}
+
+// ── Logs workspace subtabs ────────────────────────────────────────────────────
+// Adds three subtabs (Swarm / Training / Eval) inside #workspace-logs,
+// wrapping the existing #terminal, #trainingLog, #evalLog into panels.
+function _initLogsSubtabs() {
+    const logsSection = $('workspace-logs');
+    if (!logsSection || logsSection.dataset.logsSubtabsReady) return;
+    logsSection.dataset.logsSubtabsReady = '1';
+
+    const terminal    = $('terminal');
+    const trainingLog = $('trainingLog');
+    const evalLog     = $('evalLog');
+    const actionRow   = logsSection.querySelector('.action-row');
+    const sectionHead = logsSection.querySelector('.section-head');
+    if (!terminal || !trainingLog || !evalLog) return;
+
+    // Remove orphaned eyebrow labels that belonged to trainingLog / evalLog
+    logsSection.querySelectorAll(':scope > .eyebrow').forEach(el => el.remove());
+
+    // ── Subtab bar ────────────────────────────────────────────────────────────
+    const subtabBar = document.createElement('div');
+    subtabBar.className = 'log-subtabs';
+    subtabBar.innerHTML = `
+        <button class="log-subtab active" data-log-panel="swarmLogPanel">Swarm</button>
+        <button class="log-subtab"        data-log-panel="trainingLogPanel">Training</button>
+        <button class="log-subtab"        data-log-panel="evalLogPanel">Eval</button>
+    `;
+
+    // ── Panels ────────────────────────────────────────────────────────────────
+    const swarmLogPanel = document.createElement('div');
+    swarmLogPanel.id = 'swarmLogPanel';
+    swarmLogPanel.className = 'log-panel active';
+    swarmLogPanel.appendChild(terminal);
+
+    const trainingLogPanel = document.createElement('div');
+    trainingLogPanel.id = 'trainingLogPanel';
+    trainingLogPanel.className = 'log-panel';
+    trainingLogPanel.appendChild(trainingLog);
+
+    const evalLogPanel = document.createElement('div');
+    evalLogPanel.id = 'evalLogPanel';
+    evalLogPanel.className = 'log-panel';
+    evalLogPanel.appendChild(evalLog);
+
+    // Insert after action-row (or section-head as fallback)
+    const insertRef = actionRow || sectionHead;
+    if (insertRef) {
+        insertRef.after(subtabBar, swarmLogPanel, trainingLogPanel, evalLogPanel);
+    }
+
+    // ── Tab switching ─────────────────────────────────────────────────────────
+    subtabBar.querySelectorAll('.log-subtab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            subtabBar.querySelectorAll('.log-subtab').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            ['swarmLogPanel', 'trainingLogPanel', 'evalLogPanel'].forEach(id => {
+                const el = $(id);
+                if (el) el.classList.toggle('active', el.id === btn.dataset.logPanel);
+            });
+        });
+    });
 }

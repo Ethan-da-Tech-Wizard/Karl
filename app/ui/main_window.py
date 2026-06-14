@@ -100,6 +100,22 @@ class MainWindow(QMainWindow):
         self._save_session_shortcut = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
         self._save_session_shortcut.activated.connect(self._workbench._save_current_session)
 
+        # Heavenscape HUD Toggle Shortcuts
+        self._hud_toggle_all_shortcut = QShortcut(QKeySequence("Ctrl+H"), self)
+        self._hud_toggle_all_shortcut.activated.connect(self._workbench._toggle_all_huds)
+
+        self._hud_reasoning_shortcut = QShortcut(QKeySequence("Ctrl+Shift+R"), self)
+        self._hud_reasoning_shortcut.activated.connect(self._workbench._toggle_reasoning)
+
+        self._hud_sessions_shortcut = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
+        self._hud_sessions_shortcut.activated.connect(self._workbench._toggle_sessions)
+
+        self._hud_rag_shortcut = QShortcut(QKeySequence("Ctrl+Shift+G"), self)
+        self._hud_rag_shortcut.activated.connect(self._workbench._toggle_rag_hud)
+
+        self._hud_context_shortcut = QShortcut(QKeySequence("Ctrl+Shift+B"), self)
+        self._hud_context_shortcut.activated.connect(self._workbench._toggle_context_hud)
+
     def _make_workspace_switcher(self, idx):
         return lambda: self._sidebar.select(idx)
 
@@ -217,6 +233,14 @@ class MainWindow(QMainWindow):
 
     def _on_status_changed(self, text: str, active: bool):
         self._status_bar.set_state(text, active)
+        state = "idle"
+        if text == "error":
+            state = "error"
+        elif active:
+            state = "generating"
+        self.setProperty("modelState", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def _on_adapter_changed(self, name: str):
         self._state.adapter_name = name if name else None

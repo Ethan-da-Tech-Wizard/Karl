@@ -22,9 +22,9 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QSpinBox, QListWidget, QListWidgetItem,
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
     QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox, QColorDialog,
-    QApplication, QProgressBar,
+    QApplication, QProgressBar, QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QRect, QPropertyAnimation
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
 
 
@@ -104,7 +104,24 @@ class WorkbenchWorkspace(QMainWindow):
         self._pending_generation_history: list[dict] | None = None
         self._image_threads = set()
 
+        self.setProperty("modelState", "idle")
+        self._settings_overlay = None
+
         self._build_ui()
+
+        # Set up dynamic glow effects & pulse timer
+        self._setup_glow_effects()
+        self._glow_timer = QTimer(self)
+        self._glow_timer.timeout.connect(self._update_glow_pulse)
+        self._glow_val = 0.0
+        self._glow_dir = 1
+        if getattr(self.state, "reduced_motion", False):
+            self._glow_timer.stop()
+        else:
+            self._glow_timer.start(50)
+
+        # Intercept setHtml for chat bubble fade-in animations
+        self._setup_chat_animations()
         
         # Initialize dynamic chat bubble colors from theme config
         from app.ui.themes import get_theme_colors
@@ -157,6 +174,12 @@ class WorkbenchWorkspace(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._sessions_dock)
         self.splitDockWidget(self._sessions_dock, self._reasoning_dock, Qt.Orientation.Horizontal)
         self.resizeDocks([self._sessions_dock, self._reasoning_dock], [200, 280], Qt.Orientation.Horizontal)
+
+        # Build settings overlay (this creates all hyperparam and feedback buttons)
+        self._build_settings_overlay()
+        
+        # Populate HUD views toolbar
+        self._populate_hud_toolbar()
 
     def _build_sessions_panel(self) -> QWidget:
         tabs = QTabWidget()
@@ -245,55 +268,15 @@ class WorkbenchWorkspace(QMainWindow):
         self._command_header = self._build_command_header()
         layout.addWidget(self._command_header)
 
+        # HUD Toolbar placeholder (populated at the end of _build_ui)
+        self._hud_toolbar = QFrame()
+        self._hud_toolbar.setObjectName("hud-toolbar")
+        layout.addWidget(self._hud_toolbar)
+
         # chat display
         self._chat_view = ChatView(w)
         self._chat_view.anchorClicked.connect(self._on_chat_link_clicked)
         layout.addWidget(self._chat_view, 1)
-
-        layout.addWidget(_hline())
-
-        # feedback row (shown after each generation)
-        feedback_row = QWidget()
-        feedback_row.setFixedHeight(32)
-        fb_layout = QHBoxLayout(feedback_row)
-        fb_layout.setContentsMargins(10, 2, 10, 2)
-        fb_layout.setSpacing(8)
-        fb_layout.addStretch()
-
-        self._thumb_btn = QPushButton("✓ good")
-        self._thumb_btn.setObjectName("btn-success")
-        self._thumb_btn.setEnabled(False)
-        self._thumb_btn.setToolTip("Curate this response as a positive training example")
-        self._thumb_btn.clicked.connect(self._on_thumb_up)
-
-        self._thumb_down_btn = QPushButton("✗ bad")
-        self._thumb_down_btn.setObjectName("btn-danger")
-        self._thumb_down_btn.setEnabled(False)
-        self._thumb_down_btn.setToolTip("Flag this response as an incorrect/negative training example")
-        self._thumb_down_btn.clicked.connect(self._on_thumb_down)
-
-        self._correct_btn = QPushButton("✎ correct")
-        self._correct_btn.setObjectName("btn-warning")
-        self._correct_btn.setEnabled(False)
-        self._correct_btn.setToolTip("Manually edit the response to create a corrected training pair")
-        self._correct_btn.clicked.connect(self._on_correct)
-
-        self._new_session_btn = QPushButton("+ new session")
-        self._new_session_btn.setObjectName("btn-ghost")
-        self._new_session_btn.setToolTip("Clear chat history and start a fresh session")
-        self._new_session_btn.clicked.connect(self._new_session)
-
-        for b in (self._thumb_btn, self._thumb_down_btn, self._correct_btn, self._new_session_btn):
-            fb_layout.addWidget(b)
-
-        layout.addWidget(feedback_row)
-        layout.addWidget(_hline())
-
-        # params drawer (collapsed by default)
-        self._params_drawer = self._build_params_drawer()
-        self._params_drawer.setVisible(False)
-        layout.addWidget(self._params_drawer)
-        layout.addWidget(_hline())
 
         # Hot-reload notice banner (hidden until a generation triggers a reload)
         self._reload_notice = QLabel("")
@@ -333,8 +316,8 @@ class WorkbenchWorkspace(QMainWindow):
         ic_layout.setSpacing(6)
 
         # Token Budget HUD
-        token_row = QWidget()
-        token_layout = QHBoxLayout(token_row)
+        self._token_row = QWidget()
+        token_layout = QHBoxLayout(self._token_row)
         token_layout.setContentsMargins(0, 0, 0, 0)
         token_layout.setSpacing(8)
 
@@ -356,7 +339,7 @@ class WorkbenchWorkspace(QMainWindow):
         token_layout.addWidget(self._token_lbl)
         token_layout.addWidget(self._token_remaining_lbl)
 
-        ic_layout.addWidget(token_row)
+        ic_layout.addWidget(self._token_row)
 
         self._input = QTextEdit()
         self._input.setPlaceholderText("Ask Karl...")
@@ -376,7 +359,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._workflow_combo.setToolTip("Active prompt generation workflow template")
         for name, label in list_workflows():
             self._workflow_combo.addItem(label, name)
-        # Select "general_chat" by default (rather than alphabetically first "code_review")
+        # Select "general_chat" by default
         default_idx = self._workflow_combo.findData("general_chat")
         if default_idx >= 0:
             self._workflow_combo.setCurrentIndex(default_idx)
@@ -402,9 +385,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._loop_check.toggled.connect(self._update_expert_strip)
         ctrl_layout.addWidget(self._loop_check)
 
-
-        self._params_toggle = IconBtn(GearIcon, self.state, tooltip="Toggle generation parameters")
-        self._params_toggle.clicked.connect(self._toggle_params)
+        self._params_toggle = IconBtn(GearIcon, self.state, tooltip="Toggle Settings drawer")
+        self._params_toggle.clicked.connect(self._toggle_settings_overlay)
         ctrl_layout.addWidget(self._params_toggle)
 
         self._sessions_toggle = IconBtn(HamburgerIcon, self.state, tooltip="Toggle Sessions panel")
@@ -439,6 +421,7 @@ class WorkbenchWorkspace(QMainWindow):
         layout.addWidget(input_container)
 
         return w
+
 
     def _build_command_header(self) -> QWidget:
         header = QFrame()
@@ -517,60 +500,352 @@ class WorkbenchWorkspace(QMainWindow):
         return header
 
 
-    def _build_params_drawer(self) -> QWidget:
-        drawer = QWidget()
-        drawer.setFixedHeight(40)
-        dl = QHBoxLayout(drawer)
-        dl.setContentsMargins(10, 4, 10, 4)
-        dl.setSpacing(12)
-
-        # Model Selector
-        dl.addWidget(_label("model", "lbl-muted"))
+    def _build_settings_overlay(self):
+        self._settings_overlay = QFrame(self._chat_panel)
+        self._settings_overlay.setObjectName("settings-overlay")
+        self._settings_overlay.setVisible(False)
+        
+        state = self.property("modelState") or "idle"
+        self._settings_overlay.setProperty("modelState", state)
+        
+        layout = QVBoxLayout(self._settings_overlay)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+        
+        hdr = QLabel("CONTROL CENTER")
+        hdr.setObjectName("settings-overlay-header")
+        layout.addWidget(hdr)
+        
+        params_grp = QWidget()
+        pl = QVBoxLayout(params_grp)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(6)
+        
+        pl.addWidget(_label("Active Model", "lbl-muted"))
         self._model_combo = QComboBox()
-        self._model_combo.setFixedWidth(180)
         self._model_combo.setToolTip("Select active model and adapter overlay")
         self._model_combo.currentIndexChanged.connect(self._on_model_selected)
-        dl.addWidget(self._model_combo)
-
-        # Temperature
-        dl.addWidget(_label("temp", "lbl-muted"))
+        pl.addWidget(self._model_combo)
+        
+        pl.addWidget(_label("Temperature", "lbl-muted"))
         self._temp_spin = QDoubleSpinBox()
         self._temp_spin.setRange(0.0, 2.0)
         self._temp_spin.setSingleStep(0.05)
         self._temp_spin.setValue(self._hyperparams["temperature"])
-        self._temp_spin.setFixedWidth(70)
-        self._temp_spin.setToolTip("Generation temperature. Lower is more deterministic, higher is more creative.")
+        self._temp_spin.setToolTip("Generation temperature. Lower is deterministic, higher is creative.")
         self._temp_spin.valueChanged.connect(
             lambda v: self._hyperparams.__setitem__("temperature", v)
         )
-        dl.addWidget(self._temp_spin)
-
-        # Top-p
-        dl.addWidget(_label("top-p", "lbl-muted"))
+        pl.addWidget(self._temp_spin)
+        
+        pl.addWidget(_label("Top-P", "lbl-muted"))
         self._topp_spin = QDoubleSpinBox()
         self._topp_spin.setRange(0.0, 1.0)
         self._topp_spin.setSingleStep(0.05)
         self._topp_spin.setValue(self._hyperparams["top_p"])
-        self._topp_spin.setFixedWidth(70)
-        self._topp_spin.setToolTip("Top-p sampling cutoff. Keeps only tokens within this cumulative probability mass.")
+        self._topp_spin.setToolTip("Top-p sampling cutoff.")
         self._topp_spin.valueChanged.connect(
             lambda v: self._hyperparams.__setitem__("top_p", v)
         )
-        dl.addWidget(self._topp_spin)
-
-        # Max tokens
-        dl.addWidget(_label("max tok", "lbl-muted"))
+        pl.addWidget(self._topp_spin)
+        
+        pl.addWidget(_label("Max Tokens", "lbl-muted"))
         self._maxtok_spin = QSpinBox()
         self._maxtok_spin.setRange(64, 8192)
         self._maxtok_spin.setSingleStep(64)
         self._maxtok_spin.setValue(self._hyperparams["max_tokens"])
-        self._maxtok_spin.setFixedWidth(80)
         self._maxtok_spin.setToolTip("Maximum number of tokens to generate.")
         self._maxtok_spin.valueChanged.connect(self._on_max_tokens_changed)
-        dl.addWidget(self._maxtok_spin)
+        pl.addWidget(self._maxtok_spin)
+        
+        layout.addWidget(params_grp)
+        layout.addWidget(_hline())
+        
+        fb_grp = QWidget()
+        fbl = QVBoxLayout(fb_grp)
+        fbl.setContentsMargins(0, 0, 0, 0)
+        fbl.setSpacing(8)
+        
+        fbl.addWidget(_label("Actions & Feedback", "lbl-muted"))
+        
+        self._thumb_btn = QPushButton("✓ Good")
+        self._thumb_btn.setObjectName("btn-success")
+        self._thumb_btn.setEnabled(False)
+        self._thumb_btn.setToolTip("Curate this response as a positive training example")
+        self._thumb_btn.clicked.connect(self._on_thumb_up)
+        fbl.addWidget(self._thumb_btn)
+        
+        self._thumb_down_btn = QPushButton("✗ Bad")
+        self._thumb_down_btn.setObjectName("btn-danger")
+        self._thumb_down_btn.setEnabled(False)
+        self._thumb_down_btn.setToolTip("Flag this response as an incorrect training example")
+        self._thumb_down_btn.clicked.connect(self._on_thumb_down)
+        fbl.addWidget(self._thumb_down_btn)
+        
+        self._correct_btn = QPushButton("✎ Correct")
+        self._correct_btn.setObjectName("btn-warning")
+        self._correct_btn.setEnabled(False)
+        self._correct_btn.setToolTip("Manually edit response to create corrected pair")
+        self._correct_btn.clicked.connect(self._on_correct)
+        fbl.addWidget(self._correct_btn)
+        
+        self._new_session_btn = QPushButton("+ New Session")
+        self._new_session_btn.setObjectName("btn-ghost")
+        self._new_session_btn.clicked.connect(self._new_session)
+        fbl.addWidget(self._new_session_btn)
+        
+        layout.addWidget(fb_grp)
+        layout.addStretch()
 
-        dl.addStretch()
-        return drawer
+    def _toggle_settings_overlay(self):
+        if not hasattr(self, "_settings_overlay") or self._settings_overlay is None:
+            self._build_settings_overlay()
+            
+        visible = not self._settings_overlay.isVisible()
+        
+        if visible:
+            self._settings_overlay.show()
+            self._settings_overlay.raise_()
+            
+            parent_width = self._chat_panel.width()
+            parent_height = self._chat_panel.height()
+            overlay_width = 300
+            
+            start_rect = QRect(parent_width, 0, overlay_width, parent_height)
+            end_rect = QRect(parent_width - overlay_width, 0, overlay_width, parent_height)
+            
+            self._settings_overlay.setGeometry(start_rect)
+            
+            if not getattr(self.state, "reduced_motion", False):
+                self._settings_anim = QPropertyAnimation(self._settings_overlay, b"geometry")
+                self._settings_anim.setDuration(250)
+                self._settings_anim.setStartValue(start_rect)
+                self._settings_anim.setEndValue(end_rect)
+                self._settings_anim.start()
+            else:
+                self._settings_overlay.setGeometry(end_rect)
+        else:
+            parent_width = self._chat_panel.width()
+            parent_height = self._chat_panel.height()
+            overlay_width = 300
+            
+            start_rect = self._settings_overlay.geometry()
+            end_rect = QRect(parent_width, 0, overlay_width, parent_height)
+            
+            if not getattr(self.state, "reduced_motion", False):
+                self._settings_anim = QPropertyAnimation(self._settings_overlay, b"geometry")
+                self._settings_anim.setDuration(200)
+                self._settings_anim.setStartValue(start_rect)
+                self._settings_anim.setEndValue(end_rect)
+                self._settings_anim.finished.connect(self._settings_overlay.hide)
+                self._settings_anim.start()
+            else:
+                self._settings_overlay.setGeometry(end_rect)
+                self._settings_overlay.hide()
+                
+        self._update_hud_btn_styles()
+
+    def _setup_glow_effects(self):
+        self._sessions_shadow = QGraphicsDropShadowEffect(self)
+        self._sessions_shadow.setBlurRadius(15)
+        self._sessions_shadow.setXOffset(0)
+        self._sessions_shadow.setYOffset(0)
+        self._sessions_dock.setGraphicsEffect(self._sessions_shadow)
+
+        self._reasoning_shadow = QGraphicsDropShadowEffect(self)
+        self._reasoning_shadow.setBlurRadius(15)
+        self._reasoning_shadow.setXOffset(0)
+        self._reasoning_shadow.setYOffset(0)
+        self._reasoning_dock.setGraphicsEffect(self._reasoning_shadow)
+
+        self._chat_shadow = QGraphicsDropShadowEffect(self)
+        self._chat_shadow.setBlurRadius(15)
+        self._chat_shadow.setXOffset(0)
+        self._chat_shadow.setYOffset(0)
+        self._chat_panel.setGraphicsEffect(self._chat_shadow)
+
+    def _update_glow_pulse(self):
+        if getattr(self.state, "reduced_motion", False):
+            self._glow_val = 0.7
+        else:
+            self._glow_val += 0.05 * self._glow_dir
+            if self._glow_val >= 1.0:
+                self._glow_val = 1.0
+                self._glow_dir = -1
+            elif self._glow_val <= 0.3:
+                self._glow_val = 0.3
+                self._glow_dir = 1
+
+        state = self.property("modelState") or "idle"
+        
+        if state == "generating":
+            r = 255
+            g = int(140 * (1.0 - self._glow_val))
+            b = int(127 * self._glow_val)
+            color = QColor(r, g, b, int(255 * (0.3 + 0.5 * self._glow_val)))
+            radius = 15 + int(10 * self._glow_val)
+        elif state == "error":
+            color = QColor(255, 59, 48, 200)
+            radius = 25
+        else:
+            accent = get_theme_colors(self.state).get("accent", "#00C2FF")
+            color = QColor(accent)
+            color.setAlphaF(0.4 + 0.2 * self._glow_val)
+            radius = 12 + int(6 * self._glow_val)
+
+        for shadow in (getattr(self, "_sessions_shadow", None),
+                       getattr(self, "_reasoning_shadow", None),
+                       getattr(self, "_chat_shadow", None)):
+            if shadow:
+                shadow.setColor(color)
+                shadow.setBlurRadius(radius)
+
+    def _setup_chat_animations(self):
+        original_set_html = self._chat_view.setHtml
+        def custom_set_html(html):
+            self._fade_in_chat()
+            original_set_html(html)
+        self._chat_view.setHtml = custom_set_html
+
+    def _fade_in_chat(self):
+        if getattr(self.state, "reduced_motion", False):
+            return
+        self._chat_opacity = QGraphicsOpacityEffect(self._chat_view)
+        self._chat_view.setGraphicsEffect(self._chat_opacity)
+        
+        self._chat_anim = QPropertyAnimation(self._chat_opacity, b"opacity")
+        self._chat_anim.setDuration(250)
+        self._chat_anim.setStartValue(0.7)
+        self._chat_anim.setEndValue(1.0)
+        self._chat_anim.start()
+
+    def _populate_hud_toolbar(self):
+        tb = self._hud_toolbar
+        tbl = QHBoxLayout(tb)
+        tbl.setContentsMargins(10, 4, 10, 4)
+        tbl.setSpacing(10)
+        
+        lbl = QLabel("HUD:")
+        lbl.setStyleSheet("font-size: 8pt; font-weight: bold; color: #6A7B95; letter-spacing: 1.5px;")
+        tbl.addWidget(lbl)
+        
+        self._hud_sessions_btn = QPushButton("Sessions")
+        self._hud_sessions_btn.setObjectName("hud-btn")
+        self._hud_sessions_btn.setCheckable(True)
+        self._hud_sessions_btn.setChecked(self._sessions_dock.isVisible())
+        self._hud_sessions_btn.clicked.connect(self._toggle_sessions)
+        tbl.addWidget(self._hud_sessions_btn)
+        
+        self._hud_reasoning_btn = QPushButton("Reasoning")
+        self._hud_reasoning_btn.setObjectName("hud-btn")
+        self._hud_reasoning_btn.setCheckable(True)
+        self._hud_reasoning_btn.setChecked(self._reasoning_dock.isVisible())
+        self._hud_reasoning_btn.clicked.connect(self._toggle_reasoning)
+        tbl.addWidget(self._hud_reasoning_btn)
+        
+        self._hud_rag_btn = QPushButton("RAG Sources")
+        self._hud_rag_btn.setObjectName("hud-btn")
+        self._hud_rag_btn.setCheckable(True)
+        self._hud_rag_btn.setChecked(self._rag_sources_view.isVisible())
+        self._hud_rag_btn.clicked.connect(self._toggle_rag_hud)
+        tbl.addWidget(self._hud_rag_btn)
+        
+        self._hud_context_btn = QPushButton("Context HUD")
+        self._hud_context_btn.setObjectName("hud-btn")
+        self._hud_context_btn.setCheckable(True)
+        self._hud_context_btn.setChecked(self._context_bar.isVisible())
+        self._hud_context_btn.clicked.connect(self._toggle_context_hud)
+        tbl.addWidget(self._hud_context_btn)
+        
+        self._hud_settings_btn = QPushButton("Settings")
+        self._hud_settings_btn.setObjectName("hud-btn")
+        self._hud_settings_btn.setCheckable(True)
+        self._hud_settings_btn.setChecked(False)
+        self._hud_settings_btn.clicked.connect(self._toggle_settings_overlay)
+        tbl.addWidget(self._hud_settings_btn)
+        
+        tbl.addStretch()
+        
+        self._hud_master_btn = QPushButton("Hide All HUDs")
+        self._hud_master_btn.setObjectName("hud-btn")
+        self._hud_master_btn.clicked.connect(self._toggle_all_huds)
+        tbl.addWidget(self._hud_master_btn)
+        
+        self._sessions_dock.visibilityChanged.connect(lambda visible: self._update_hud_btn_styles())
+        self._reasoning_dock.visibilityChanged.connect(lambda visible: self._update_hud_btn_styles())
+        
+        self._update_hud_btn_styles()
+
+    def _toggle_rag_hud(self):
+        visible = not self._rag_sources_view.isVisible()
+        self._rag_sources_view.setVisible(visible)
+        self._update_hud_btn_styles()
+
+    def _toggle_context_hud(self):
+        visible = not self._context_bar.isVisible()
+        self._context_bar.setVisible(visible)
+        if hasattr(self, "_token_row"):
+            self._token_row.setVisible(visible)
+        self._update_hud_btn_styles()
+
+    def _update_hud_btn_styles(self):
+        for btn, val in [
+            (getattr(self, "_hud_sessions_btn", None), self._sessions_dock.isVisible()),
+            (getattr(self, "_hud_reasoning_btn", None), self._reasoning_dock.isVisible()),
+            (getattr(self, "_hud_rag_btn", None), self._rag_sources_view.isVisible()),
+            (getattr(self, "_hud_context_btn", None), self._context_bar.isVisible()),
+            (getattr(self, "_hud_settings_btn", None), getattr(self, "_settings_overlay", None) is not None and self._settings_overlay.isVisible())
+        ]:
+            if btn:
+                btn.blockSignals(True)
+                btn.setChecked(val)
+                btn.setProperty("active", "true" if val else "false")
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+                btn.blockSignals(False)
+
+    def _toggle_all_huds(self):
+        any_visible = (
+            self._sessions_dock.isVisible() or
+            self._reasoning_dock.isVisible() or
+            self._rag_sources_view.isVisible() or
+            self._context_bar.isVisible()
+        )
+        target_visible = not any_visible
+        
+        self._sessions_dock.setVisible(target_visible)
+        self._reasoning_dock.setVisible(target_visible)
+        self._rag_sources_view.setVisible(target_visible)
+        self._context_bar.setVisible(target_visible)
+        if hasattr(self, "_token_row"):
+            self._token_row.setVisible(target_visible)
+            
+        self._update_hud_btn_styles()
+        
+        if target_visible:
+            self._hud_master_btn.setText("Hide All HUDs")
+        else:
+            self._hud_master_btn.setText("Show All HUDs")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_settings_overlay") and self._settings_overlay and self._settings_overlay.isVisible():
+            parent_width = self._chat_panel.width()
+            parent_height = self._chat_panel.height()
+            overlay_width = 300
+            self._settings_overlay.setGeometry(parent_width - overlay_width, 0, overlay_width, parent_height)
+
+    def update_model_state(self, state: str):
+        self.setProperty("modelState", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        
+        if hasattr(self, "_settings_overlay") and self._settings_overlay:
+            self._settings_overlay.setProperty("modelState", state)
+            self._settings_overlay.style().unpolish(self._settings_overlay)
+            self._settings_overlay.style().polish(self._settings_overlay)
+            
+        self._update_glow_pulse()
 
     def _connect_shortcuts(self):
         sc = QShortcut(QKeySequence("Ctrl+Return"), self)
@@ -1473,6 +1748,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._set_busy(False)
         self._thread = None
         self.status_changed.emit("error", False)
+        self.update_model_state("error")
 
     # ── feedback ──────────────────────────────────────────────────────────────
 
@@ -1595,6 +1871,7 @@ class WorkbenchWorkspace(QMainWindow):
         self.status_changed.emit(state_text, busy)
         if hasattr(self, "_reasoning_panel_container"):
             self._reasoning_panel_container.set_active(busy)
+        self.update_model_state("generating" if busy else "idle")
 
     def _on_chat_link_clicked(self, url):
         link = url.toString()

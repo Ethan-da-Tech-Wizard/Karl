@@ -1,0 +1,15 @@
+
+        <h2 style='color:#00C2FF; margin-top:0; border-bottom: 1px solid #1F1F3D; padding-bottom: 4px;'>☄ Swarm Studio: Multi-Agent Codegen</h2>
+        <p style='color:#9090A8; line-height:1.6;'>Karl's Swarm Studio orchestrates multiple specialized agents (Architect, Coder, Tester) to solve complex coding objectives autonomously.</p>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px; margin-top:16px;'>Operational Mechanics</h4>
+        <ul>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Dependency Sorting:</b> The Architect analyzes the project structure and sorts tasks into a topological order, ensuring parent files are modified before dependents.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Parallel Layers:</b> Tasks with no shared dependencies are executed in parallel across multiple worker threads to maximize throughput.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Live Streams:</b> Every agent's internal thought process is streamed to the dashboard, providing full visibility into planning and coding decisions.</li>
+          <li style='color:#9090A8; margin-bottom:8px; line-height:1.4;'><b>Verification Tracebacks:</b> After code modification, the Tester runs the defined test suite. If an error occurs, the full traceback is fed back into the Coder for automatic correction.</li>
+        </ul>
+
+        <h4 style='color:#E4E4F0; margin-bottom:4px; margin-top:16px;'>Task Lifecycle</h4>
+        <pre style='background:#050510; border:1px solid #1F1F3D; color:#A0AEC0; padding:12px; font-family:'JetBrains Mono', monospace; border-radius:4px; margin: 10px 0;'>PENDING ➔ IN_PROGRESS ➔ VERIFYING ➔ [ COMPLETED | FAILED ]</pre>
+    

@@ -1,12 +1,13 @@
 import logging
 import os
+import re
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QTextBrowser,
-    QLabel, QFrame, QLineEdit, QPushButton, QMessageBox
+    QLabel, QFrame, QLineEdit, QPushButton, QMessageBox, QSplitter
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 
-from app.ui.themes import MONO
+from app.ui.themes import MONO, get_theme_colors
 from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
 
 logger = logging.getLogger("karl.codex")
@@ -39,7 +40,7 @@ class DocsWorkspace(QWidget):
         os.makedirs(self._library_dir, exist_ok=True)
         
         version_filepath = os.path.join(self._library_dir, ".version")
-        current_version = "6.0"
+        current_version = "7.0"
         
         # Determine if we need to seed or upgrade
         needs_upgrade = True
@@ -92,9 +93,6 @@ class DocsWorkspace(QWidget):
                     logger.warning(f"Error reading {f}: {e}")
 
         # Auto-ingest Codex files into codex_rag index if it is empty.
-        # Ingestion needs the embedding model; if it is unavailable (offline
-        # machine without a cached model) Codex search degrades gracefully
-        # instead of crashing the app at startup.
         if hasattr(self.state, "codex_rag") and self.state.codex_rag.total_chunks == 0:
             for topic_name, item in self._cache.items():
                 try:
@@ -104,14 +102,17 @@ class DocsWorkspace(QWidget):
                     break
 
     def _build_ui(self):
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(12)
+        root.setSpacing(10)
+
+        # Main horizontal splitter
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._main_splitter.setHandleWidth(1)
 
         # Left list panel: guide chapters
         left_panel = QWidget()
         left_panel.setObjectName("panel")
-        left_panel.setFixedWidth(200)
         lp_layout = QVBoxLayout(left_panel)
         lp_layout.setContentsMargins(12, 12, 12, 12)
         lp_layout.setSpacing(8)
@@ -134,7 +135,16 @@ class DocsWorkspace(QWidget):
             self._topics_list.addItem(k)
 
         lp_layout.addWidget(self._topics_list, 1)
-        root.addWidget(left_panel)
+
+        # TOC Panel (Internal Hierarchy)
+        lp_layout.addWidget(_hline())
+        lp_layout.addWidget(_section("HIERARCHY"))
+        self._toc_list = QListWidget()
+        self._toc_list.setFixedHeight(150)
+        self._toc_list.currentTextChanged.connect(self._jump_to_anchor)
+        lp_layout.addWidget(self._toc_list)
+
+        self._main_splitter.addWidget(left_panel)
 
         # Right browser panel: content reader
         right_panel = QWidget()
@@ -162,8 +172,13 @@ class DocsWorkspace(QWidget):
 
         self._browser = QTextBrowser()
         self._browser.setToolTip("Read-only documentation viewer")
+        self._browser.setOpenExternalLinks(True)
         rp_layout.addWidget(self._browser, 1)
-        root.addWidget(right_panel, 1)
+        self._main_splitter.addWidget(right_panel)
+
+        self._main_splitter.setStretchFactor(0, 1)
+        self._main_splitter.setStretchFactor(1, 4)
+        root.addWidget(self._main_splitter)
 
         # Select first topic by default
         if self._cache:
@@ -234,6 +249,7 @@ class DocsWorkspace(QWidget):
     def _on_topic_selected(self, text: str):
         if not text:
             self._browser.clear()
+            self._toc_list.clear()
             self._active_topic_lbl.setText("SELECT A TOPIC")
             return
             
@@ -245,6 +261,7 @@ class DocsWorkspace(QWidget):
                 f"No guide found for: <i>{text}</i>"
                 f"</div>"
             )
+            self._toc_list.clear()
             return
             
         filepath = item_data["filepath"]
@@ -253,13 +270,49 @@ class DocsWorkspace(QWidget):
                 doc_content = f.read()
         except Exception as e:
             doc_content = f"Error reading guide from disk: {e}"
+
+        # Generate TOC from headers
+        self._generate_toc(doc_content)
             
+        # Add anchors to headers for jumping
+        modified_content = self._add_anchors(doc_content)
+
+        # Get theme colors for styling
+        colors = get_theme_colors(self.state)
+        
         styled_html = (
-            f"<div style='font-family:{MONO}; font-size:10pt; color:#E4E4F0; line-height:1.5; padding:8px;'>"
-            f"{doc_content}"
+            f"<div style='font-family:{MONO}; font-size:10pt; color:{colors['text_hi']}; line-height:1.6; padding:15px;'>"
+            f"{modified_content}"
             f"</div>"
         )
         self._browser.setHtml(styled_html)
+
+    def _generate_toc(self, content: str):
+        self._toc_list.clear()
+        # Find all h2 and h4 headers
+        headers = re.findall(r"<(h[24])[^>]*>(.*?)</\1>", content, re.IGNORECASE)
+        for h_tag, h_text in headers:
+            # Clean HTML tags from header text
+            clean_text = re.sub(r"<[^>]+>", "", h_text).strip()
+            indent = "  " if h_tag.lower() == "h4" else ""
+            self._toc_list.addItem(f"{indent}{clean_text}")
+
+    def _add_anchors(self, content: str) -> str:
+        # Replace headers with anchored versions
+        def replacer(match):
+            h_tag = match.group(1)
+            h_attrs = match.group(2)
+            h_text = match.group(3)
+            clean_text = re.sub(r"<[^>]+>", "", h_text).strip()
+            anchor_id = clean_text.replace(" ", "_").lower()
+            return f'<{h_tag} id="{anchor_id}" {h_attrs}>{h_text}</{h_tag}>'
+
+        return re.sub(r"<(h[24])([^>]*)>(.*?)</\1>", replacer, content, flags=re.IGNORECASE)
+
+    def _jump_to_anchor(self, text: str):
+        if not text: return
+        anchor_id = text.strip().replace(" ", "_").lower()
+        self._browser.scrollToAnchor(anchor_id)
 
     def _send_to_workbench(self):
         current_item = self._topics_list.currentItem()
@@ -278,7 +331,6 @@ class DocsWorkspace(QWidget):
             QMessageBox.critical(self, "Error", f"Could not read topic file: {e}")
             return
             
-        import re
         clean_text = re.sub(r"<[^>]+>", "", doc_content)
         clean_text = "\n".join(line.strip() for line in clean_text.splitlines() if line.strip())
         
