@@ -108,6 +108,8 @@ window.addEventListener('message', event => {
         markPendingEdit(message.editId, 'rolled_back');
     } else if (message.command === 'cockpit_state_update') {
         updateCockpitState(message.state || {});
+    } else if (message.command === 'completion_diagnostic_failed') {
+        _renderCompletionDiagnostic(message);
     }
 });
 
@@ -1400,3 +1402,32 @@ function _initEducationalSandbox() {
 window.addEventListener('DOMContentLoaded', () => {
     _initEducationalSandbox();
 });
+
+/**
+ * Renders a crash diagnostic card in the chat panel when the llama-cpp-python
+ * subprocess exits with SIGSEGV (code 139) or OOM SIGKILL (code 137).
+ * @param {{ reason?: string, message?: string, exitCode?: number|null, exitSignal?: string|null }} msg
+ */
+function _renderCompletionDiagnostic(msg) {
+    const chatEl = $('chatMessages');
+    if (!chatEl) return;
+    const isSegv = msg.reason === 'sigsegv';
+    const title = isSegv
+        ? 'AVX Segmentation Fault Detected'
+        : 'Subprocess Killed (OOM)';
+    const icon = isSegv ? '⚠️' : '🔴';
+    const detail = escapeHtml(msg.message || 'Unknown subprocess crash.');
+    const exitInfo = (msg.exitCode != null || msg.exitSignal)
+        ? `<small style="opacity:.6">Exit code: ${msg.exitCode ?? '—'}  Signal: ${msg.exitSignal ?? '—'}</small>`
+        : '';
+    const card = document.createElement('div');
+    card.className = 'message assistant';
+    card.innerHTML = `
+<div class="glow-panel" style="border-left:3px solid var(--karl-warn);padding:.5rem .75rem;margin:.25rem 0">
+  <strong>${icon} ${escapeHtml(title)}</strong><br>
+  <span style="font-size:.85em">${detail}</span><br>
+  ${exitInfo}
+</div>`;
+    chatEl.appendChild(card);
+    chatEl.scrollTop = chatEl.scrollHeight;
+}

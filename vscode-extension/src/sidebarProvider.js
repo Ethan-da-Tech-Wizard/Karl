@@ -210,8 +210,20 @@ class KarlSidebarProvider {
         this.lastBridgeError = '';
         this._setConnectionState('connecting', 'Connecting');
 
+        // Read the current bridge token from data/bridge_token.json
+        let bridgeToken = '';
         try {
-            this.socket = new WebSocket(`ws://localhost:${activePort}`);
+            const wsRoot = currentWorkspacePath('') || process.cwd();
+            const tokenFile = path.join(wsRoot, 'data', 'bridge_token.json');
+            const raw = fs.readFileSync(tokenFile, 'utf8');
+            bridgeToken = JSON.parse(raw).token || '';
+        } catch {
+            // Token file not yet written — connect without token; server will reject with 4001
+        }
+        const wsUrl = `ws://localhost:${activePort}${bridgeToken ? `?token=${encodeURIComponent(bridgeToken)}` : ''}`;
+
+        try {
+            this.socket = new WebSocket(wsUrl);
         } catch (err) {
             this.lastBridgeError = err.message || 'Connection failed';
             this._handleDisconnect(true);
@@ -274,7 +286,13 @@ class KarlSidebarProvider {
             this._handleDisconnect(true);
         });
 
-        this.socket.on('close', () => {
+        this.socket.on('close', (code) => {
+            if (code === 4001) {
+                console.error('[Karl] Unauthorized Karl extension bridge connection: invalid token');
+                vscode.window.showWarningMessage(
+                    'Karl: Bridge connection rejected (invalid or expired token). Check data/bridge_token.json.'
+                );
+            }
             this._handleDisconnect(false);
         });
     }

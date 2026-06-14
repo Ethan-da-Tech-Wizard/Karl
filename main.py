@@ -7,6 +7,10 @@ All library noise is suppressed here, before any third-party import runs.
 import os
 import sys
 import io
+import multiprocessing
+
+# Harden CUDA memory management against fragmentation
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 # Silence HuggingFace network calls and telemetry
 os.environ["HF_HUB_OFFLINE"]               = "1"

@@ -118,9 +118,29 @@ def get_examples():
         <h4 style='{STYLE_H4}'>2. Keyword & Regex Fallback</h4>
         <p style='{STYLE_P}'>If the vector engine is offline, Karl falls back to high-speed alphanumeric pattern matching to find specific IDs or technical terms.</p>
     """,
+    "AI Steering": f"""
+        <h2 style='{STYLE_H2}'>◈ AI Steering & Adapter Control</h2>
+        <p style='{STYLE_P}'>Steering refers to the fine-grained control of model behavior using lightweight adapters (LoRA/QLoRA).</p>
+        <ul>
+          <li style='{STYLE_LI}'><b>Adapter Activation:</b> Select an adapter from the Workbench dropdown to shift the model's tone, syntax, or knowledge domain.</li>
+          <li style='{STYLE_LI}'><b>Dynamic Scheduling:</b> Karl automatically adjusts entropy based on the generation state (Thinking vs. Answering).</li>
+        </ul>
+    """,
+    "Python": f"""
+        <h2 style='{STYLE_H2}'>Python Development Guide</h2>
+        <p style='{STYLE_P}'>Best practices for writing Python code with Karl's local assistance.</p>
+    """,
+    "Docker": f"""
+        <h2 style='{STYLE_H2}'>Docker & Sandboxing</h2>
+        <p style='{STYLE_P}'>Guidelines for using Docker containers to safely verify model-generated code.</p>
+    """,
+    "FastAPI": f"""
+        <h2 style='{STYLE_H2}'>FastAPI Implementation</h2>
+        <p style='{STYLE_P}'>Reference for building robust APIs using FastAPI and Pydantic.</p>
+    """,
     "Mathematical Introspection": f"""
         <h2 style='{STYLE_H2}'>◈ Mathematical Introspection</h2>
-        <p style='{STYLE_P}'>This reference guide details the mathematical foundations underlying Karl\'s vector space search retrieval and deep learning transformer self-attention mechanisms.</p>
+        <p style='{STYLE_P}'>This reference guide details the mathematical foundations underlying Karl's vector space search retrieval and deep learning transformer self-attention mechanisms.</p>
         
         <h4 style='{STYLE_H4}'>1. Sparse Vector Retrieval (TF-IDF)</h4>
         <p style='{STYLE_P}'>TF-IDF (Term Frequency-Inverse Document Frequency) measures term importance within a document relative to a corpus:</p>
@@ -171,19 +191,3 @@ where head_i = Attention(Q W_i^Q, K W_i^K, V W_i^V)
         </ul>
     """
 }
-
-# Auto-force version upgrade by removing cached .version file when docs_data is imported
-import os
-try:
-    version_filepath = "data/codex_library/.version"
-    if os.path.exists(version_filepath):
-        os.remove(version_filepath)
-    # Also write it directly if the directory exists so it shows up without requiring UI reload
-    lib_dir = "data/codex_library"
-    if os.path.exists(lib_dir):
-        topic_file = os.path.join(lib_dir, "Mathematical Introspection.html")
-        with open(topic_file, "w", encoding="utf-8") as f:
-            f.write(DEFAULT_LIBRARY["Mathematical Introspection"])
-except Exception:
-    pass
-

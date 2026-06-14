@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import multiprocessing
 from llama_cpp import Llama
 
 from app.engine import config_store
@@ -231,23 +232,50 @@ class ModelLoader:
 
                 lora_path = cls._adapter_path(adapter_name)
 
-                if lora_path:
-                    logger.info(f"Loading {model_path} with LoRA adapter {lora_path} (n_ctx={cls._n_ctx})")
-                    cls._instance = Llama(
-                        model_path=model_path,
-                        n_ctx=cls._n_ctx,
-                        lora_path=lora_path,
-                        n_gpu_layers=-1,
-                        verbose=False
-                    )
-                else:
-                    logger.info(f"Loading {model_path} (n_ctx={cls._n_ctx})")
-                    cls._instance = Llama(
-                        model_path=model_path,
-                        n_ctx=cls._n_ctx,
-                        n_gpu_layers=-1,
-                        verbose=False
-                    )
+                def _attempt_load(ctx_size):
+                    threads = max(1, multiprocessing.cpu_count() - 2)
+                    if lora_path:
+                        logger.info(f"Loading {model_path} with LoRA adapter {lora_path} (n_ctx={ctx_size}, threads={threads})")
+                        return Llama(
+                            model_path=model_path,
+                            n_ctx=ctx_size,
+                            lora_path=lora_path,
+                            n_gpu_layers=-1,
+                            logits_all=False,
+                            n_threads=threads,
+                            verbose=False
+                        )
+                    else:
+                        logger.info(f"Loading {model_path} (n_ctx={ctx_size}, threads={threads})")
+                        return Llama(
+                            model_path=model_path,
+                            n_ctx=ctx_size,
+                            n_gpu_layers=-1,
+                            logits_all=False,
+                            n_threads=threads,
+                            verbose=False
+                        )
+
+                try:
+                    cls._instance = _attempt_load(cls._n_ctx)
+                except (MemoryError, OSError, RuntimeError) as e:
+                    logger.warning(f"VRAM allocation failed for n_ctx={cls._n_ctx}: {e}. Retrying with fallback (n_ctx/2)...")
+                    fallback_ctx = max(256, cls._n_ctx // 2)
+                    try:
+                        cls._instance = _attempt_load(fallback_ctx)
+                        cls._n_ctx = fallback_ctx
+                    except (MemoryError, OSError, RuntimeError) as e2:
+                        msg = "VRAM Allocation Limit Exceeded. Please free system GPU memory."
+                        logger.error(f"{msg} Final failure: {e2}")
+                        # Ensure we don't leave a half-broken instance
+                        if cls._instance is not None:
+                            try:
+                                cls._instance.close()
+                            except:
+                                pass
+                            cls._instance = None
+                        raise RuntimeError(msg) from e2
+
                 logger.info("Ready.")
 
                 if needs_draft_reload or needs_reload:
@@ -262,10 +290,13 @@ class ModelLoader:
                     if draft_model_path and os.path.exists(draft_model_path):
                         try:
                             from llama_cpp import Llama as _LlamaInner
+                            threads = max(1, multiprocessing.cpu_count() - 2)
                             cls._draft_instance = _LlamaInner(
                                 model_path=draft_model_path,
                                 n_ctx=cls._n_ctx,
                                 n_gpu_layers=-1,
+                                logits_all=False,
+                                n_threads=threads,
                                 verbose=False,
                             )
                             # Re-instantiate primary model wired to the draft instance.
@@ -273,11 +304,16 @@ class ModelLoader:
                             # (available since 0.2.77). If the installed version lacks this kwarg,
                             # catch TypeError and continue without speculative support.
                             try:
-                                cls._instance.close()
+                                if cls._instance is not None:
+                                    cls._instance.close()
+                                
                                 cls._instance = Llama(
                                     model_path=cls._model_path,
                                     n_ctx=cls._n_ctx,
+                                    lora_path=cls._adapter_path(cls._active_adapter),
                                     n_gpu_layers=-1,
+                                    logits_all=False,
+                                    n_threads=threads,
                                     verbose=False,
                                     draft_model=cls._draft_instance,
                                 )

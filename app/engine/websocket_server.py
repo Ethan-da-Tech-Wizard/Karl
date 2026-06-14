@@ -11,8 +11,10 @@ import json
 import asyncio
 import threading
 import re
+import time
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlparse, parse_qs
 import websockets
 from typing import Set, Optional, Any
 from PyQt6.QtCore import Qt
@@ -69,23 +71,27 @@ class WebSocketServerManager:
         self.started_event = threading.Event()
         self._start_loop_thread()
 
+    _TOKEN_LIFETIME = 43_200  # 12 hours in seconds
+    _TOKEN_PATH = "data/bridge_token.json"
+
     def _init_security(self):
-        """Initializes security token and safe path rules."""
-        token_path = "data/bridge_token.txt"
-        if os.path.exists(token_path):
+        """Initializes security token (JSON with timestamp) and safe path rules."""
+        self.bridge_token: str = ""
+        self._token_created_at: float = 0.0
+
+        if os.path.exists(self._TOKEN_PATH):
             try:
-                with open(token_path, "r", encoding="utf-8") as f:
-                    self.bridge_token = f.read().strip()
+                with open(self._TOKEN_PATH, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                self.bridge_token = payload["token"]
+                self._token_created_at = float(payload["created_at"])
+                # Rotate immediately if the stored token has already expired
+                if time.time() - self._token_created_at > self._TOKEN_LIFETIME:
+                    self._rotate_token()
             except Exception:
-                self.bridge_token = self._generate_token()
+                self._rotate_token()
         else:
-            self.bridge_token = self._generate_token()
-            try:
-                os.makedirs("data", exist_ok=True)
-                with open(token_path, "w", encoding="utf-8") as f:
-                    f.write(self.bridge_token)
-            except Exception as e:
-                logger.warning(f"Could not save bridge token: {e}")
+            self._rotate_token()
 
         # Sensitive directories that should never be targeted by agents or RAG
         self.blocked_paths = {
@@ -100,6 +106,28 @@ class WebSocketServerManager:
 
     def _generate_token(self) -> str:
         return uuid.uuid4().hex
+
+    def _rotate_token(self) -> None:
+        """Generates a fresh token, persists it to data/bridge_token.json."""
+        self.bridge_token = self._generate_token()
+        self._token_created_at = time.time()
+        try:
+            os.makedirs("data", exist_ok=True)
+            with open(self._TOKEN_PATH, "w", encoding="utf-8") as f:
+                json.dump({"token": self.bridge_token, "created_at": self._token_created_at}, f)
+        except Exception as e:
+            logger.warning(f"Could not save bridge token: {e}")
+
+    def _validate_token(self, token: str) -> bool:
+        """Returns True if token matches and has not exceeded the 12-hour lifetime.
+        Silently rotates an expired token so the next connection uses the new one.
+        """
+        if not token or not self.bridge_token:
+            return False
+        if time.time() - self._token_created_at > self._TOKEN_LIFETIME:
+            self._rotate_token()
+            return False  # Force the client to re-read the new token file
+        return token == self.bridge_token
 
     def _is_safe_path(self, path: str) -> bool:
         """Checks if a path is outside sensitive system directories."""
@@ -602,19 +630,39 @@ class WebSocketServerManager:
             logger.info("Server stopped.")
 
     async def _handler(self, websocket, path=None):
+        # ── Connection-stage token authentication ─────────────────────────────
+        raw_path = path or ""
+        if not raw_path:
+            try:
+                raw_path = (
+                    getattr(websocket, "path", None)
+                    or getattr(getattr(websocket, "request", None), "path", None)
+                    or ""
+                )
+            except Exception:
+                raw_path = ""
+        qs = parse_qs(urlparse(raw_path).query)
+        url_token = qs.get("token", [""])[0]
+        if not self._validate_token(url_token):
+            remote = getattr(websocket, "remote_address", "unknown")
+            logger.warning("Rejected connection from %s: invalid or expired token", remote)
+            await websocket.close(4001, "Unauthorized: invalid or expired token")
+            return
+        # ─────────────────────────────────────────────────────────────────────
+
         client_id = str(uuid.uuid4())[:8]
         ip = "unknown"
         try:
             ip = websocket.remote_address[0]
         except Exception:
             pass
-        
+
         self.clients.add(websocket)
         self.client_metadata[websocket] = {
             "id": client_id,
             "ip": ip,
             "connected_at": datetime.now(timezone.utc).isoformat(),
-            "authenticated": False
+            "authenticated": True  # Token was validated at handshake
         }
         self.client_histories[websocket] = []
         logger.info(f"Client connected: {websocket.remote_address} (ID: {client_id})")
@@ -664,7 +712,7 @@ class WebSocketServerManager:
                         "id": req_id,
                         "error": {
                             "code": -32000, 
-                            "message": "Authentication required. Call 'authenticate' with the token found in 'data/bridge_token.txt'."
+                            "message": "Authentication required. Call 'authenticate' with the token found in 'data/bridge_token.json'."
                         }
                     }))
                     continue

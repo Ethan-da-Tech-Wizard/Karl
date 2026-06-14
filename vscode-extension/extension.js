@@ -199,7 +199,7 @@ function activate(context) {
         ? workspaceFolders[0].uri.fsPath
         : '/home/ethan/karl';
 
-    const inlineProvider = new MiniGptInlineCompletionProvider(workspacePath);
+    const inlineProvider = new MiniGptInlineCompletionProvider(workspacePath, sidebarProvider);
     context.subscriptions.push(
         vscode.languages.registerInlineCompletionItemProvider(
             { pattern: '**' },
@@ -211,9 +211,11 @@ function activate(context) {
 class MiniGptInlineCompletionProvider {
     /**
      * @param {string} workspacePath
+     * @param {import('./src/sidebarProvider').KarlSidebarProvider} [sidebarProvider]
      */
-    constructor(workspacePath) {
+    constructor(workspacePath, sidebarProvider) {
         this.workspacePath = workspacePath;
+        this.sidebarProvider = sidebarProvider || null;
         /** @type {ReturnType<typeof setTimeout> | null} */
         this.debounceTimeout = null;
         /** @type {import('child_process').ChildProcess | null} */
@@ -297,6 +299,7 @@ class MiniGptInlineCompletionProvider {
      * @returns {Promise<string>}
      */
     generateCompletion(prompt, token) {
+        const sidebarProvider = this.sidebarProvider;
         return new Promise((resolve, reject) => {
             const pythonScript = `
 import os
@@ -414,7 +417,28 @@ print(completion, end="")
                 settle(reject, err);
             });
 
-            proc.on('close', (/** @type {number | null} */ code) => {
+            proc.on('close', (/** @type {number | null} */ code, /** @type {string | null} */ signal) => {
+                // SIGSEGV: exit code 139 or SIGSEGV signal — likely AVX incompatibility in llama-cpp-python
+                if ((code === 139 || signal === 'SIGSEGV') && sidebarProvider) {
+                    console.error('[Mini-GPT] Segmentation fault — likely AVX incompatibility. code:', code, 'signal:', signal);
+                    sidebarProvider.postMessageToWebview({
+                        command: 'completion_diagnostic_failed',
+                        exitCode: code,
+                        exitSignal: signal,
+                        reason: 'sigsegv',
+                        message: 'llama-cpp-python SIGSEGV — rebuild without AVX: CMAKE_ARGS="-DGGML_AVX=OFF -DGGML_AVX2=OFF" pip install --force-reinstall --no-cache-dir llama-cpp-python'
+                    });
+                // OOM SIGKILL: exit code 137 — system killed the process due to memory pressure
+                } else if ((code === 137 || signal === 'SIGKILL') && sidebarProvider) {
+                    console.error('[Mini-GPT] OOM SIGKILL detected. code:', code, 'signal:', signal);
+                    sidebarProvider.postMessageToWebview({
+                        command: 'completion_diagnostic_failed',
+                        exitCode: code,
+                        exitSignal: signal,
+                        reason: 'oom',
+                        message: 'llama-cpp-python was killed by the OS (OOM). Load a smaller model or reduce context size.'
+                    });
+                }
                 settle(
                     code === 0 ? resolve : reject,
                     code === 0 ? stdout  : new Error(stderr || `Python exited with code ${code}`)

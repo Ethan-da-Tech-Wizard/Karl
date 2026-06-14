@@ -110,7 +110,7 @@ class TestUIImprovements(unittest.TestCase):
         self.assertIsNotNone(workspace)
         self.assertTrue(hasattr(workspace, "_layers_tree"))
         self.assertTrue(hasattr(workspace, "_task_table"))
-        self.assertTrue(hasattr(workspace, "_traceback"))
+        self.assertTrue(hasattr(workspace, "_traceback_browser"))
 
     def test_agentic_loop_persists_only_final_assistant_answer(self):
         from app.state import AppState
