@@ -1,31 +1,4 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>🐍 Python Deep Reference</h2>
-        <p style='color:#9090A8; line-height:1.4;'>A complete guide to advanced python memory protocols, cooperative concurrency, metaclasses, and custom descriptors.</p>
-        
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. Descriptor Protocol</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Descriptors form the core of properties, methods, static methods, and class methods. They are classes implementing <code>__get__</code>, <code>__set__</code>, or <code>__delete__</code>:</p>
-        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>class TypedString:
-    def __init__(self, name):
-        self.name = f"_{name}"
-    def __get__(self, instance, owner):
-        if instance is None:
-            return self
-        return getattr(instance, self.name, "")
-    def __set__(self, instance, value):
-        if not isinstance(value, str):
-            raise TypeError("Expected string")
-        setattr(instance, self.name, value)</pre>
-
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. Metaclass Bindings</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Metaclasses control class construction. They subclass <code>type</code> and intercept class creation via <code>__new__</code>:</p>
-        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>class MetaRegistry(type):
-    def __new__(cls, name, bases, attrs):
-        attrs["__slots__"] = ("_cached_value",)
-        return super().__new__(cls, name, bases, attrs)</pre>
-
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>3. Cooperative Concurrency & GC</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Python concurrency relies on cooperative event loops (<code>asyncio</code>) running coroutines. Memory management utilizes reference counting and an incremental cyclic garbage collector (GC) with three generational thresholds:</p>
-        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>import gc
-# Retrieve current generational thresholds
-thresholds = gc.get_threshold()  # default: (700, 10, 10)</pre>
+        <h2 style='color:#00C2FF; margin-top:0; border-bottom: 1px solid #1F1F3D; padding-bottom: 4px;'>Python Development Guide</h2>
+        <p style='color:#9090A8; line-height:1.6;'>Best practices for writing Python code with Karl's local assistance.</p>
     

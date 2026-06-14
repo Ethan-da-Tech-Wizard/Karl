@@ -220,10 +220,12 @@ class KarlSidebarProvider {
         } catch {
             // Token file not yet written — connect without token; server will reject with 4001
         }
-        const wsUrl = `ws://localhost:${activePort}${bridgeToken ? `?token=${encodeURIComponent(bridgeToken)}` : ''}`;
+        const wsUrl = `wss://127.0.0.1:${activePort}${bridgeToken ? `?token=${encodeURIComponent(bridgeToken)}` : ''}`;
+        // rejectUnauthorized: false — the Python backend uses a self-signed localhost cert
+        const wsOptions = { rejectUnauthorized: false };
 
         try {
-            this.socket = new WebSocket(wsUrl);
+            this.socket = new WebSocket(wsUrl, wsOptions);
         } catch (err) {
             this.lastBridgeError = err.message || 'Connection failed';
             this._handleDisconnect(true);
@@ -288,10 +290,23 @@ class KarlSidebarProvider {
 
         this.socket.on('close', (code) => {
             if (code === 4001) {
-                console.error('[Karl] Unauthorized Karl extension bridge connection: invalid token');
+                console.error('[Karl] Unauthorized Karl extension bridge connection: invalid or expired token');
+                this.lastBridgeError = 'Token invalid or expired (4001) — check data/bridge_token.json';
+                this.manualDisconnect = true; // Don't auto-reconnect on auth rejection
                 vscode.window.showWarningMessage(
                     'Karl: Bridge connection rejected (invalid or expired token). Check data/bridge_token.json.'
                 );
+                this._handleDisconnect(false);
+                // Override the generic 'Offline' label with a dedicated auth-rejected indicator
+                this.postMessageToWebview({
+                    command: 'connection_state',
+                    state: 'offline',
+                    label: 'Auth Rejected',
+                    lastConnected: this.lastConnectedAt ? this.lastConnectedAt.toLocaleTimeString() : 'never',
+                    lastHeartbeat: this.lastHeartbeatAt ? this.lastHeartbeatAt.toLocaleTimeString() : 'never',
+                    lastError: 'Token invalid or expired (4001) — check data/bridge_token.json'
+                });
+                return;
             }
             this._handleDisconnect(false);
         });
@@ -833,7 +848,7 @@ class KarlSidebarProvider {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:*;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src ws://localhost:* ws://127.0.0.1:* wss://localhost:* wss://127.0.0.1:* http://localhost:* http://127.0.0.1:*;">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Karl</title>
     <link href="${cssUri}" rel="stylesheet">

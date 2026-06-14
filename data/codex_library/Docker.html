@@ -1,27 +1,4 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>🐳 Docker Containerization</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Exhaustive guide to local sandboxing, storage volumes, container network sockets, and compose orchestration.</p>
-        
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. Virtual Networking Layers</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Docker supports bridge, host, overlay, and macvlan networks. Bridge is default, isolating containers on a virtual sub-interface (typically <code>docker0</code>) with IP assignment:</p>
-        <pre style='background:#10101C; border:1px solid #23233A; color:#A8D158; padding:8px; font-family:monospace;'>docker network create --driver bridge local_isolated_net</pre>
-
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. Storage Volumes & Mounting</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Volumes bypass the container's union file system, storing data directly on the host machine. This is crucial for local LLM engines where caching models is mandatory:</p>
-        <pre style='background:#10101C; border:1px solid #23233A; color:#A8D158; padding:8px; font-family:monospace;'>docker run -d -v /home/ethan/karl/data/models:/workspace/models local_llm_server</pre>
-
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>3. Docker Compose Orchestration</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>Define and run multi-container setups. Example compose structure combining an LLM inference API and vector DB service:</p>
-        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>version: '3.8'
-services:
-  inference:
-    image: llama-cpp-api
-    volumes:
-      - ./data/models:/models
-    ports:
-      - "8000:8000"
-  vectordb:
-    image: qdrant/qdrant
-    ports:
-      - "6333:6333"</pre>
+        <h2 style='color:#00C2FF; margin-top:0; border-bottom: 1px solid #1F1F3D; padding-bottom: 4px;'>Docker & Sandboxing</h2>
+        <p style='color:#9090A8; line-height:1.6;'>Guidelines for using Docker containers to safely verify model-generated code.</p>
     

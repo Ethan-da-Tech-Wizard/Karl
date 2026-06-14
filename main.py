@@ -5,12 +5,13 @@ All library noise is suppressed here, before any third-party import runs.
 
 # ── 1. Environment variables ──────────────────────────────────────────────────
 import os
-import sys
-import io
-import multiprocessing
 
 # Harden CUDA memory management against fragmentation
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+
+import sys
+import io
+import multiprocessing
 
 # Silence HuggingFace network calls and telemetry
 os.environ["HF_HUB_OFFLINE"]               = "1"

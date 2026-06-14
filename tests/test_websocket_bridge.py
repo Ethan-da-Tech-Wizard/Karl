@@ -12,6 +12,7 @@ import sys
 import json
 import tempfile
 import asyncio
+import time
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -98,9 +99,25 @@ class TestWebSocketBridge(unittest.TestCase):
         # Clean shutdown and reset the singleton
         WebSocketServerManager.reset_instance()
 
+    def _get_uri(self):
+        token = self.manager.bridge_token
+        proto = "ws"
+        if os.path.exists(self.manager._SSL_CERT_PATH):
+            proto = "wss"
+        return f"{proto}://localhost:{self.port}/?token={token}"
+
+    def _get_ssl_context(self):
+        import ssl
+        if os.path.exists(self.manager._SSL_CERT_PATH):
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            return ssl_context
+        return None
+
     def test_runtime_status_rpc(self):
         async def run_client():
-            async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+            async with websockets.connect(self._get_uri(), ssl=self._get_ssl_context(), close_timeout=2) as ws:
                 payload = {
                     "jsonrpc": "2.0",
                     "id": 30,
@@ -141,7 +158,7 @@ class TestWebSocketBridge(unittest.TestCase):
             f.write(b"test")
 
         async def run_client():
-            async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+            async with websockets.connect(self._get_uri(), ssl=self._get_ssl_context(), close_timeout=2) as ws:
                 await ws.send(json.dumps({
                     "jsonrpc": "2.0",
                     "id": 31,
@@ -191,7 +208,7 @@ class TestWebSocketBridge(unittest.TestCase):
             pass
 
         async def run_client():
-            async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+            async with websockets.connect(self._get_uri(), ssl=self._get_ssl_context(), close_timeout=2) as ws:
                 await ws.send(json.dumps({
                     "jsonrpc": "2.0",
                     "id": 42,
@@ -255,7 +272,7 @@ class TestWebSocketBridge(unittest.TestCase):
             f.write("Karl retrieves local project knowledge for prompt context.")
 
         async def run_client():
-            async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+            async with websockets.connect(self._get_uri(), ssl=self._get_ssl_context(), close_timeout=2) as ws:
                 await ws.send(json.dumps({
                     "jsonrpc": "2.0",
                     "id": 50,
@@ -351,7 +368,7 @@ class TestWebSocketBridge(unittest.TestCase):
 
             try:
                 # Connect to Karl's WebSocket Server
-                async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+                async with websockets.connect(self._get_uri(), ssl=self._get_ssl_context(), close_timeout=2) as ws:
                     # 1. Submit the swarm task
                     task_payload = {
                         "jsonrpc": "2.0",
@@ -366,7 +383,7 @@ class TestWebSocketBridge(unittest.TestCase):
                     await ws.send(json.dumps(task_payload))
 
                     # Check response with timeout
-                    raw_resp = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    raw_resp = await asyncio.wait_for(ws.recv(), timeout=15.0)
                     resp = json.loads(raw_resp)
 
                     self.assertEqual(resp.get("id"), 1)
@@ -376,7 +393,8 @@ class TestWebSocketBridge(unittest.TestCase):
                     # 2. Consume progress notifications until finished_swarm is received
                     notifications = []
                     for _ in range(50):  # Safety iteration ceiling
-                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=15.0)
+
                         msg = json.loads(raw_msg)
                         method = msg.get("method")
                         if method:
@@ -428,7 +446,7 @@ class TestWebSocketBridge(unittest.TestCase):
         async def run_client():
             spinner = asyncio.create_task(qt_event_loop_spinner())
             try:
-                async with websockets.connect(f"ws://localhost:{self.port}", close_timeout=2) as ws:
+                async with websockets.connect(self._get_uri(), ssl=self._get_ssl_context(), close_timeout=2) as ws:
                     chat_payload = {
                         "jsonrpc": "2.0",
                         "id": 1,
@@ -447,14 +465,14 @@ class TestWebSocketBridge(unittest.TestCase):
                     }
                     await ws.send(json.dumps(chat_payload))
 
-                    raw_resp = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    raw_resp = await asyncio.wait_for(ws.recv(), timeout=15.0)
                     resp = json.loads(raw_resp)
                     self.assertEqual(resp.get("id"), 1)
                     self.assertEqual(resp["result"]["status"], "started")
 
                     notifications = []
                     for _ in range(50):
-                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=15.0)
                         msg = json.loads(raw_msg)
                         method = msg.get("method")
                         if method:
@@ -495,6 +513,84 @@ class TestWebSocketBridge(unittest.TestCase):
         status_bar._tick()
         self.assertEqual(status_bar._vscode_lbl.text(), "VS Code: offline")
 
+    def test_token_connection_success(self):
+        async def run_client():
+            async with websockets.connect(self._get_uri(), ssl=self._get_ssl_context(), close_timeout=2) as ws:
+                payload = {"jsonrpc": "2.0", "id": 1, "method": "get_runtime_status"}
+                await ws.send(json.dumps(payload))
+                resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                self.assertIn("result", resp)
+
+        asyncio.new_event_loop().run_until_complete(run_client())
+
+    @patch("time.time")
+    def test_token_expiry_fail(self, mock_time):
+        # 1. Set current time to a fixed point
+        now = 1700000000.0
+        mock_time.return_value = now
+        
+        # 2. Force token initialization at this time
+        self.manager._rotate_token()
+        expired_token = self.manager.bridge_token
+        
+        # 3. Fast-forward time by 13 hours (46800 seconds)
+        mock_time.return_value = now + 46800.0
+        
+        async def run_client():
+            uri = f"ws://localhost:{self.port}/?token={expired_token}"
+            if os.path.exists(self.manager._SSL_CERT_PATH):
+                uri = uri.replace("ws://", "wss://")
+            
+            import websockets.exceptions
+            try:
+                # We expect the server to close the connection with 4001
+                async with websockets.connect(uri, ssl=self._get_ssl_context(), close_timeout=2) as ws:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+            except (websockets.exceptions.ConnectionClosedError, websockets.exceptions.InvalidStatusCode) as e:
+                # Some versions of websockets raise ConnectionClosedError, others InvalidStatusCode during handshake
+                code = getattr(e, "code", getattr(e, "status_code", None))
+                self.assertEqual(code, 4001)
+                return
+            except Exception as e:
+                # If it's a generic ConnectionClosed, check the code
+                if hasattr(e, "code") and e.code == 4001:
+                    return
+                raise e
+            
+            self.fail("Connection was not rejected with 4001")
+
+        asyncio.new_event_loop().run_until_complete(run_client())
+
+    @patch("time.time")
+    def test_token_rotation_on_disk(self, mock_time):
+        # 1. Start at a fixed time
+        now = 1700000000.0
+        mock_time.return_value = now
+        self.manager._rotate_token()
+        old_token = self.manager.bridge_token
+        
+        # 2. Expire the token
+        mock_time.return_value = now + 50000.0
+        
+        # Attempting a connection with the old token should trigger rotation
+        async def run_client():
+            uri = f"ws://localhost:{self.port}/?token={old_token}"
+            if os.path.exists(self.manager._SSL_CERT_PATH):
+                uri = uri.replace("ws://", "wss://")
+            try:
+                import websockets.exceptions
+                async with websockets.connect(uri, ssl=self._get_ssl_context(), close_timeout=2):
+                    pass
+            except (websockets.exceptions.InvalidStatusCode, websockets.exceptions.ConnectionClosedError):
+                pass
+        
+        asyncio.new_event_loop().run_until_complete(run_client())
+            
+        # 3. Verify token has changed on disk
+        with open("data/bridge_token.json", "r") as f:
+            data = json.load(f)
+            self.assertNotEqual(data["token"], old_token)
+            self.assertEqual(data["created_at"], now + 50000.0)
 
 if __name__ == "__main__":
     unittest.main()

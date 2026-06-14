@@ -13,11 +13,14 @@ import threading
 import re
 import time
 import uuid
+import ssl
+import subprocess
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 import websockets
 from typing import Set, Optional, Any
 from PyQt6.QtCore import Qt
+
 from app.engine import config_store
 from app.engine.swarm_orchestrator import SwarmOrchestratorThread
 from app.engine.llm_thread import LLMThread
@@ -67,12 +70,36 @@ class WebSocketServerManager:
         self.rag = RAGPipeline()
         self._seed_codex()
         self._init_security()
+        self._ensure_ssl_certs()
         self.server = None
         self.started_event = threading.Event()
         self._start_loop_thread()
 
     _TOKEN_LIFETIME = 43_200  # 12 hours in seconds
     _TOKEN_PATH = "data/bridge_token.json"
+    _SSL_CERT_PATH = "data/ssl/localhost.crt"
+    _SSL_KEY_PATH = "data/ssl/localhost.key"
+
+    def _ensure_ssl_certs(self):
+        """Generates self-signed localhost SSL certificates if missing."""
+        ssl_dir = os.path.dirname(self._SSL_CERT_PATH)
+        os.makedirs(ssl_dir, exist_ok=True)
+        
+        if not os.path.exists(self._SSL_CERT_PATH) or not os.path.exists(self._SSL_KEY_PATH):
+            logger.info("Generating self-signed SSL certificates for WSS...")
+            try:
+                # Use openssl command if available
+                cmd = [
+                    "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                    "-keyout", self._SSL_KEY_PATH,
+                    "-out", self._SSL_CERT_PATH,
+                    "-sha256", "-days", "3650", "-nodes",
+                    "-subj", "/C=XX/ST=State/L=City/O=Karl/OU=Engine/CN=localhost"
+                ]
+                subprocess.run(cmd, check=True, capture_output=True)
+                logger.info(f"SSL certificates generated at {self._SSL_CERT_PATH}")
+            except Exception as e:
+                logger.error(f"Failed to generate SSL certificates: {e}. WSS server will fail to start.")
 
     def _init_security(self):
         """Initializes security token (JSON with timestamp) and safe path rules."""
@@ -122,11 +149,18 @@ class WebSocketServerManager:
         """Returns True if token matches and has not exceeded the 12-hour lifetime.
         Silently rotates an expired token so the next connection uses the new one.
         """
-        if not token or not self.bridge_token:
+        if not token:
             return False
+        
+        # Check expiry first
         if time.time() - self._token_created_at > self._TOKEN_LIFETIME:
+            logger.info("Bridge token expired (12h). Rotating.")
             self._rotate_token()
             return False  # Force the client to re-read the new token file
+            
+        if not self.bridge_token:
+            return False
+            
         return token == self.bridge_token
 
     def _is_safe_path(self, path: str) -> bool:
@@ -575,8 +609,19 @@ class WebSocketServerManager:
 
     async def _start_server(self):
         try:
-            self.server = await websockets.serve(self._handler, "localhost", self.port)
-            logger.info(f"Server running on ws://localhost:{self.port}")
+            ssl_context = None
+            if os.path.exists(self._SSL_CERT_PATH) and os.path.exists(self._SSL_KEY_PATH):
+                ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ssl_context.load_cert_chain(self._SSL_CERT_PATH, self._SSL_KEY_PATH)
+                logger.info("WSS Secure WebSockets enabled.")
+            else:
+                logger.error("WSS SSL certificates missing. Server will NOT start without WSS.")
+                raise RuntimeError("SSL context required for WSS enforcement.")
+
+            self.server = await websockets.serve(
+                self._handler, "localhost", self.port, ssl=ssl_context
+            )
+            logger.info(f"Server running on wss://localhost:{self.port}")
         except Exception as e:
             logger.warning(f"Failed to start server: {e}")
         finally:
@@ -634,18 +679,21 @@ class WebSocketServerManager:
         raw_path = path or ""
         if not raw_path:
             try:
-                raw_path = (
-                    getattr(websocket, "path", None)
-                    or getattr(getattr(websocket, "request", None), "path", None)
-                    or ""
-                )
+                if hasattr(websocket, "request"):
+                    raw_path = websocket.request.path
+                else:
+                    raw_path = getattr(websocket, "path", "") or ""
             except Exception:
-                raw_path = ""
-        qs = parse_qs(urlparse(raw_path).query)
+                pass
+        
+        parsed = urlparse(raw_path)
+        qs = parse_qs(parsed.query)
         url_token = qs.get("token", [""])[0]
+        
         if not self._validate_token(url_token):
             remote = getattr(websocket, "remote_address", "unknown")
-            logger.warning("Rejected connection from %s: invalid or expired token", remote)
+            logger.warning("Rejected connection from %s: invalid or expired token (path: %s)", remote, raw_path)
+            # Close with 4001 Unauthorized
             await websocket.close(4001, "Unauthorized: invalid or expired token")
             return
         # ─────────────────────────────────────────────────────────────────────
@@ -684,7 +732,9 @@ class WebSocketServerManager:
                 authenticated = client_meta.get("authenticated", False)
 
                 if method == "authenticate":
-                    if token == self.bridge_token:
+                    # This method is now redundant for clients who passed handshake
+                    is_valid = self._validate_token(token)
+                    if is_valid:
                         client_meta["authenticated"] = True
                         await websocket.send(json.dumps({
                             "jsonrpc": "2.0",

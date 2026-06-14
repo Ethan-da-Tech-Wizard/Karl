@@ -1404,29 +1404,56 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 /**
- * Renders a crash diagnostic card in the chat panel when the llama-cpp-python
- * subprocess exits with SIGSEGV (code 139) or OOM SIGKILL (code 137).
+ * Renders an Obsidian-themed crash diagnostic callout in the chat panel when the
+ * llama-cpp-python subprocess exits with SIGSEGV (139) or OOM SIGKILL (137).
  * @param {{ reason?: string, message?: string, exitCode?: number|null, exitSignal?: string|null }} msg
  */
 function _renderCompletionDiagnostic(msg) {
     const chatEl = $('chatMessages');
     if (!chatEl) return;
+
     const isSegv = msg.reason === 'sigsegv';
-    const title = isSegv
-        ? 'AVX Segmentation Fault Detected'
-        : 'Subprocess Killed (OOM)';
-    const icon = isSegv ? '⚠️' : '🔴';
-    const detail = escapeHtml(msg.message || 'Unknown subprocess crash.');
-    const exitInfo = (msg.exitCode != null || msg.exitSignal)
-        ? `<small style="opacity:.6">Exit code: ${msg.exitCode ?? '—'}  Signal: ${msg.exitSignal ?? '—'}</small>`
+    const isOom  = msg.reason === 'oom';
+
+    const accentVar   = isSegv ? 'var(--karl-warn)' : 'var(--karl-danger)';
+    const iconSvg     = isSegv
+        ? `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 3.5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4.5zm0 7a.875.875 0 1 1 0-1.75.875.875 0 0 1 0 1.75z"/></svg>`
+        : `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm3.53 4.47a.75.75 0 0 1 0 1.06L9.06 9l2.47 2.47a.75.75 0 0 1-1.06 1.06L8 10.06l-2.47 2.47a.75.75 0 0 1-1.06-1.06L6.94 9 4.47 6.53a.75.75 0 0 1 1.06-1.06L8 7.94l2.47-2.47a.75.75 0 0 1 1.06 0z"/></svg>`;
+    const calloutType = isSegv ? 'warning' : 'danger';
+    const title       = isSegv ? 'AVX Segmentation Fault' : 'Subprocess OOM Kill';
+    const bodyText    = isSegv
+        ? 'The local completion binary crashed with <strong>SIGSEGV</strong>. This usually means your CPU does not support the AVX/AVX2 instruction sets the binary was compiled for.'
+        : 'The local completion subprocess was <strong>killed by the OS</strong> due to insufficient memory. Try loading a smaller model or reducing context size.';
+
+    const rebuildBlock = isSegv ? `
+<div style="margin-top:.6rem">
+  <div style="font-size:.7rem;opacity:.55;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.25rem">Rebuild command</div>
+  <pre style="margin:0;padding:.4rem .55rem;background:rgba(0,0,0,.35);border-radius:4px;font-size:.75rem;color:var(--karl-good);overflow-x:auto;white-space:pre-wrap;word-break:break-all">CMAKE_ARGS="-DGGML_AVX=OFF -DGGML_AVX2=OFF" pip install --force-reinstall --no-cache-dir llama-cpp-python</pre>
+</div>` : '';
+
+    const exitMeta = (msg.exitCode != null || msg.exitSignal)
+        ? `<div style="margin-top:.45rem;font-size:.7rem;opacity:.45;font-family:monospace">exit&nbsp;${msg.exitCode ?? '—'} &nbsp;·&nbsp; signal&nbsp;${escapeHtml(msg.exitSignal || '—')}</div>`
         : '';
+
     const card = document.createElement('div');
     card.className = 'message assistant';
+    card.dataset.diagnosticType = calloutType;
     card.innerHTML = `
-<div class="glow-panel" style="border-left:3px solid var(--karl-warn);padding:.5rem .75rem;margin:.25rem 0">
-  <strong>${icon} ${escapeHtml(title)}</strong><br>
-  <span style="font-size:.85em">${detail}</span><br>
-  ${exitInfo}
+<div style="
+  background:color-mix(in srgb,${accentVar} 8%,var(--karl-panel,#1e1e2e) 92%);
+  border:1px solid color-mix(in srgb,${accentVar} 45%,transparent 55%);
+  border-left:3px solid ${accentVar};
+  border-radius:6px;
+  padding:.55rem .75rem .65rem;
+  margin:.2rem 0;
+  box-shadow:0 0 12px color-mix(in srgb,${accentVar} 18%,transparent 82%);
+">
+  <div style="display:flex;align-items:center;gap:.35rem;color:${accentVar};font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.35rem">
+    ${iconSvg}&nbsp;${escapeHtml(title)}
+  </div>
+  <div style="font-size:.8rem;line-height:1.5;opacity:.88">${bodyText}</div>
+  ${rebuildBlock}
+  ${exitMeta}
 </div>`;
     chatEl.appendChild(card);
     chatEl.scrollTop = chatEl.scrollHeight;

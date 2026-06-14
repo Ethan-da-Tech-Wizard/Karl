@@ -1,32 +1,4 @@
 
-        <h2 style='color:#00C2FF; margin-top:0;'>⚡ FastAPI & ASGI Systems</h2>
-        <p style='color:#9090A8; line-height:1.4;'>Guide to high-performance asynchronous microservice design, WebSocket connections, and dependency injection hierarchies.</p>
-        
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>1. ASGI Async Event Loop & Websockets</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>ASGI serves as the interface between async python web servers (like Uvicorn) and applications. Fast WebSockets handle streaming tokens to chat view wrappers:</p>
-        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>from fastapi import FastAPI, WebSocket
-
-app = FastAPI()
-
-@app.websocket("/stream")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    while True:
-        token = await get_new_token_async()
-        await websocket.send_text(token)</pre>
-
-        <h4 style='color:#E4E4F0; margin-bottom:4px;'>2. Dependency Injection Trees</h4>
-        <p style='color:#9090A8; margin-top:0; line-height:1.4;'>FastAPI's dependency injection system computes dependency trees on-demand, caching outcomes across HTTP/WS requests:</p>
-        <pre style='background:#10101C; border:1px solid #23233A; color:#E4E4F0; padding:8px; font-family:monospace;'>from fastapi import Depends
-
-async def get_db():
-    db = DatabaseSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
-@app.get("/items")
-async def read_items(db = Depends(get_db)):
-    return db.query_items()</pre>
+        <h2 style='color:#00C2FF; margin-top:0; border-bottom: 1px solid #1F1F3D; padding-bottom: 4px;'>FastAPI Implementation</h2>
+        <p style='color:#9090A8; line-height:1.6;'>Reference for building robust APIs using FastAPI and Pydantic.</p>
     

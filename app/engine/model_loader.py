@@ -205,6 +205,41 @@ class ModelLoader:
             if needs_reload:
                 model_path = cls._resolve_model_path(model_path)
                 model_name = os.path.basename(model_path)
+                
+                # ── Pre-flight CPU Instruction Check ──────────────────────
+                # Detect potential segfaults due to AVX/AVX2/AVX512 incompatibility
+                # before loading a massive model.
+                import subprocess
+                import sys
+                check_script = (
+                    "import sys; "
+                    "try: "
+                    "  # Basic import check for llama_cpp which loads GGML shared libs. "
+                    "  # This is often enough to trigger SIGILL/SIGSEGV on incompatible CPUs. "
+                    "  from llama_cpp import Llama; "
+                    "  sys.exit(0); "
+                    "except Exception: "
+                    "  sys.exit(1)"
+                )
+                try:
+                    # Use same executable as host Karl app
+                    proc = subprocess.run(
+                        [sys.executable, "-c", check_script],
+                        capture_output=True,
+                        timeout=5.0
+                    )
+                    if proc.returncode in (132, 139): # SIGILL or SIGSEGV
+                        msg = (
+                            "FATAL: CPU Instruction Error detected. The installed llama-cpp-python "
+                            "binary is incompatible with your CPU instructions. "
+                            "Please re-install/recompile using: CMAKE_ARGS='-DGGML_AVX=OFF' pip install llama-cpp-python --force-reinstall"
+                        )
+                        logger.error(msg)
+                        raise RuntimeError(msg)
+                except subprocess.TimeoutExpired:
+                    pass # Ignore timeouts for pre-flight check
+                # ─────────────────────────────────────────────────────────
+
                 n_ctx = cls._read_registry_n_ctx(model_name)
                 cls.preflight_model_load(model_path, adapter_name)
 
