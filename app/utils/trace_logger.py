@@ -5,6 +5,8 @@ import uuid
 import gzip
 import shutil
 import threading
+import hashlib
+import base64
 from datetime import datetime, timezone
 
 logger = logging.getLogger("karl.trace_logger")
@@ -37,6 +39,42 @@ class TraceLogger:
         except Exception:
             return 10 * 1024 * 1024
 
+    def _get_encryption_key(self) -> bytes:
+        """Derives a Fernet-compatible encryption key from bridge token and stable hardware salt."""
+        try:
+            # 1. Load bridge token
+            token = "karl-default-secret"
+            token_path = "data/bridge_token.json"
+            if os.path.exists(token_path):
+                with open(token_path, "r") as f:
+                    token_data = json.load(f)
+                    token = token_data.get("token", token)
+            
+            # 2. Get STABLE hardware salt (using totals, not available/free)
+            import psutil
+            import platform
+            from core.hardware_scout import get_cpu_flags
+            
+            total_ram = psutil.virtual_memory().total
+            total_storage = shutil.disk_usage(os.getcwd()).total
+            cpu_flags = "".join(get_cpu_flags())
+            os_name = platform.system()
+            
+            salt_seed = f"{total_ram}-{total_storage}-{cpu_flags}-{os_name}"
+            
+            # 3. Derive key using PBKDF2
+            k = hashlib.pbkdf2_hmac(
+                'sha256', 
+                token.encode(), 
+                salt_seed.encode(), 
+                100000
+            )
+            # Fernet keys must be 32 url-safe base64-encoded bytes
+            return base64.urlsafe_b64encode(k)
+        except Exception as e:
+            logger.error(f"Failed to derive encryption key: {e}")
+            return base64.urlsafe_b64encode(b"karl-emergency-fallback-key-32b!")
+
     def prune_logs(self):
         """Delete trace log files and archives older than log_retention_days."""
         try:
@@ -51,12 +89,12 @@ class TraceLogger:
 
         now = datetime.now(timezone.utc)
         
-        # Prune both live traces and compressed archives
+        # Prune live traces, compressed archives, and encrypted archives
         for directory in [self.log_dir, self.archive_dir]:
             if not os.path.exists(directory):
                 continue
             for f in os.listdir(directory):
-                if (f.startswith("trace_") and (f.endswith(".jsonl") or f.endswith(".jsonl.gz"))):
+                if (f.startswith("trace_") and (f.endswith(".jsonl") or f.endswith(".jsonl.gz") or f.endswith(".jsonl.enc"))):
                     path = os.path.join(directory, f)
                     try:
                         mtime = os.path.getmtime(path)
@@ -69,30 +107,61 @@ class TraceLogger:
                         logger.warning(f"Failed to prune log file {f}: {e}")
 
     def _archive_log(self, file_path: str):
-        """Compresses a rotated log file to Gzip and moves it to the archive."""
+        """Compresses and ENCRYPTS a rotated log file."""
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             return
 
+        try:
+            from cryptography.fernet import Fernet
+            
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+            filename = os.path.basename(file_path)
+            # Use .jsonl.enc for encrypted Gzip payload
+            archive_filename = f"{os.path.splitext(filename)[0]}_{timestamp}.jsonl.enc"
+            archive_path = os.path.join(self.archive_dir, archive_filename)
+
+            logger.info(f"Encrypting and Archiving log {filename}...")
+            
+            # 1. Gzip compress in memory
+            with open(file_path, 'rb') as f_in:
+                gzipped_data = gzip.compress(f_in.read())
+            
+            # 2. Encrypt
+            key = self._get_encryption_key()
+            f = Fernet(key)
+            encrypted_data = f.encrypt(gzipped_data)
+            
+            # 3. Write encrypted archive
+            with open(archive_path, 'wb') as f_out:
+                f_out.write(encrypted_data)
+            
+            # Verify the archive exists and is non-empty before deleting original
+            if os.path.exists(archive_path) and os.path.getsize(archive_path) > 0:
+                os.remove(file_path)
+                logger.info(f"Successfully encrypted and archived {filename}")
+            else:
+                logger.error(f"Failed to verify archive {archive_path}. Keeping original.")
+        except ImportError:
+            logger.error("cryptography module not found. Falling back to plaintext Gzip archival.")
+            # Fallback to standard Gzip if cryptography is missing
+            self._archive_log_plaintext(file_path)
+        except Exception as e:
+            logger.error(f"Failed to encrypt archive log file {file_path}: {e}")
+
+    def _archive_log_plaintext(self, file_path: str):
+        """Standard Gzip archival fallback."""
         try:
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
             filename = os.path.basename(file_path)
             archive_filename = f"{os.path.splitext(filename)[0]}_{timestamp}.jsonl.gz"
             archive_path = os.path.join(self.archive_dir, archive_filename)
-
-            logger.info(f"Archiving log {filename} to {archive_filename}...")
-            
             with open(file_path, 'rb') as f_in:
                 with gzip.open(archive_path, 'wb') as f_out:
                     shutil.copyfileobj(f_in, f_out)
-            
-            # Verify the archive exists and is non-empty before deleting original
-            if os.path.exists(archive_path) and os.path.getsize(archive_path) > 0:
+            if os.path.exists(archive_path):
                 os.remove(file_path)
-                logger.info(f"Successfully archived and removed {filename}")
-            else:
-                logger.error(f"Failed to verify archive {archive_path}. Keeping original.")
         except Exception as e:
-            logger.error(f"Failed to archive log file {file_path}: {e}")
+            logger.error(f"Plaintext fallback archival failed: {e}")
 
     def _refresh_path(self):
         with self._lock:

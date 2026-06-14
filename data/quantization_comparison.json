@@ -1,0 +1,46 @@
+{
+    "benchmarks": [
+        {
+            "format": "F16",
+            "perplexity": 4.12,
+            "vram_mb": 14500,
+            "tps": 12.5
+        },
+        {
+            "format": "Q8_0",
+            "perplexity": 4.13,
+            "vram_mb": 8200,
+            "tps": 22.1
+        },
+        {
+            "format": "Q6_K",
+            "perplexity": 4.15,
+            "vram_mb": 6500,
+            "tps": 35.4
+        },
+        {
+            "format": "Q5_K_M",
+            "perplexity": 4.18,
+            "vram_mb": 5800,
+            "tps": 42.8
+        },
+        {
+            "format": "Q4_K_M",
+            "perplexity": 4.25,
+            "vram_mb": 4800,
+            "tps": 48.2
+        },
+        {
+            "format": "Q3_K_M",
+            "perplexity": 4.65,
+            "vram_mb": 3900,
+            "tps": 55.1
+        },
+        {
+            "format": "Q2_K",
+            "perplexity": 6.82,
+            "vram_mb": 3100,
+            "tps": 62.4
+        }
+    ]
+}

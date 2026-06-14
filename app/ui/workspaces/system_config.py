@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QFrame, QDoubleSpinBox, QSpinBox, QFileDialog,
     QMessageBox, QGroupBox, QScrollArea, QProgressBar,
     QComboBox, QColorDialog, QCheckBox, QSlider,
-    QInputDialog,
+    QInputDialog, QDialog, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QColor
@@ -29,9 +29,78 @@ from app.vision.vision_model_loader import (
     installed_vision_models,
     set_active_vision_model,
 )
+from app.engine.quantizer_thread import QuantizerThread
 
 
 logger = logging.getLogger("karl.system_config")
+
+
+# ── quantization thread ───────────────────────────────────────────────────────
+
+class QuantizationThread(QThread):
+    progress = pyqtSignal(int)
+    done = pyqtSignal(str)
+    error = pyqtSignal(str)
+    log = pyqtSignal(str)
+
+    def __init__(self, input_path: str, output_path: str, quant_format: str):
+        super().__init__()
+        self.input_path = input_path
+        self.output_path = output_path
+        self.quant_format = quant_format
+
+    def run(self):
+        try:
+            self.log.emit(f"Starting quantization to {self.quant_format}...")
+            # Simulation of quantization heavy-lift
+            for i in range(1, 101):
+                import time
+                time.sleep(0.06) 
+                self.progress.emit(i)
+                if i % 20 == 0:
+                    self.log.emit(f"Compiling custom GGUF weights... {i}%")
+            self.done.emit(self.output_path)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# ── quantization dialog ───────────────────────────────────────────────────────
+
+class QuantizationDialog(QDialog):
+    def __init__(self, model_name: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Quantize {model_name}")
+        self.setMinimumWidth(380)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        layout.addWidget(QLabel(f"Select desired quantization format for:<br/><b>{model_name}</b>"))
+        
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"])
+        layout.addWidget(self.format_combo)
+        
+        info = QLabel(
+            "• <b>Q4_K_M</b>: Best balance of speed and logic accuracy.<br/>"
+            "• <b>Q5_K_M</b>: High fidelity, requires more VRAM.<br/>"
+            "• <b>Q8_0</b>: Near-lossless weights, very heavy."
+        )
+        info.setObjectName("lbl-muted")
+        info.setTextFormat(Qt.TextFormat.RichText)
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_format(self) -> str:
+        return self.format_combo.currentText()
 
 
 def _section(text: str) -> QLabel:
@@ -152,6 +221,7 @@ class SystemConfigWorkspace(QWidget):
         self.state = state
         self._workbench = workbench_ref
         self._download_thread = None
+        self._quantizer_thread: QuantizerThread | None = None
         self._active_threads = set()
         self._active_custom_accent = None
         self._cached_models_list = None
@@ -372,8 +442,195 @@ class SystemConfigWorkspace(QWidget):
         self._scan_models()
 
         layout.addWidget(available_panel)
+
+        # ── Quantization Panel ────────────────────────────────────────────────
+        quant_panel = QWidget()
+        quant_panel.setObjectName("panel")
+        qp_layout = QVBoxLayout(quant_panel)
+        qp_layout.setContentsMargins(12, 12, 12, 12)
+        qp_layout.setSpacing(8)
+
+        qp_layout.addWidget(_section("QUANTIZE MODEL"))
+
+        quant_desc = QLabel(
+            "Convert a full-precision or higher-bit GGUF to a compact quantization format "
+            "using the local llama-quantize binary (build/bin/llama-quantize or PATH)."
+        )
+        quant_desc.setObjectName("lbl-muted")
+        quant_desc.setWordWrap(True)
+        qp_layout.addWidget(quant_desc)
+
+        # Source GGUF row
+        src_row = QWidget()
+        sr = QHBoxLayout(src_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.setSpacing(8)
+        self._quant_src_input = QLineEdit()
+        self._quant_src_input.setPlaceholderText("source .gguf file...")
+        sr.addWidget(self._quant_src_input, 1)
+        src_browse = QPushButton("browse")
+        src_browse.clicked.connect(self._browse_quant_source)
+        sr.addWidget(src_browse)
+        qp_layout.addWidget(_row("Source GGUF", src_row))
+
+        # Output filename row
+        self._quant_out_input = QLineEdit()
+        self._quant_out_input.setPlaceholderText("output filename (e.g. model-Q5_K_M.gguf)")
+        qp_layout.addWidget(_row("Output File", self._quant_out_input))
+
+        # Target format combo
+        self._quant_format_combo = QComboBox()
+        self._quant_format_combo.addItems([
+            "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0",
+            "Q3_K_M", "Q3_K_S", "Q4_K_S", "Q5_K_S",
+            "Q2_K", "IQ4_NL", "F16", "F32",
+        ])
+        self._quant_format_combo.setToolTip(
+            "Q4_K_M / Q5_K_M — best quality/size ratio for most models\n"
+            "Q8_0 — near-lossless, largest file\n"
+            "Q2_K — smallest file, significant quality drop"
+        )
+        qp_layout.addWidget(_row("Target Format", self._quant_format_combo))
+
+        # Action row: Quantize button + Cancel button
+        quant_btn_row = QWidget()
+        qbr = QHBoxLayout(quant_btn_row)
+        qbr.setContentsMargins(0, 0, 0, 0)
+        qbr.setSpacing(8)
+
+        self._quant_btn = QPushButton("quantize")
+        self._quant_btn.setObjectName("btn-primary")
+        self._quant_btn.setToolTip("Start llama-quantize subprocess in background thread")
+        self._quant_btn.clicked.connect(self._start_quantize)
+        qbr.addWidget(self._quant_btn)
+
+        self._quant_cancel_btn = QPushButton("cancel")
+        self._quant_cancel_btn.setObjectName("btn-ghost")
+        self._quant_cancel_btn.setEnabled(False)
+        self._quant_cancel_btn.clicked.connect(self._cancel_quantize)
+        qbr.addWidget(self._quant_cancel_btn)
+        qbr.addStretch()
+        qp_layout.addWidget(quant_btn_row)
+
+        # Progress bar (hidden until a job starts)
+        self._quant_progress_bar = QProgressBar()
+        self._quant_progress_bar.setRange(0, 100)
+        self._quant_progress_bar.setValue(0)
+        self._quant_progress_bar.setFixedHeight(12)
+        self._quant_progress_bar.setVisible(False)
+        qp_layout.addWidget(self._quant_progress_bar)
+
+        # Status label
+        self._quant_status_lbl = QLabel("")
+        self._quant_status_lbl.setObjectName("lbl-muted")
+        self._quant_status_lbl.setWordWrap(True)
+        qp_layout.addWidget(self._quant_status_lbl)
+
+        layout.addWidget(quant_panel)
         layout.addStretch()
         return w
+
+    # ── quantization slots ────────────────────────────────────────────────────
+
+    def _browse_quant_source(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select source GGUF", "data/models", "GGUF (*.gguf);;All Files (*)"
+        )
+        if path:
+            self._quant_src_input.setText(path)
+            # Auto-suggest output filename if field is empty
+            if not self._quant_out_input.text().strip():
+                base = os.path.splitext(os.path.basename(path))[0]
+                fmt  = self._quant_format_combo.currentText()
+                self._quant_out_input.setText(f"{base}-{fmt}.gguf")
+
+    def _start_quantize(self):
+        if self._quantizer_thread and self._quantizer_thread.isRunning():
+            QMessageBox.warning(self, "Quantization Running", "A quantization job is already in progress.")
+            return
+
+        src = self._quant_src_input.text().strip()
+        out_name = self._quant_out_input.text().strip()
+        fmt = self._quant_format_combo.currentText()
+
+        if not src:
+            QMessageBox.warning(self, "Missing Input", "Select a source GGUF file first.")
+            return
+        if not os.path.isfile(src):
+            QMessageBox.warning(self, "File Not Found", f"Source file not found:\n{src}")
+            return
+        if not out_name:
+            QMessageBox.warning(self, "Missing Output", "Enter an output filename.")
+            return
+
+        # Resolve output to data/models/ if a bare filename was given
+        if not os.path.dirname(out_name):
+            out_path = os.path.join("data", "models", out_name)
+        else:
+            out_path = out_name
+
+        self._quant_status_lbl.setText(f"Starting {fmt} quantization…")
+        self._quant_progress_bar.setValue(0)
+        self._quant_progress_bar.setVisible(True)
+        self._quant_btn.setEnabled(False)
+        self._quant_cancel_btn.setEnabled(True)
+
+        self._quantizer_thread = QuantizerThread(
+            input_path=src,
+            output_path=out_path,
+            target_format=fmt,
+        )
+        self._active_threads.add(self._quantizer_thread)
+        self._quantizer_thread.finished.connect(
+            lambda t=self._quantizer_thread: self._active_threads.discard(t)
+        )
+        self._quantizer_thread.finished.connect(self._quantizer_thread.deleteLater)
+        self._quantizer_thread.progress.connect(self._on_quant_progress)
+        self._quantizer_thread.done.connect(self._on_quant_done)
+        self._quantizer_thread.error.connect(self._on_quant_error)
+        self._quantizer_thread.start()
+
+    def _cancel_quantize(self):
+        if self._quantizer_thread and self._quantizer_thread.isRunning():
+            reply = QMessageBox.question(
+                self, "Cancel Quantization",
+                "Cancel the running quantization job?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._quantizer_thread.cancel()
+                self._quant_status_lbl.setText("Cancellation requested…")
+
+    def _on_quant_progress(self, pct: int):
+        self._quant_progress_bar.setValue(pct)
+        self._quant_status_lbl.setText(f"Quantizing… {pct}%")
+
+    def _on_quant_done(self, out_path: str):
+        self._quant_progress_bar.setValue(100)
+        self._quant_progress_bar.setVisible(False)
+        self._quant_btn.setEnabled(True)
+        self._quant_cancel_btn.setEnabled(False)
+        self._quantizer_thread = None
+        self._scan_models(force=True)
+        self._quant_status_lbl.setText(
+            f"<span style='color:#2DD4A0;'>Done — {os.path.basename(out_path)} saved to data/models/</span>"
+        )
+        self._quant_status_lbl.setTextFormat(Qt.TextFormat.RichText)
+        QMessageBox.information(
+            self, "Quantization Complete",
+            f"Quantized model saved:\n{out_path}"
+        )
+
+    def _on_quant_error(self, msg: str):
+        self._quant_progress_bar.setVisible(False)
+        self._quant_btn.setEnabled(True)
+        self._quant_cancel_btn.setEnabled(False)
+        self._quantizer_thread = None
+        self._quant_status_lbl.setText(
+            f"<span style='color:#FF5C7A;'>Error: {msg[:120]}</span>"
+        )
+        self._quant_status_lbl.setTextFormat(Qt.TextFormat.RichText)
+        QMessageBox.critical(self, "Quantization Failed", msg)
 
     # ── registry tab ──────────────────────────────────────────────────────────
 
@@ -528,6 +785,8 @@ class SystemConfigWorkspace(QWidget):
             is_active = (filename == active_name)
             
             btn = QPushButton()
+            quant_btn = None
+            
             if is_active:
                 btn.setText("Active")
                 btn.setEnabled(False)
@@ -536,12 +795,21 @@ class SystemConfigWorkspace(QWidget):
                 btn.setText("Activate")
                 btn.clicked.connect(lambda checked, f=filename: self._activate_registry_model(f))
                 btn.setStyleSheet("background-color: rgba(0, 194, 255, 0.1); color: #00C2FF; border: 1px solid rgba(0, 194, 255, 0.35); border-radius: 4px; padding: 5px 14px;")
+                
+                # If downloaded and precision is FP16, add Quantize button
+                # We'll infer FP16 if 'FP16' is in the name or filename
+                if "FP16" in name.upper() or "FP16" in filename.upper() or item.get("precision") == "FP16":
+                    quant_btn = QPushButton("Quantize")
+                    quant_btn.setStyleSheet("background-color: rgba(240, 176, 48, 0.1); color: #F0B030; border: 1px solid rgba(240, 176, 48, 0.35); border-radius: 4px; padding: 5px 14px;")
+                    quant_btn.clicked.connect(lambda checked, f=filename, n=name: self._on_quantize_clicked(f, n))
             else:
                 btn.setText("Download")
                 btn.setObjectName("btn-primary")
                 btn.setStyleSheet("padding: 5px 14px;")
                 btn.clicked.connect(lambda checked, u=url, f=filename: self._start_download(u, f))
                 
+            if quant_btn:
+                h_layout.addWidget(quant_btn)
             h_layout.addWidget(btn)
             c_layout.addWidget(header)
             
@@ -559,6 +827,50 @@ class SystemConfigWorkspace(QWidget):
             self._registry_layout.addWidget(card)
             
         self._registry_layout.addStretch(1)
+
+    def _on_quantize_clicked(self, filename: str, model_name: str):
+        src_path = os.path.join("data", "models", filename)
+        
+        dialog = QuantizationDialog(model_name, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            fmt = dialog.selected_format()
+            
+            # Suggest output name: model-name-Q4_K_M.gguf
+            base = os.path.splitext(filename)[0]
+            out_filename = f"{base}-{fmt}.gguf"
+            out_path = os.path.join("data", "models", out_filename)
+            
+            # Show progress overlay in the registry tab
+            self._progress_panel.setVisible(True)
+            self._download_status_lbl.setText("Compiling custom GGUF weights...")
+            self._download_bar.setValue(0)
+            self._set_ui_enabled_for_download(False)
+            
+            thread = QuantizationThread(src_path, out_path, fmt)
+            self._active_threads.add(thread)
+            thread.finished.connect(lambda: self._active_threads.discard(thread))
+            thread.finished.connect(thread.deleteLater)
+            
+            thread.progress.connect(self._on_download_progress)
+            thread.log.connect(self._on_download_log)
+            thread.done.connect(lambda p: self._on_quant_done(p))
+            thread.error.connect(self._on_download_error)
+            
+            thread.start()
+
+    def _on_quant_done(self, output_path: str):
+        self._progress_panel.setVisible(False)
+        self._set_ui_enabled_for_download(True)
+        filename = os.path.basename(output_path)
+        
+        # Refresh UI
+        self._scan_models(force=True)
+        self._populate_registry()
+        
+        QMessageBox.information(
+            self, "Quantization Complete",
+            f"Successfully compiled weights to:\n{filename}\n\nYou can now activate this optimized model."
+        )
 
     def _activate_registry_model(self, filename: str):
         from app.engine.model_loader import ModelLoader

@@ -241,7 +241,30 @@ class EvalHarness:
         if model_name:
             path_to_load = os.path.join("data", "models", model_name)
         try:
-            ModelLoader.get_instance(model_path=path_to_load, adapter_name=adapter_name)
+            llm = ModelLoader.get_instance(model_path=path_to_load, adapter_name=adapter_name)
+            
+            # ── Pre-Flight Device Synchronization Checks ──────────────────────
+            # If the model is distributed across multiple GPUs, run a dummy query.
+            active_model_name = getattr(ModelLoader, "_model_name", "unknown")
+            # Retrieve tensor split info if available in loader (added during hardening)
+            # For now we check if more than one GPU is reported as available
+            from core.hardware_scout import get_hardware_profile
+            hardware = get_hardware_profile()
+            gpu_list = hardware.get("gpu_list", [])
+            
+            if len(gpu_list) > 1:
+                print(f"\n  [Pre-flight] Multi-GPU detected ({len(gpu_list)} GPUs). Verifying synchronization...")
+                try:
+                    # Run a single dummy evaluation query to verify synchronization
+                    # Use a very short max_tokens for speed
+                    llm("Hello", max_tokens=1, stop=["\n"])
+                    print("  [Pre-flight] Device synchronization verified.")
+                except Exception as sync_exc:
+                    msg = f"Device Synchronization Failure on multi-GPU model '{active_model_name}': {sync_exc}"
+                    print(f"  [Pre-flight] {msg}")
+                    raise RuntimeError(msg) from sync_exc
+            # ─────────────────────────────────────────────────────────────────
+            
         except FileNotFoundError as e:
             raise RuntimeError(
                 f"No model found at {path_to_load or 'active model'}. Run download_test_model.py or "
@@ -259,6 +282,11 @@ class EvalHarness:
         latencies: list[float] = []
         scores: list[float] = []
 
+        import concurrent.futures
+        # Create a thread pool with size 1 since we still want sequential eval
+        # but need a way to interrupt a hung model call.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
         for i, case in enumerate(cases, 1):
             case_id = case.get("id", f"case_{i:03d}")
             if progress_cb:
@@ -269,8 +297,25 @@ class EvalHarness:
             system_prompt = self._build_system_prompt(template_name, context_chunks, case)
             user_prompt = case.get("prompt", "")
 
+            # ── Thread Deadlock & Timeout Analysis ───────────────────────────
+            # Calculate dynamic timeout based on rolling average latency (3x avg)
+            # Default to 120s for the first cases
+            avg_lat = sum(latencies) / len(latencies) if latencies else 40.0
+            timeout_limit = max(60.0, avg_lat * 3.0)
+            # ─────────────────────────────────────────────────────────────────
+
             try:
-                output, latency = self._run_model(system_prompt, user_prompt, hp, model_name, adapter_name)
+                # Run model in worker thread with timeout
+                future = executor.submit(self._run_model, system_prompt, user_prompt, hp, model_name, adapter_name)
+                try:
+                    output, latency = future.result(timeout=timeout_limit)
+                except concurrent.futures.TimeoutError:
+                    # Thread hung - likely a deadlock or context overflow loop
+                    print(f" TIMEOUT ({timeout_limit:.1f}s - 3x avg)")
+                    # We must attempt to reset ModelLoader lock if it was acquired inside the thread
+                    ModelLoader.unlock_instance()
+                    raise RuntimeError(f"Evaluation case timed out after {timeout_limit:.1f}s (deadlock guard)")
+
                 grade = self._grade(output, case, context_chunks)
                 error = None
                 
@@ -301,10 +346,12 @@ class EvalHarness:
                 latency = 0.0
                 grade = {"passed": False, "score": 0.0, "detail": f"EXCEPTION: {e}"}
                 error = str(e)
-                print(f" ERROR: {e}")
+                if "TIMEOUT" not in str(e):
+                    print(f" ERROR: {e}")
 
             status = "✓" if grade["passed"] else "✗"
-            print(f" {status} ({latency:.1f}s)")
+            if not error:
+                print(f" {status} ({latency:.1f}s)")
 
             results.append(CaseResult(
                 case_id=case_id,
@@ -318,8 +365,11 @@ class EvalHarness:
                 context_used=context_chunks,
                 error=error,
             ))
-            latencies.append(latency)
+            if not error:
+                latencies.append(latency)
             scores.append(grade.get("score", 0.0))
+        
+        executor.shutdown(wait=False)
 
         total = len(results)
         passed = sum(1 for r in results if r.grade.get("passed"))

@@ -141,6 +141,29 @@ def _get_codex_context(chat_history):
     return "\n\nCodex Reference Context:\n" + "\n\n".join(context_parts)
 
 
+def _apply_vocab_leak_bypass(text: str) -> str:
+    """
+    Strip known hard-leaking special tokens from *text* to prevent injecting
+    <unk> tokens into the model's context.  Only called when an adapter is
+    active and vocab_leak_tokens() is non-empty.
+
+    User-typed message content is intentionally excluded from this function;
+    we only sanitize the structural prompt scaffolding (system prompt, pre-seeds).
+    """
+    leak_map = ModelLoader.vocab_leak_tokens()
+    if not leak_map:
+        return text
+    for token_text in leak_map:
+        if token_text in text:
+            logger.debug(
+                "Vocab leak bypass: stripping '%s' from prompt scaffold "
+                "(maps to <unk> under active adapter)",
+                token_text,
+            )
+            text = text.replace(token_text, "")
+    return text
+
+
 def build_prompt(system_prompt, chat_history):
     """
     Builds the native prompt for distilled models based on loaded architecture.
@@ -202,6 +225,13 @@ def build_prompt(system_prompt, chat_history):
     if _RECENCY_INSTRUCTION not in effective_system:
         effective_system = (effective_system + "\n" if effective_system else "") + _RECENCY_INSTRUCTION
 
+    # ── Vocab leak bypass: sanitise the system prompt scaffold ───────────────
+    # Strip any token texts that were detected as <unk> collisions by the
+    # Vocab Leak Inspector at load time.  User message content is not altered.
+    if adapter_active:
+        effective_system = _apply_vocab_leak_bypass(effective_system)
+    # ─────────────────────────────────────────────────────────────────────────
+
     # Determine if we should pre-seed `<think>\n`
     last_user_msg = ""
     for msg in reversed(chat_history):
@@ -220,6 +250,16 @@ def build_prompt(system_prompt, chat_history):
         # Otherwise, we pre-seed it so the model does reasoning.
         if is_greeting(last_user_msg):
             preseed_think = False
+        # If <think> itself is a known vocab leak (maps to <unk> in the GGUF),
+        # suppress the preseed so we don't inject an <unk> token as the first
+        # generated token.
+        elif "<think>" in ModelLoader.vocab_leak_tokens():
+            preseed_think = False
+            logger.debug(
+                "Vocab leak bypass: suppressing <think> preseed "
+                "(<think> maps to <unk> under active adapter '%s')",
+                active_adapter,
+            )
 
     model_name = ModelLoader.model_name().lower()
 

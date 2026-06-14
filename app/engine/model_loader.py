@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import threading
@@ -26,6 +27,7 @@ class ModelLoader:
     _draft_instance = None
     _MEMORY_SAFETY_MARGIN = 0.92
     _instance_locked = False
+    _vocab_leak_report: dict = {}  # populated by _inspect_adapter_vocab after each load
 
 
     @classmethod
@@ -69,6 +71,277 @@ class ModelLoader:
             f"No model at {model_path} or fallback {fallback}. "
             "Run python download_test_model.py first."
         )
+
+    # ── Tokenizer Vocabulary Leak Inspector ───────────────────────────────────
+
+    @staticmethod
+    def _load_adapter_special_tokens(adapter_dir: str) -> list[dict]:
+        """
+        Extract special tokens from HuggingFace tokenizer files in *adapter_dir*.
+        Returns list of {id, content, source} dicts.
+        Sources checked (in order): tokenizer.json, tokenizer_config.json,
+        special_tokens_map.json.
+        """
+        tokens: list[dict] = []
+        seen_ids: set[int] = set()
+        seen_texts: set[str] = set()
+
+        # ── tokenizer.json → added_tokens array ──────────────────────────────
+        tj_path = os.path.join(adapter_dir, "tokenizer.json")
+        if os.path.isfile(tj_path):
+            try:
+                with open(tj_path, "r", encoding="utf-8") as fh:
+                    tj = json.load(fh)
+                for entry in tj.get("added_tokens", []):
+                    if not entry.get("special"):
+                        continue
+                    tid = int(entry["id"])
+                    content = entry.get("content", "")
+                    if tid not in seen_ids and content not in seen_texts:
+                        seen_ids.add(tid)
+                        seen_texts.add(content)
+                        tokens.append({"id": tid, "content": content, "source": "tokenizer.json"})
+            except Exception as exc:
+                logger.debug("Could not parse %s: %s", tj_path, exc)
+
+        # ── tokenizer_config.json → added_tokens_decoder ─────────────────────
+        tc_path = os.path.join(adapter_dir, "tokenizer_config.json")
+        if os.path.isfile(tc_path):
+            try:
+                with open(tc_path, "r", encoding="utf-8") as fh:
+                    tc = json.load(fh)
+                for id_str, entry in tc.get("added_tokens_decoder", {}).items():
+                    if not entry.get("special"):
+                        continue
+                    tid = int(id_str)
+                    content = entry.get("content", "")
+                    if tid not in seen_ids and content not in seen_texts:
+                        seen_ids.add(tid)
+                        seen_texts.add(content)
+                        tokens.append({"id": tid, "content": content, "source": "tokenizer_config.json"})
+            except Exception as exc:
+                logger.debug("Could not parse %s: %s", tc_path, exc)
+
+        # ── special_tokens_map.json — id-less role→text mapping ───────────────
+        sm_path = os.path.join(adapter_dir, "special_tokens_map.json")
+        if os.path.isfile(sm_path):
+            try:
+                with open(sm_path, "r", encoding="utf-8") as fh:
+                    sm = json.load(fh)
+                for _role, val in sm.items():
+                    content = val if isinstance(val, str) else val.get("content", "")
+                    if content and content not in seen_texts:
+                        seen_texts.add(content)
+                        tokens.append({"id": None, "content": content, "source": "special_tokens_map.json"})
+            except Exception as exc:
+                logger.debug("Could not parse %s: %s", sm_path, exc)
+
+        return tokens
+
+    @staticmethod
+    def _get_unk_id(llm) -> int | None:
+        """Return the UNK token ID for the loaded llama model, or None if absent."""
+        try:
+            return llm.token_unk()
+        except Exception:
+            pass
+        # Probe whether id=0 is UNK by inspecting its decoded representation.
+        try:
+            piece = llm.detokenize([0])
+            if piece and b"unk" in piece.lower():
+                return 0
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _try_register_token_c_layer(cls, llm, token_text: str, expected_id: int) -> bool:
+        """
+        Attempt runtime token registration via the llama_cpp ctypes layer.
+        llama_add_token is not part of the standard llama.cpp public API; this
+        probes whether a future or custom build exposes it.
+        Returns True on success, False (silently) when the binding is absent.
+        """
+        try:
+            import llama_cpp as _llama_lib
+            # Try the high-level Python module first, then the ctypes sub-module.
+            fn = getattr(_llama_lib, "llama_add_token", None)
+            if fn is None:
+                _ctypes_layer = getattr(_llama_lib, "llama_cpp", None)
+                if _ctypes_layer is not None:
+                    fn = getattr(_ctypes_layer, "llama_add_token", None)
+            if fn is None:
+                return False
+            fn(llm.model, expected_id, token_text.encode("utf-8"), len(token_text), True)
+            logger.info(
+                "Vocab inspector: C-layer registered '%s' → id %d", token_text, expected_id
+            )
+            return True
+        except Exception as exc:
+            logger.debug("C-layer llama_add_token unavailable (%s).", exc)
+            return False
+
+    @classmethod
+    def _inspect_adapter_vocab(cls, adapter_name: str, llm) -> dict:
+        """
+        Compare the adapter's declared special tokens against the GGUF's embedded
+        vocabulary.  Tokens that tokenize to <unk> or fall outside the vocab
+        boundary are recorded as *hard leaks*; tokens that fragment into multiple
+        sub-pieces are recorded as *fragmented* (softer degradation).
+
+        For each hard leak, a C-layer registration attempt is made.  The
+        resulting report is stored on cls._vocab_leak_report and returned.
+        Downstream callers (e.g. interaction_loop.build_prompt) can query
+        cls.vocab_leak_tokens() to bypass injecting leaking tags into prompts.
+        """
+        adapter_dir = os.path.join("data", "adapters", adapter_name)
+        if not os.path.isdir(adapter_dir):
+            cls._vocab_leak_report = {}
+            return {}
+
+        special_tokens = cls._load_adapter_special_tokens(adapter_dir)
+        if not special_tokens:
+            logger.debug("Vocab inspector: no special-token files found in %s", adapter_dir)
+            cls._vocab_leak_report = {}
+            return {}
+
+        try:
+            n_vocab = llm.n_vocab()
+        except Exception:
+            n_vocab = None
+
+        unk_id = cls._get_unk_id(llm)
+
+        leaks: list[dict] = []
+        clean: list[dict] = []
+
+        for entry in special_tokens:
+            content    = entry["content"]
+            expected_id = entry.get("id")  # None when sourced from special_tokens_map
+
+            try:
+                token_ids = llm.tokenize(content.encode("utf-8"), add_bos=False)
+            except TypeError:
+                # Older llama-cpp-python versions don't accept add_bos kwarg
+                try:
+                    token_ids = llm.tokenize(content.encode("utf-8"))
+                except Exception as exc:
+                    logger.warning(
+                        "Vocab inspector: could not tokenize '%s': %s", content, exc
+                    )
+                    continue
+            except Exception as exc:
+                logger.warning(
+                    "Vocab inspector: could not tokenize '%s': %s", content, exc
+                )
+                continue
+
+            is_unk_hit     = (len(token_ids) == 1 and unk_id is not None and token_ids[0] == unk_id)
+            is_out_of_vocab = (
+                n_vocab is not None
+                and expected_id is not None
+                and expected_id >= n_vocab
+            )
+            is_fragmented  = len(token_ids) > 1
+
+            if is_unk_hit or is_out_of_vocab:
+                logger.warning(
+                    "Tokenizer warning: custom adapter token parsed as <unk>. "
+                    "token='%s' expected_id=%s actual_ids=%s unk_id=%s n_vocab=%s",
+                    content, expected_id, token_ids, unk_id, n_vocab,
+                )
+                c_layer_ok = (
+                    cls._try_register_token_c_layer(llm, content, expected_id)
+                    if expected_id is not None
+                    else False
+                )
+                leaks.append({
+                    "content":          content,
+                    "expected_id":      expected_id,
+                    "actual_ids":       token_ids,
+                    "unk_hit":          is_unk_hit,
+                    "out_of_vocab":     is_out_of_vocab,
+                    "fragmented":       is_fragmented,
+                    "c_layer_registered": c_layer_ok,
+                    "source":           entry.get("source"),
+                })
+            elif is_fragmented:
+                logger.debug(
+                    "Vocab inspector: token sub-tokenized (soft leak) '%s' → %s",
+                    content, token_ids,
+                )
+                leaks.append({
+                    "content":          content,
+                    "expected_id":      expected_id,
+                    "actual_ids":       token_ids,
+                    "unk_hit":          False,
+                    "out_of_vocab":     False,
+                    "fragmented":       True,
+                    "c_layer_registered": False,
+                    "source":           entry.get("source"),
+                })
+            else:
+                clean.append({
+                    "content":     content,
+                    "expected_id": expected_id,
+                    "actual_ids":  token_ids,
+                    "source":      entry.get("source"),
+                })
+
+        report = {
+            "adapter":  adapter_name,
+            "checked":  len(special_tokens),
+            "leaks":    leaks,
+            "clean":    clean,
+            "unk_id":   unk_id,
+            "n_vocab":  n_vocab,
+        }
+        cls._vocab_leak_report = report
+
+        hard_leaks = [e for e in leaks if e["unk_hit"] or e["out_of_vocab"]]
+        if hard_leaks:
+            logger.warning(
+                "Vocab leak inspector: %d hard leak(s) detected for adapter '%s'. "
+                "These tokens will collapse to <unk> during inference. "
+                "Ensure the adapter was fine-tuned on the same base tokenizer as the GGUF.",
+                len(hard_leaks), adapter_name,
+            )
+        elif leaks:
+            logger.info(
+                "Vocab leak inspector: %d token(s) sub-tokenized (soft) for adapter '%s'. "
+                "No hard <unk> collisions.",
+                len(leaks), adapter_name,
+            )
+        else:
+            logger.info(
+                "Vocab leak inspector: all %d special token(s) verified clean for adapter '%s'.",
+                len(special_tokens), adapter_name,
+            )
+
+        return report
+
+    @classmethod
+    def vocab_leak_report(cls) -> dict:
+        """Return the most recent tokenizer vocabulary leak inspection report."""
+        return cls._vocab_leak_report
+
+    @classmethod
+    def vocab_leak_tokens(cls) -> dict:
+        """
+        Return {token_text: expected_adapter_id} for every token that hard-leaked
+        (<unk> collision or out-of-vocabulary).  Empty when no adapter is active
+        or when all tokens verified clean.
+        Intended for use by interaction_loop.build_prompt to bypass injecting
+        broken tokens into the model's prompt context.
+        """
+        report = cls._vocab_leak_report
+        return {
+            e["content"]: e["expected_id"]
+            for e in report.get("leaks", [])
+            if e.get("unk_hit") or e.get("out_of_vocab")
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
 
     @classmethod
     def estimate_load_memory(cls, model_path: str, adapter_name: str | None = None) -> dict:
@@ -379,6 +652,15 @@ class ModelLoader:
                 # ─────────────────────────────────────────────────────────────
 
                 logger.info("Ready.")
+
+                # ── Tokenizer Vocabulary Leak Inspection ──────────────────────
+                # Run after the instance is live so llm.tokenize() and
+                # llm.n_vocab() use the GGUF's own embedded vocabulary table.
+                if adapter_name:
+                    cls._inspect_adapter_vocab(adapter_name, cls._instance)
+                else:
+                    cls._vocab_leak_report = {}
+                # ─────────────────────────────────────────────────────────────
 
                 if needs_draft_reload or needs_reload:
                     # Tear down existing draft

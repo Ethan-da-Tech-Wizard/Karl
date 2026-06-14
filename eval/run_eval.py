@@ -192,6 +192,20 @@ def main():
     }
 
     harness = EvalHarness()
+    
+    # ── VRAM Baseline Monitoring ─────────────────────────────────────────────
+    from core.hardware_scout import get_hardware_profile
+    def get_vram_usage():
+        try:
+            profile = get_hardware_profile()
+            gpus = profile.get("gpu_list", [])
+            return {g["id"]: g["memory_used_mb"] for g in gpus}
+        except Exception:
+            return {}
+
+    vram_baseline = get_vram_usage()
+    # ─────────────────────────────────────────────────────────────────────────
+
     report = harness.run(
         dataset_path=dataset,
         workflow_name=args.workflow,
@@ -200,6 +214,17 @@ def main():
     )
 
     report.print_summary()
+
+    # ── VRAM Leak Verification ───────────────────────────────────────────────
+    vram_end = get_vram_usage()
+    if vram_baseline and vram_end:
+        for gpu_id, start_mb in vram_baseline.items():
+            end_mb = vram_end.get(gpu_id, 0)
+            # Allow for a small margin (50MB) of fragmentation or background noise
+            if end_mb > start_mb + 50:
+                print(f"\n  [Warning] VRAM Leak Warning: Memory allocations on GPU {gpu_id} "
+                      f"did not release on completion (start: {start_mb}MB, end: {end_mb}MB).")
+    # ─────────────────────────────────────────────────────────────────────────
 
     save = args.save and not args.no_save
     if save:

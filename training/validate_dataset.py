@@ -26,6 +26,7 @@ Usage
 
 import json
 import os
+import shutil
 import sys
 import argparse
 from collections import defaultdict
@@ -173,6 +174,190 @@ def _indent(lines: list[str], limit: int = 10):
         print(f"         {line}")
     if len(lines) > limit:
         print(f"         … and {len(lines) - limit} more")
+
+
+# ── Repair helpers ────────────────────────────────────────────────────────────
+
+# Smart-quote and whitespace normalisation table (applied once, globally).
+_UNICODE_REPAIR_TABLE = str.maketrans({
+    "“": '"',   # left double quotation mark  "
+    "”": '"',   # right double quotation mark "
+    "‘": "'",   # left single quotation mark  '
+    "’": "'",   # right single quotation mark '
+    " ": " ",   # non-breaking space
+})
+
+
+def _sanitize_text(s: str) -> str:
+    """Replace smart quotes, NBSP, and trailing CR in a single string."""
+    return s.translate(_UNICODE_REPAIR_TABLE).rstrip("\r")
+
+
+def _sanitize_record(rec: dict) -> tuple[dict, bool]:
+    """
+    Recursively walk all string values and apply _sanitize_text.
+    Returns (cleaned_rec, changed) where changed=True if anything was modified.
+    """
+    changed = False
+
+    def _walk(obj):
+        nonlocal changed
+        if isinstance(obj, str):
+            cleaned = _sanitize_text(obj)
+            if cleaned != obj:
+                changed = True
+            return cleaned
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_walk(item) for item in obj]
+        return obj
+
+    return _walk(rec), changed
+
+
+def _reasoning_guard(text: str) -> str:
+    """
+    If a <think> block is opened more times than it is closed, append </think>
+    at the absolute end of the truncated string so the reasoning tag pair is
+    always balanced after truncation.
+    """
+    if text.count("<think>") > text.count("</think>"):
+        return text.rstrip() + "</think>"
+    return text
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    """Hard character truncation. Caller applies _reasoning_guard afterwards."""
+    return text[:max_chars] if len(text) > max_chars else text
+
+
+_THINK_CLOSE_LEN = len("</think>")  # 8 — maximum chars _reasoning_guard can add
+
+
+def _truncate_record(rec: dict, fmt: str, char_budget: int) -> dict:
+    """
+    Truncate natural-language fields so the total character count stays within
+    char_budget.  Strategy per format:
+      SFT  — truncate output first, then instruction if still over budget.
+      DPO  — reserve 1/3 of budget for prompt, split the rest between
+              chosen/rejected evenly.
+      Chat — walk assistant turns backwards and trim content until under budget.
+    The reasoning guard is applied after every individual field truncation.
+
+    Budget accounting is exact:
+      • Separator count is derived from which fields are actually non-empty
+        (matching filter(None, ...) in _record_text, which skips empty strings).
+      • _THINK_CLOSE_LEN chars are reserved per field so the reasoning guard
+        cannot push the total over budget after it appends </think>.
+    """
+    rec = dict(rec)
+
+    if fmt == "sft":
+        instruction = str(rec.get("instruction", ""))
+        inp = str(rec.get("input", ""))
+        output = str(rec.get("output", ""))
+
+        # Mirror the filter(None, ...) join in _record_text: count only the
+        # separating spaces that will actually appear between non-empty fields.
+        nonempty_count = sum(bool(x) for x in (instruction, inp, output))
+        sep_overhead = max(0, nonempty_count - 1)
+
+        output_budget = max(
+            0,
+            char_budget - len(instruction) - len(inp) - sep_overhead - _THINK_CLOSE_LEN,
+        )
+        if len(output) > output_budget:
+            rec["output"] = _reasoning_guard(_truncate_text(output, output_budget))
+
+        # If instruction is still too long (rare), trim it with the updated output len.
+        updated_output = str(rec.get("output", ""))
+        instr_budget = max(
+            0,
+            char_budget - len(updated_output) - len(inp) - sep_overhead - _THINK_CLOSE_LEN,
+        )
+        if len(instruction) > instr_budget:
+            rec["instruction"] = _reasoning_guard(
+                _truncate_text(instruction, instr_budget)
+            )
+
+    elif fmt == "dpo":
+        prompt = str(rec.get("prompt", ""))
+        chosen = str(rec.get("chosen", ""))
+        rejected = str(rec.get("rejected", ""))
+
+        # Separator overhead: prompt + chosen + rejected joined → 2 spaces.
+        sep_overhead = 2
+        prompt_budget = char_budget // 3 - _THINK_CLOSE_LEN
+        half = (char_budget - sep_overhead - prompt_budget) // 2
+        chosen_budget = half - _THINK_CLOSE_LEN
+        rejected_budget = char_budget - sep_overhead - prompt_budget - half - _THINK_CLOSE_LEN
+
+        if len(chosen) > chosen_budget:
+            rec["chosen"] = _reasoning_guard(_truncate_text(chosen, chosen_budget))
+        if len(rejected) > rejected_budget:
+            rec["rejected"] = _reasoning_guard(_truncate_text(rejected, rejected_budget))
+        if len(prompt) > prompt_budget:
+            rec["prompt"] = _reasoning_guard(_truncate_text(prompt, prompt_budget))
+
+    elif fmt == "chat":
+        messages = [dict(m) for m in rec.get("messages", [])]
+        for i in range(len(messages) - 1, -1, -1):
+            total = sum(len(str(m.get("content", ""))) for m in messages)
+            if total <= char_budget:
+                break
+            if messages[i].get("role") != "assistant":
+                continue
+            content = str(messages[i].get("content", ""))
+            excess = total - char_budget + _THINK_CLOSE_LEN
+            new_len = max(0, len(content) - excess)
+            messages[i]["content"] = _reasoning_guard(_truncate_text(content, new_len))
+        rec["messages"] = messages
+
+    return rec
+
+
+def _repair_schema(rec: dict, fmt: str) -> tuple[dict, bool]:
+    """
+    Attempt format-specific schema repair.
+    Returns (repaired_rec, should_drop).
+    should_drop=True means the record is unfixable and must be omitted.
+    """
+    if fmt == "sft":
+        if not str(rec.get("instruction", "")).strip():
+            return rec, True
+        if not str(rec.get("output", "")).strip():
+            return rec, True
+        repaired = dict(rec)
+        repaired.setdefault("input", "")
+        repaired.setdefault("source", "")
+        repaired.setdefault("timestamp", "")
+        return repaired, False
+
+    if fmt == "dpo":
+        prompt = str(rec.get("prompt", "")).strip()
+        chosen = str(rec.get("chosen", "")).strip()
+        rejected = str(rec.get("rejected", "")).strip()
+        if not prompt or not chosen or not rejected:
+            return rec, True
+        if chosen == rejected:
+            return rec, True
+        return rec, False
+
+    if fmt == "chat":
+        messages = rec.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return rec, True
+        clean_msgs = [m for m in messages if str(m.get("content", "")).strip()]
+        roles = {m.get("role") for m in clean_msgs}
+        if "user" not in roles or "assistant" not in roles:
+            return rec, True
+        repaired = dict(rec)
+        repaired["messages"] = clean_msgs
+        return repaired, False
+
+    # Unknown format — not repairable.
+    return rec, True
 
 
 # ── Main validator ────────────────────────────────────────────────────────────
@@ -333,6 +518,171 @@ def _print_report(
     print(f"{bar}\n")
 
 
+# ── Active repair pipeline ────────────────────────────────────────────────────
+
+def repair(path: str, block_size_override: int | None = None) -> None:
+    """
+    Sanitize, schema-repair, and truncate every record in *path* in-place.
+    A .bak backup is written before any modifications are made.
+    """
+    bar = "─" * 62
+    print(f"\n{bar}")
+    print(f"  Karl Dataset Repair Mode")
+    print(f"  Path : {path}")
+    print(f"{bar}\n")
+
+    if not os.path.exists(path):
+        _fail(f"File not found: {path}")
+        return
+
+    # ── Backup ────────────────────────────────────────────────────────────────
+    bak_path = path + ".bak"
+    shutil.copy2(path, bak_path)
+    _pass(f"Backup created  : {bak_path}")
+
+    # ── Token budget ──────────────────────────────────────────────────────────
+    estimate_tokens, block_size, using_model = _build_token_estimator(block_size_override)
+    # Character budget is always heuristic-based for truncation: 1 tok ≈ 4 chars.
+    # This guarantees the heuristic estimator sees ≤ block_size tokens after repair,
+    # and is a safe under-approximation for real tokenizers.
+    char_budget = block_size * CHARS_PER_TOKEN
+    tokenizer_label = "model tokenizer" if using_model else f"heuristic (1 tok ≈ {CHARS_PER_TOKEN} chars)"
+    _info(f"Token estimator : {tokenizer_label}")
+    _info(f"Block size cap  : {block_size} tokens  ({char_budget} chars)")
+    print()
+
+    # ── Parse ─────────────────────────────────────────────────────────────────
+    parsed: list[tuple[int, dict]] = []
+    json_dropped = 0
+    with open(path, "r", encoding="utf-8") as fh:
+        for lineno, raw in enumerate(fh, 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                parsed.append((lineno, json.loads(raw)))
+            except json.JSONDecodeError:
+                json_dropped += 1
+                _info(f"  Dropped line {lineno}: unparseable JSON")
+
+    # ── Process each record ───────────────────────────────────────────────────
+    output_records: list[dict] = []
+    n_sanitized = 0
+    n_schema_dropped = 0
+    n_truncated = 0
+
+    for lineno, rec in parsed:
+        # Step 1 — Unicode normalization
+        rec, changed = _sanitize_record(rec)
+        if changed:
+            n_sanitized += 1
+
+        # Step 2 — Schema repair / drop
+        fmt = _detect_format(rec)
+        rec, should_drop = _repair_schema(rec, fmt)
+        if should_drop:
+            n_schema_dropped += 1
+            _info(f"  Dropped line {lineno}: unfixable schema (format={fmt})")
+            continue
+
+        # Step 3 — Sequence truncation
+        est = estimate_tokens(_record_text(rec, fmt))
+        if est > block_size:
+            rec = _truncate_record(rec, fmt, char_budget)
+            n_truncated += 1
+            _info(f"  Truncated line {lineno}: was ~{est} tokens → capped at {block_size}")
+
+        output_records.append(rec)
+
+    # ── Write back ────────────────────────────────────────────────────────────
+    with open(path, "w", encoding="utf-8") as fh:
+        for rec in output_records:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    # ── Repair summary ────────────────────────────────────────────────────────
+    total_input = len(parsed) + json_dropped
+    total_dropped = json_dropped + n_schema_dropped
+    print(f"\n{bar}")
+    print(f"  REPAIR SUMMARY")
+    print(f"{bar}")
+    print(f"  Input records           : {total_input}")
+    print(f"  Records sanitized       : {n_sanitized}  (unicode / whitespace)")
+    print(f"  Records dropped         : {total_dropped}")
+    print(f"    Unparseable JSON      : {json_dropped}")
+    print(f"    Unfixable schema      : {n_schema_dropped}")
+    print(f"  Records truncated       : {n_truncated}  (sequence length)")
+    print(f"  Records written         : {len(output_records)}")
+    print(f"  Backup path             : {bak_path}")
+    print(f"{bar}\n")
+
+
+# ── Git Hook Installer ───────────────────────────────────────────────────────
+
+def install_git_hook():
+    """Programmatically install a Git pre-commit hook that validates datasets."""
+    git_dir = ".git"
+    if not os.path.isdir(git_dir):
+        # Check parent if we're in training/
+        if os.path.isdir("../.git"):
+            git_dir = "../.git"
+        else:
+            _fail("Git repository not found. Please run this from the repo root.")
+            return False
+
+    hooks_dir = os.path.join(git_dir, "hooks")
+    os.makedirs(hooks_dir, exist_ok=True)
+    hook_path = os.path.join(hooks_dir, "pre-commit")
+
+    hook_script = """#!/bin/bash
+
+# Karl Training Dataset Pre-commit Validator
+# -----------------------------------------
+# Blocks commits if staged .jsonl files in data/training/ fail validation.
+
+STAGED_DATASETS=$(git diff --cached --name-only --diff-filter=ACM | grep '^data/training/.*\\.jsonl$')
+
+if [ -n "$STAGED_DATASETS" ]; then
+    echo "[GIT PRE-COMMIT HOOK]: Validating staged training datasets..."
+    
+    # Identify python executable (prefer venv)
+    PYTHON_EXE="python"
+    if [ -f "venv/bin/python" ]; then
+        PYTHON_EXE="venv/bin/python"
+    elif [ -f ".venv/bin/python" ]; then
+        PYTHON_EXE=".venv/bin/python"
+    fi
+
+    for ds in $STAGED_DATASETS; do
+        if [ ! -f "$ds" ]; then continue; fi # Skip deleted files
+        echo "  Validating $ds..."
+        $PYTHON_EXE training/validate_dataset.py --path "$ds"
+        if [ $? -ne 0 ]; then
+            echo "[GIT PRE-COMMIT HOOK]: Staged training dataset validation failed for $ds. Commit aborted."
+            exit 1
+        fi
+    done
+    echo "[GIT PRE-COMMIT HOOK]: All staged datasets are valid."
+fi
+
+exit 0
+"""
+
+    try:
+        with open(hook_path, "w", encoding="utf-8") as f:
+            f.write(hook_script)
+        
+        # Set execution permissions (chmod +x)
+        import stat
+        st = os.stat(hook_path)
+        os.chmod(hook_path, st.st_mode | stat.S_IEXEC)
+        
+        _pass(f"Git pre-commit hook installed at {hook_path}")
+        return True
+    except Exception as e:
+        _fail(f"Failed to install git hook: {e}")
+        return False
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -354,7 +704,32 @@ def main():
             f"(default: model context limit or {DEFAULT_BLOCK_SIZE})"
         ),
     )
+    parser.add_argument(
+        "--repair", "-r",
+        action="store_true",
+        default=False,
+        help=(
+            "Sanitize, schema-repair, and truncate the dataset in-place. "
+            "A .bak backup is created before any writes. "
+            "Validation is run on the cleaned file afterwards."
+        ),
+    )
+    parser.add_argument(
+        "--install-hook",
+        action="store_true",
+        help="Install a Git pre-commit hook to automate dataset validation.",
+    )
     args = parser.parse_args()
+
+    if args.install_hook:
+        if install_git_hook():
+            sys.exit(0)
+        else:
+            sys.exit(1)
+
+    if args.repair:
+        repair(args.path, block_size_override=args.block_size)
+
     ok = validate(args.path, block_size_override=args.block_size)
     sys.exit(0 if ok else 1)
 

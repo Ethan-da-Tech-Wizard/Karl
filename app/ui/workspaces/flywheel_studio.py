@@ -58,12 +58,17 @@ class CustomLineChart(QWidget):
         self.hovered_idx = -1
         self.update()
 
+    def set_metric(self, title: str, y_label: str):
+        self.title = title
+        self.y_label = y_label
+        self.update()
+
     def mouseMoveEvent(self, event):
         if not self.points:
             return
         
         w, h = self.width(), self.height()
-        margin_left = 60
+        margin_left = 70
         margin_right = 30
         margin_top = 40
         margin_bottom = 50
@@ -71,18 +76,21 @@ class CustomLineChart(QWidget):
         plot_w = w - margin_left - margin_right
         plot_h = h - margin_top - margin_bottom
         
+        if len(self.points) < 1:
+            return
+
         min_x = min(p[0] for p in self.points) if len(self.points) > 1 else 0
         max_x = max(p[0] for p in self.points) if len(self.points) > 1 else 1
-        min_y = min(p[1] for p in self.points) if self.points else 0
-        max_y = max(p[1] for p in self.points) if self.points else 1
+        min_y = min(p[1] for p in self.points)
+        max_y = max(p[1] for p in self.points)
         
         y_range = max_y - min_y
         if y_range == 0:
             min_y -= 0.1
             max_y += 0.1
         else:
-            min_y -= y_range * 0.05
-            max_y += y_range * 0.05
+            min_y -= y_range * 0.1
+            max_y += y_range * 0.1
             
         screen_points = []
         for x, y in self.points:
@@ -120,7 +128,7 @@ class CustomLineChart(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         w, h = self.width(), self.height()
-        margin_left = 60
+        margin_left = 70
         margin_right = 30
         margin_top = 40
         margin_bottom = 50
@@ -132,7 +140,7 @@ class CustomLineChart(QWidget):
         grid_color = QColor(31, 31, 61)
         text_color = QColor(144, 144, 168)
         accent_color = QColor(0, 194, 255)
-        line_color = QColor(0, 194, 255, 200)
+        line_color = QColor(0, 194, 255, 220)
         
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(bg_color))
@@ -157,17 +165,18 @@ class CustomLineChart(QWidget):
         
         min_x = min(p[0] for p in self.points) if len(self.points) > 1 else 0
         max_x = max(p[0] for p in self.points) if len(self.points) > 1 else 1
-        min_y = min(p[1] for p in self.points) if self.points else 0
-        max_y = max(p[1] for p in self.points) if self.points else 1
+        min_y = min(p[1] for p in self.points)
+        max_y = max(p[1] for p in self.points)
         
         y_range = max_y - min_y
         if y_range == 0:
             min_y -= 0.1
             max_y += 0.1
         else:
-            min_y -= y_range * 0.05
-            max_y += y_range * 0.05
+            min_y -= y_range * 0.1
+            max_y += y_range * 0.1
             
+        # Draw Y-axis labels and grid lines
         for i in range(5):
             val = min_y + (max_y - min_y) * (i / 4.0)
             sy = margin_top + plot_h - (i / 4.0) * plot_h
@@ -175,8 +184,10 @@ class CustomLineChart(QWidget):
                 painter.setPen(QPen(QColor(grid_color.red(), grid_color.green(), grid_color.blue(), 100), 1, Qt.PenStyle.DashLine))
                 painter.drawLine(margin_left, int(sy), margin_left + plot_w, int(sy))
             painter.setPen(QPen(text_color, 1))
-            painter.drawText(10, int(sy + 4), f"{val:.3f}")
+            label = f"{val:.1f}" if val >= 1 else f"{val:.3f}"
+            painter.drawText(10, int(sy + 4), label)
             
+        # Draw X-axis labels
         step_x = max(1, len(self.points) // 4)
         for idx in range(0, len(self.points), step_x):
             x, y = self.points[idx]
@@ -205,28 +216,35 @@ class CustomLineChart(QWidget):
                 sy = margin_top + plot_h - ((y - min_y) / (max_y - min_y)) * plot_h
             screen_points.append((sx, sy))
             
-        area_path = QPainterPath()
-        area_path.moveTo(screen_points[0][0], margin_top + plot_h)
-        for sx, sy in screen_points:
-            area_path.lineTo(sx, sy)
+        # Smooth Bezier Curve Path
+        path = QPainterPath()
+        if len(screen_points) >= 2:
+            path.moveTo(screen_points[0][0], screen_points[0][1])
+            for i in range(len(screen_points) - 1):
+                p1 = screen_points[i]
+                p2 = screen_points[i+1]
+                cp1_x = p1[0] + (p2[0] - p1[0]) / 2
+                path.cubicTo(cp1_x, p1[1], cp1_x, p2[1], p2[0], p2[1])
+        
+        # Fill area under curve
+        area_path = QPainterPath(path)
         area_path.lineTo(screen_points[-1][0], margin_top + plot_h)
+        area_path.lineTo(screen_points[0][0], margin_top + plot_h)
         area_path.closeSubpath()
         
         grad = QLinearGradient(0, margin_top, 0, margin_top + plot_h)
-        grad.setColorAt(0, QColor(0, 194, 255, 30))
+        grad.setColorAt(0, QColor(0, 194, 255, 60))
         grad.setColorAt(1, QColor(0, 194, 255, 0))
         painter.setBrush(QBrush(grad))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPath(area_path)
         
+        # Draw the curve line
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(line_color, 2))
-        path = QPainterPath()
-        path.moveTo(screen_points[0][0], screen_points[0][1])
-        for sx, sy in screen_points[1:]:
-            path.lineTo(sx, sy)
         painter.drawPath(path)
         
+        # Draw points
         for idx, (sx, sy) in enumerate(screen_points):
             is_hovered = (idx == self.hovered_idx)
             r = 5 if is_hovered else 3
@@ -235,6 +253,7 @@ class CustomLineChart(QWidget):
             painter.setBrush(QBrush(dot_color))
             painter.drawEllipse(int(sx - r), int(sy - r), int(r * 2), int(r * 2))
             
+        # Hover Tooltip
         if self.hovered_idx != -1:
             hx, hy = screen_points[self.hovered_idx]
             x_val, y_val = self.points[self.hovered_idx]
@@ -243,7 +262,7 @@ class CustomLineChart(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt.PenStyle.DashLine))
             painter.drawLine(int(hx), margin_top, int(hx), margin_top + plot_h)
             
-            tooltip_text = f"X: {lbl}\nY: {y_val:.4f}"
+            tooltip_text = f"{self.x_label}: {lbl}\n{self.y_label}: {y_val:.4f}"
             painter.setFont(QFont("JetBrains Mono, Courier New", 7))
             fm = painter.fontMetrics()
             lines = tooltip_text.split('\n')
@@ -269,14 +288,24 @@ class CustomLineChart(QWidget):
 # ── Stats Loader Background Thread ───────────────────────────────────────────
 
 class _FlywheelDashboardLoader(QThread):
-    loaded = pyqtSignal(dict, list, list) # stats, failure_pairs, training_history
+    loaded = pyqtSignal(dict, list, list, dict) # stats, failure_pairs, training_history, quant_data
 
     def run(self):
         stats = {}
         failure_pairs = []
         training_history = []
+        quant_data = {}
         
         try:
+            # 0. Load Quantization Comparison Data
+            quant_path = "data/quantization_comparison.json"
+            if os.path.exists(quant_path):
+                try:
+                    with open(quant_path, "r", encoding="utf-8") as f:
+                        quant_data = json.load(f)
+                except Exception as e:
+                    logger.warning(f"Error reading {quant_path}: {e}")
+
             # 1. Gather Trace Logs metrics
             total_traces = 0
             trace_files = glob.glob("data/logs/traces/*.jsonl")
@@ -392,7 +421,7 @@ class _FlywheelDashboardLoader(QThread):
         except Exception as e:
             stats["error"] = str(e)
 
-        self.loaded.emit(stats, failure_pairs, training_history)
+        self.loaded.emit(stats, failure_pairs, training_history, quant_data)
 
 
 # ── Flywheel Studio Workspace Widget ─────────────────────────────────────────
@@ -406,6 +435,7 @@ class FlywheelStudioWorkspace(QWidget):
         self._stats_data = {}
         self._failure_pairs = []
         self._training_history = []
+        self._quant_data = {}
         
         self._build_ui()
         self.reload_dashboard()
@@ -518,8 +548,31 @@ class FlywheelStudioWorkspace(QWidget):
 
         self._tabs.addTab(charts_tab, "Optimization Curves")
 
-        # Tab 2: Curated Failure Pairs Inspector
-        failures_tab = QWidget()
+        # Tab 2: Quantization Benchmarks (New)
+        quant_tab = QWidget()
+        qt_lay = QVBoxLayout(quant_tab)
+        qt_lay.setContentsMargins(12, 12, 12, 12)
+        qt_lay.setSpacing(10)
+
+        quant_header = QWidget()
+        qh_lay = QHBoxLayout(quant_header)
+        qh_lay.setContentsMargins(0, 0, 0, 0)
+        qh_lay.addWidget(_section("QUANTIZATION COMPARISON BENCHMARKS"))
+        qh_lay.addStretch()
+        
+        qh_lay.addWidget(_label("Metric:", "lbl-muted"))
+        self._quant_metric_combo = QComboBox()
+        self._quant_metric_combo.addItems(["Perplexity Score", "VRAM Usage (MB)", "Token Speed (tok/sec)"])
+        self._quant_metric_combo.currentIndexChanged.connect(self._on_quant_metric_changed)
+        qh_lay.addWidget(self._quant_metric_combo)
+        qt_lay.addWidget(quant_header)
+
+        self._quant_chart = CustomLineChart("Quantization Impact Analysis", "Format", "Value")
+        qt_lay.addWidget(self._quant_chart, 1)
+        
+        self._tabs.addTab(quant_tab, "Quantization Benchmarks")
+
+        # Tab 3: Curated Failure Pairs Inspector
         ft_lay = QVBoxLayout(failures_tab)
         ft_lay.setContentsMargins(12, 12, 12, 12)
         ft_lay.setSpacing(10)
@@ -592,11 +645,12 @@ class FlywheelStudioWorkspace(QWidget):
         self._active_loader.loaded.connect(self._on_dashboard_loaded)
         self._active_loader.start()
 
-    def _on_dashboard_loaded(self, stats: dict, failure_pairs: list[dict], training_history: list[dict]):
+    def _on_dashboard_loaded(self, stats: dict, failure_pairs: list[dict], training_history: list[dict], quant_data: dict):
         self._active_loader = None
         self._stats_data = stats
         self._failure_pairs = failure_pairs
         self._training_history = training_history
+        self._quant_data = quant_data
 
         # Update labels
         self._lbl_total_traces.setText(str(stats.get("total_traces", 0)))
@@ -653,6 +707,37 @@ class FlywheelStudioWorkspace(QWidget):
         else:
             self._loss_chart.title = "Training Loss Curve"
             self._loss_chart.set_data([], [])
+
+        # Initial Render of Quantization Chart
+        self._on_quant_metric_changed()
+
+    def _on_quant_metric_changed(self):
+        if not self._quant_data:
+            self._quant_chart.set_data([], [])
+            return
+            
+        metric_name = self._quant_metric_combo.currentText()
+        # Mapping UI names to JSON keys
+        key_map = {
+            "Perplexity Score": "perplexity",
+            "VRAM Usage (MB)": "vram_mb",
+            "Token Speed (tok/sec)": "tps"
+        }
+        json_key = key_map.get(metric_name, "perplexity")
+        
+        points = []
+        labels = []
+        
+        # Expecting quant_data to be a list of dicts like: 
+        # [{"format": "Q4_K_M", "perplexity": 5.2, "vram_mb": 4500, "tps": 45.5}, ...]
+        benchmarks = self._quant_data.get("benchmarks", [])
+        for idx, b in enumerate(benchmarks):
+            val = b.get(json_key, 0.0)
+            points.append((float(idx), float(val)))
+            labels.append(b.get("format", f"B{idx}"))
+            
+        self._quant_chart.set_metric(f"Quantization Analysis: {metric_name}", metric_name)
+        self._quant_chart.set_data(points, labels)
 
     def _on_failure_selected(self, idx: int):
         if idx < 0 or idx >= len(self._failure_pairs):
