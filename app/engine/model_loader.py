@@ -267,49 +267,116 @@ class ModelLoader:
 
                 lora_path = cls._adapter_path(adapter_name)
 
-                def _attempt_load(ctx_size):
+                # ── Multi-GPU VRAM Telemetry & Tensor Split ───────────────────
+                _gpu_list = get_hardware_profile().get("gpu_list", [])
+                tensor_split: list[float] | None = None
+                if len(_gpu_list) > 1:
+                    _free_mb = [g["memory_free_mb"] for g in _gpu_list]
+                    _total_free = sum(_free_mb)
+                    if _total_free > 0:
+                        tensor_split = [v / _total_free for v in _free_mb]
+                        logger.info(
+                            "Multi-GPU detected (%d GPUs). Proportional tensor split: %s",
+                            len(_gpu_list),
+                            [f"{s:.3f}" for s in tensor_split],
+                        )
+                # ─────────────────────────────────────────────────────────────
+
+                def _attempt_load(ctx_size, ts=None):
                     threads = max(1, multiprocessing.cpu_count() - 2)
+                    gpu_tag = f", {len(ts)}-GPU split" if ts else ""
+                    kwargs = dict(
+                        model_path=model_path,
+                        n_ctx=ctx_size,
+                        n_gpu_layers=-1,
+                        logits_all=False,
+                        n_threads=threads,
+                        verbose=False,
+                        use_mmap=True,
+                        use_mlock=True,
+                    )
                     if lora_path:
-                        logger.info(f"Loading {model_path} with LoRA adapter {lora_path} (n_ctx={ctx_size}, threads={threads})")
-                        return Llama(
-                            model_path=model_path,
-                            n_ctx=ctx_size,
-                            lora_path=lora_path,
-                            n_gpu_layers=-1,
-                            logits_all=False,
-                            n_threads=threads,
-                            verbose=False
+                        kwargs["lora_path"] = lora_path
+                        logger.info(
+                            "Loading %s with LoRA adapter %s (n_ctx=%d, threads=%d%s)",
+                            model_path, lora_path, ctx_size, threads, gpu_tag,
                         )
                     else:
-                        logger.info(f"Loading {model_path} (n_ctx={ctx_size}, threads={threads})")
-                        return Llama(
-                            model_path=model_path,
-                            n_ctx=ctx_size,
-                            n_gpu_layers=-1,
-                            logits_all=False,
-                            n_threads=threads,
-                            verbose=False
+                        logger.info(
+                            "Loading %s (n_ctx=%d, threads=%d%s)",
+                            model_path, ctx_size, threads, gpu_tag,
+                        )
+                    if ts is not None:
+                        kwargs["tensor_split"] = ts
+                    
+                    try:
+                        return Llama(**kwargs)
+                    except (OSError, RuntimeError) as e:
+                        # Detect mlock privilege/limit failures
+                        err_msg = str(e).lower()
+                        if "mlock" in err_msg or "locked memory" in err_msg:
+                            logger.warning(
+                                "Warning: mlock failed due to ulimit -l limits. "
+                                "Attempting fallback loading without memory locking..."
+                            )
+                            logger.info(
+                                "INSTRUCTION: To permanently raise locked memory limits on Linux (Arch/Ubuntu), "
+                                "add '* hard memlock unlimited' and '* soft memlock unlimited' to /etc/security/limits.conf "
+                                "and restart your session."
+                            )
+                            kwargs["use_mlock"] = False
+                            return Llama(**kwargs)
+                        raise # Re-raise OOM or other errors for the fallback loop to handle
+
+                # ── Fallback Context Scaling Loop ─────────────────────────────
+                # If loading fails due to VRAM/RAM exhaustion, halve n_ctx and retry.
+                current_n_ctx = cls._n_ctx
+                min_ctx = 2048
+                cls._instance = None
+
+                # Multi-GPU first attempt — proportional tensor split across all cards.
+                # Broad except catches driver mismatches and CUDA peer-to-peer mapping
+                # failures, which are not OOM conditions and cannot be fixed by halving
+                # n_ctx, so we skip straight to the single-GPU fallback loop below.
+                if tensor_split is not None:
+                    try:
+                        cls._instance = _attempt_load(current_n_ctx, ts=tensor_split)
+                        cls._n_ctx = current_n_ctx
+                    except Exception as e:
+                        logger.warning(
+                            "Multi-GPU tensor-split load failed (%s). "
+                            "Falling back to single-GPU (GPU 0).",
+                            e,
                         )
 
-                try:
-                    cls._instance = _attempt_load(cls._n_ctx)
-                except (MemoryError, OSError, RuntimeError) as e:
-                    logger.warning(f"VRAM allocation failed for n_ctx={cls._n_ctx}: {e}. Retrying with fallback (n_ctx/2)...")
-                    fallback_ctx = max(256, cls._n_ctx // 2)
+                # Single-GPU fallback: context halving loop (also the only path when
+                # only one GPU is present or the multi-GPU attempt did not succeed).
+                while cls._instance is None:
                     try:
-                        cls._instance = _attempt_load(fallback_ctx)
-                        cls._n_ctx = fallback_ctx
-                    except (MemoryError, OSError, RuntimeError) as e2:
-                        msg = "VRAM Allocation Limit Exceeded. Please free system GPU memory."
-                        logger.error(f"{msg} Final failure: {e2}")
-                        # Ensure we don't leave a half-broken instance
-                        if cls._instance is not None:
-                            try:
-                                cls._instance.close()
-                            except:
-                                pass
-                            cls._instance = None
-                        raise RuntimeError(msg) from e2
+                        cls._instance = _attempt_load(current_n_ctx)
+                        cls._n_ctx = current_n_ctx  # Store successfully allocated limit
+                    except (MemoryError, OSError, RuntimeError) as e:
+                        if current_n_ctx <= min_ctx:
+                            msg = "VRAM Allocation Limit Exceeded even at minimum context budget (2048). Please free system GPU memory."
+                            logger.error(f"{msg} Final failure: {e}")
+                            raise RuntimeError(msg) from e
+
+                        old_ctx = current_n_ctx
+                        current_n_ctx = max(min_ctx, current_n_ctx // 2)
+                        logger.warning(
+                            f"VRAM allocation failed for n_ctx={old_ctx}: {e}. "
+                            f"Retrying with scaled context (n_ctx={current_n_ctx})..."
+                        )
+
+                        import gc
+                        gc.collect()
+                        try:
+                            import torch
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                        except ImportError:
+                            pass
+                # ─────────────────────────────────────────────────────────────
 
                 logger.info("Ready.")
 
@@ -326,14 +393,27 @@ class ModelLoader:
                         try:
                             from llama_cpp import Llama as _LlamaInner
                             threads = max(1, multiprocessing.cpu_count() - 2)
-                            cls._draft_instance = _LlamaInner(
+                            
+                            draft_kwargs = dict(
                                 model_path=draft_model_path,
                                 n_ctx=cls._n_ctx,
                                 n_gpu_layers=-1,
                                 logits_all=False,
                                 n_threads=threads,
                                 verbose=False,
+                                use_mmap=True,
+                                use_mlock=True,
                             )
+                            try:
+                                cls._draft_instance = _LlamaInner(**draft_kwargs)
+                            except (OSError, RuntimeError) as e:
+                                if "mlock" in str(e).lower() or "locked memory" in str(e).lower():
+                                    logger.warning("Warning: Draft model mlock failed. Falling back to non-locked loading.")
+                                    draft_kwargs["use_mlock"] = False
+                                    cls._draft_instance = _LlamaInner(**draft_kwargs)
+                                else:
+                                    raise
+
                             # Re-instantiate primary model wired to the draft instance.
                             # llama-cpp-python exposes speculative decoding via the draft_model kwarg
                             # (available since 0.2.77). If the installed version lacks this kwarg,
@@ -342,7 +422,7 @@ class ModelLoader:
                                 if cls._instance is not None:
                                     cls._instance.close()
                                 
-                                cls._instance = Llama(
+                                primary_kwargs = dict(
                                     model_path=cls._model_path,
                                     n_ctx=cls._n_ctx,
                                     lora_path=cls._adapter_path(cls._active_adapter),
@@ -351,7 +431,19 @@ class ModelLoader:
                                     n_threads=threads,
                                     verbose=False,
                                     draft_model=cls._draft_instance,
+                                    use_mmap=True,
+                                    use_mlock=True,
                                 )
+                                try:
+                                    cls._instance = Llama(**primary_kwargs)
+                                except (OSError, RuntimeError) as e:
+                                    if "mlock" in str(e).lower() or "locked memory" in str(e).lower():
+                                        logger.warning("Warning: Primary model mlock failed during speculative load.")
+                                        primary_kwargs["use_mlock"] = False
+                                        cls._instance = Llama(**primary_kwargs)
+                                    else:
+                                        raise
+
                                 logger.info(
                                     f"Speculative decoding active: target={cls._model_name} "
                                     f"draft={os.path.basename(draft_model_path)}"

@@ -1,186 +1,160 @@
 """
 Dataset Validator — Karl Workbench
 ====================================
-Validates data/training/curated.jsonl before fine-tuning.
+Pre-flight validation for SFT and DPO training datasets before Unsloth loops.
 
-Checks:
+Detected formats
+────────────────
+  SFT   — keys: instruction, input, output, source, timestamp
+  DPO   — keys: prompt, chosen, rejected
+  Chat  — keys: messages  (legacy Karl curated.jsonl format)
+
+Checks
+──────
   1. File exists and is non-empty
-  2. Schema: every record has system/user/assistant roles in correct order
-  3. Minimum count warnings (< 50 warn, < 20 error)
-  4. Token length estimate (flag examples > 512 tokens)
-  5. Distribution: corrected examples >= 20% of total
-  6. Duplicate detection (identical user+response pairs)
+  2. Valid JSON on every line
+  3. Format-specific schema (required keys, non-empty fields, DPO diversity)
+  4. Token-length envelope vs. model context or --block-size (default 2048)
+  5. Structured summary report + exit code 0 (pass) / 1 (fail)
 
-Usage:
+Usage
+─────
   python training/validate_dataset.py
-  python training/validate_dataset.py --path data/training/custom.jsonl
+  python training/validate_dataset.py --path data/training/dpo_export.jsonl
+  python training/validate_dataset.py --path data/training/sft.jsonl --block-size 4096
 """
 
 import json
 import os
 import sys
 import argparse
-from collections import Counter
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 CURATED_PATH = "data/training/curated.jsonl"
-
-WARN_COUNT  = 50
-ERROR_COUNT = 20
-MAX_TOKENS_ESTIMATE = 512  # Rough: 1 token ≈ 4 chars
+DEFAULT_BLOCK_SIZE = 2048
+CHARS_PER_TOKEN = 4  # Heuristic fallback: 1 token ≈ 4 characters
 
 
-def estimate_tokens(text: str) -> int:
-    """Rough token count estimate: characters / 4."""
-    return max(1, len(text) // 4)
+# ── Token estimation ──────────────────────────────────────────────────────────
 
-
-def validate(path: str) -> bool:
+def _build_token_estimator(block_size_override: int | None) -> tuple:
     """
-    Run all checks against the JSONL at `path`.
-    Prints PASS/WARN/FAIL for each check.
-    Returns True if no ERRORs found.
+    Returns (estimate_fn, block_size, using_model_tokenizer).
+
+    Prefers the live ModelLoader tokenizer so the length check uses real BPE
+    boundaries.  Falls back to the 4-chars-per-token heuristic when no model
+    is loaded (or llama_cpp is unavailable), so the script always runs.
     """
-    print(f"\n{'─'*60}")
-    print(f"  Karl Dataset Validator")
-    print(f"  Path: {path}")
-    print(f"{'─'*60}\n")
+    block_size = block_size_override or DEFAULT_BLOCK_SIZE
+    try:
+        from app.engine.model_loader import ModelLoader
+        if ModelLoader.is_loaded():
+            llm = ModelLoader.get_instance()
+            if block_size_override is None:
+                block_size = ModelLoader.context_limit() or DEFAULT_BLOCK_SIZE
 
-    passed_all = True
+            def _model_estimate(text: str) -> int:
+                try:
+                    return len(llm.tokenize(text.encode("utf-8", errors="replace")))
+                except Exception:
+                    return max(1, len(text) // CHARS_PER_TOKEN)
 
-    # ── Check 1: File exists ──────────────────────────────────────────────────
-    if not os.path.exists(path):
-        _fail(f"File not found: {path}")
-        return False
-    _pass("File exists")
+            return _model_estimate, block_size, True
+    except Exception:
+        pass
 
-    # ── Load records ──────────────────────────────────────────────────────────
-    records = []
-    parse_errors = 0
-    with open(path, "r", encoding="utf-8") as f:
-        for i, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError as e:
-                _warn(f"  Line {i}: JSON parse error — {e}")
-                parse_errors += 1
-                passed_all = False
+    def _heuristic_estimate(text: str) -> int:
+        return max(1, len(text) // CHARS_PER_TOKEN)
 
-    total = len(records)
+    return _heuristic_estimate, block_size, False
 
-    if parse_errors:
-        _fail(f"{parse_errors} lines could not be parsed as JSON")
-        passed_all = False
 
-    # ── Check 2: Count ────────────────────────────────────────────────────────
-    if total == 0:
-        _fail("Dataset is empty (0 valid records)")
-        return False
-    elif total < ERROR_COUNT:
-        _fail(f"Only {total} examples — minimum recommended is {ERROR_COUNT} for any effect")
-        passed_all = False
-    elif total < WARN_COUNT:
-        _warn(f"Only {total} examples — {WARN_COUNT}+ recommended for stable fine-tuning")
-    else:
-        _pass(f"Example count: {total}")
+# ── Format detection ──────────────────────────────────────────────────────────
 
-    # ── Check 3: Schema ───────────────────────────────────────────────────────
-    schema_errors = 0
-    for i, rec in enumerate(records):
-        messages = rec.get("messages", [])
-        if not messages:
-            _warn(f"  Record {i+1}: missing 'messages' field")
-            schema_errors += 1
-            continue
-        roles = [m.get("role") for m in messages]
-        # Expect [system, user, assistant] — system optional
-        has_user = "user" in roles
-        has_assistant = "assistant" in roles
-        if not has_user or not has_assistant:
-            _warn(f"  Record {i+1}: missing user or assistant role — roles found: {roles}")
-            schema_errors += 1
-        # Check all messages have content
-        for m in messages:
-            if not m.get("content", "").strip():
-                _warn(f"  Record {i+1}: empty content in role '{m.get('role')}'")
-                schema_errors += 1
+def _detect_format(rec: dict) -> str:
+    """Return 'dpo', 'sft', 'chat', or 'unknown'."""
+    if "prompt" in rec and ("chosen" in rec or "rejected" in rec):
+        return "dpo"
+    if "instruction" in rec or "output" in rec:
+        return "sft"
+    if "messages" in rec:
+        return "chat"
+    return "unknown"
 
-    if schema_errors == 0:
-        _pass(f"Schema: all {total} records have valid roles and content")
-    else:
-        _fail(f"Schema: {schema_errors} issues found")
-        passed_all = False
 
-    # ── Check 4: Token length ─────────────────────────────────────────────────
-    long_examples = []
-    for i, rec in enumerate(records):
-        messages = rec.get("messages", [])
-        total_chars = sum(len(m.get("content", "")) for m in messages)
-        est_tokens = estimate_tokens(total_chars)
-        if est_tokens > MAX_TOKENS_ESTIMATE:
-            long_examples.append((i + 1, est_tokens))
+# ── Text extraction (for token budget) ───────────────────────────────────────
 
-    if not long_examples:
-        _pass(f"Token length: all examples estimated under {MAX_TOKENS_ESTIMATE} tokens")
-    else:
-        _warn(
-            f"Token length: {len(long_examples)} examples estimated over {MAX_TOKENS_ESTIMATE} tokens — "
-            f"consider increasing max_seq_length in qlora_config_template.yaml"
+def _record_text(rec: dict, fmt: str) -> str:
+    """Concatenate all natural-language fields so we can estimate total tokens."""
+    if fmt == "sft":
+        return " ".join(filter(None, [
+            str(rec.get("instruction", "")),
+            str(rec.get("input", "")),
+            str(rec.get("output", "")),
+        ]))
+    if fmt == "dpo":
+        return " ".join(filter(None, [
+            str(rec.get("prompt", "")),
+            str(rec.get("chosen", "")),
+            str(rec.get("rejected", "")),
+        ]))
+    if fmt == "chat":
+        return " ".join(
+            str(m.get("content", "")) for m in rec.get("messages", [])
         )
-        for rec_num, est in long_examples[:5]:
-            print(f"    Record {rec_num}: ~{est} tokens")
-        if len(long_examples) > 5:
-            print(f"    ... and {len(long_examples) - 5} more")
+    return json.dumps(rec)
 
-    # ── Check 5: Source distribution ──────────────────────────────────────────
-    sources = Counter(rec.get("source", "unknown") for rec in records)
-    thumbs_up = sources.get("thumbs_up", 0)
-    corrected  = sources.get("corrected", 0)
-    other      = total - thumbs_up - corrected
 
-    corrected_pct = corrected / total if total else 0
-    if corrected_pct < 0.20 and corrected < 10:
-        _warn(
-            f"Distribution: only {corrected} corrected examples ({corrected_pct:.0%} of total). "
-            f"Add more 👎→corrected examples for robust SFT."
+# ── Per-format schema validators ──────────────────────────────────────────────
+
+def _validate_sft(rec: dict, lineno: int) -> tuple[list[str], list[str]]:
+    """Returns (schema_errors, empty_field_errors)."""
+    schema, empty = [], []
+    for key in ("instruction", "input", "output", "source", "timestamp"):
+        if key not in rec:
+            schema.append(f"line {lineno}: missing key '{key}'")
+    if not str(rec.get("instruction", "")).strip():
+        empty.append(f"line {lineno}: 'instruction' is empty")
+    if not str(rec.get("output", "")).strip():
+        empty.append(f"line {lineno}: 'output' is empty")
+    return schema, empty
+
+
+def _validate_dpo(rec: dict, lineno: int) -> tuple[list[str], list[str]]:
+    """Returns (schema_errors, empty_field_errors)."""
+    schema, empty = [], []
+    for key in ("prompt", "chosen", "rejected"):
+        if key not in rec:
+            schema.append(f"line {lineno}: missing key '{key}'")
+    if not str(rec.get("prompt", "")).strip():
+        empty.append(f"line {lineno}: 'prompt' is empty")
+    chosen = str(rec.get("chosen", "")).strip()
+    rejected = str(rec.get("rejected", "")).strip()
+    if chosen and rejected and chosen == rejected:
+        empty.append(f"line {lineno}: 'chosen' and 'rejected' are identical")
+    return schema, empty
+
+
+def _validate_chat(rec: dict, lineno: int) -> tuple[list[str], list[str]]:
+    """Returns (schema_errors, empty_field_errors)."""
+    schema, empty = [], []
+    messages = rec.get("messages")
+    if not isinstance(messages, list) or not messages:
+        schema.append(f"line {lineno}: 'messages' is missing or empty")
+        return schema, empty
+    roles = [m.get("role") for m in messages]
+    if "user" not in roles or "assistant" not in roles:
+        schema.append(
+            f"line {lineno}: messages must include 'user' and 'assistant' roles"
         )
-    else:
-        _pass(
-            f"Distribution: {thumbs_up} thumbs_up | {corrected} corrected ({corrected_pct:.0%}) | {other} other"
-        )
-
-    # ── Check 6: Duplicates ───────────────────────────────────────────────────
-    seen = set()
-    dupes = 0
-    for rec in records:
-        messages = rec.get("messages", [])
-        key_parts = []
-        for m in messages:
-            if m.get("role") in ("user", "assistant"):
-                key_parts.append(m.get("content", "")[:200])
-        key = tuple(key_parts)
-        if key in seen:
-            dupes += 1
-        seen.add(key)
-
-    if dupes == 0:
-        _pass(f"Duplicates: none found")
-    else:
-        _warn(f"Duplicates: {dupes} near-duplicate records detected — consider deduplicating")
-
-    # ── Summary ───────────────────────────────────────────────────────────────
-    print(f"\n{'─'*60}")
-    if passed_all:
-        print("  ✅ Dataset is READY for fine-tuning.")
-    else:
-        print("  ❌ Dataset has issues. Fix ERRORs before tuning; WARNs are optional.")
-    print(f"{'─'*60}\n")
-
-    return passed_all
+    for m in messages:
+        if not str(m.get("content", "")).strip():
+            empty.append(
+                f"line {lineno}: empty content in role '{m.get('role')}'"
+            )
+    return schema, empty
 
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
@@ -188,24 +162,200 @@ def validate(path: str) -> bool:
 def _pass(msg: str):
     print(f"  ✓  {msg}")
 
-def _warn(msg: str):
-    print(f"  ⚠  WARN: {msg}")
-
 def _fail(msg: str):
-    print(f"  ✗  ERROR: {msg}")
+    print(f"  ✗  FAIL: {msg}")
+
+def _info(msg: str):
+    print(f"  ·  {msg}")
+
+def _indent(lines: list[str], limit: int = 10):
+    for line in lines[:limit]:
+        print(f"         {line}")
+    if len(lines) > limit:
+        print(f"         … and {len(lines) - limit} more")
+
+
+# ── Main validator ────────────────────────────────────────────────────────────
+
+def validate(path: str, block_size_override: int | None = None) -> bool:
+    bar = "─" * 62
+    print(f"\n{bar}")
+    print(f"  Karl DPO/SFT Dataset Validator")
+    print(f"  Path : {path}")
+    print(f"{bar}\n")
+
+    # ── 1. File existence ─────────────────────────────────────────────────────
+    if not os.path.exists(path):
+        _fail(f"File not found: {path}")
+        return False
+    _pass("File exists")
+
+    # ── Token estimator setup ─────────────────────────────────────────────────
+    estimate_tokens, block_size, using_model = _build_token_estimator(
+        block_size_override
+    )
+    tokenizer_label = "model tokenizer" if using_model else f"heuristic (1 tok ≈ {CHARS_PER_TOKEN} chars)"
+    _info(f"Token estimator : {tokenizer_label}")
+    _info(f"Block size cap  : {block_size} tokens")
+    print()
+
+    # ── 2. JSON parse pass ────────────────────────────────────────────────────
+    records: list[tuple[int, dict]] = []
+    json_errors: list[str] = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for lineno, raw in enumerate(fh, 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                records.append((lineno, json.loads(raw)))
+            except json.JSONDecodeError as exc:
+                json_errors.append(f"line {lineno}: {exc.msg} (col {exc.colno})")
+
+    total = len(records)
+
+    if json_errors:
+        _fail(f"JSON parse errors: {len(json_errors)}")
+        _indent(json_errors)
+    else:
+        _pass(f"JSON: all lines parsed successfully")
+
+    if total == 0:
+        _fail("No valid JSON records found — aborting further checks")
+        _print_report(total, len(json_errors), 0, 0, 0, 0.0, block_size)
+        return False
+
+    # ── 3. Schema + 4. Token-length checks ───────────────────────────────────
+    schema_failures: list[str] = []
+    empty_failures: list[str] = []
+    length_overflows: list[tuple[int, int]] = []   # (lineno, est_tokens)
+    format_counts: dict[str, int] = defaultdict(int)
+    total_tokens = 0
+
+    for lineno, rec in records:
+        fmt = _detect_format(rec)
+        format_counts[fmt] += 1
+
+        if fmt == "sft":
+            s_errs, e_errs = _validate_sft(rec, lineno)
+        elif fmt == "dpo":
+            s_errs, e_errs = _validate_dpo(rec, lineno)
+        elif fmt == "chat":
+            s_errs, e_errs = _validate_chat(rec, lineno)
+        else:
+            s_errs = [
+                f"line {lineno}: unrecognised format "
+                f"(top-level keys: {list(rec.keys())[:6]})"
+            ]
+            e_errs = []
+
+        schema_failures.extend(s_errs)
+        empty_failures.extend(e_errs)
+
+        est = estimate_tokens(_record_text(rec, fmt))
+        total_tokens += est
+        if est > block_size:
+            length_overflows.append((lineno, est))
+
+    avg_tokens = total_tokens / total
+
+    # Schema report
+    if schema_failures:
+        _fail(f"Schema (missing keys / unknown format): {len(schema_failures)} issue(s)")
+        _indent(schema_failures)
+    else:
+        _pass(f"Schema: all {total} records have required keys")
+
+    # Empty-field / DPO diversity report
+    if empty_failures:
+        _fail(f"Empty or invalid fields: {len(empty_failures)} issue(s)")
+        _indent(empty_failures)
+    else:
+        _pass("Empty/identical fields: none detected")
+
+    # Token-length report
+    if length_overflows:
+        _fail(
+            f"Token length overflow: {len(length_overflows)} record(s) "
+            f"exceed {block_size} tokens"
+        )
+        _indent(
+            [f"line {ln}: ~{est} tokens" for ln, est in length_overflows],
+            limit=5,
+        )
+    else:
+        _pass(f"Token length: all records estimated under {block_size} tokens")
+
+    # Format breakdown (informational)
+    fmt_parts = ", ".join(
+        f"{cnt} {fmt}" for fmt, cnt in sorted(format_counts.items())
+    )
+    _info(f"Format breakdown: {fmt_parts}")
+
+    # ── 5. Summary report ─────────────────────────────────────────────────────
+    invalid_count = (
+        len(json_errors)
+        + len(schema_failures)
+        + len(empty_failures)
+        + len(length_overflows)
+    )
+    _print_report(
+        total, len(json_errors), len(schema_failures),
+        len(empty_failures), len(length_overflows), avg_tokens, block_size,
+    )
+
+    return invalid_count == 0
+
+
+def _print_report(
+    total: int,
+    json_errors: int,
+    schema_failures: int,
+    empty_failures: int,
+    length_overflows: int,
+    avg_tokens: float,
+    block_size: int,
+):
+    bar = "─" * 62
+    invalid_total = json_errors + schema_failures + empty_failures + length_overflows
+    print(f"\n{bar}")
+    print(f"  EVALUATION SUMMARY")
+    print(f"{bar}")
+    print(f"  Total records evaluated : {total}")
+    print(f"  Invalid records total   : {invalid_total}")
+    print(f"    JSON parse errors     : {json_errors}")
+    print(f"    Schema failures       : {schema_failures}")
+    print(f"    Empty / identical     : {empty_failures}")
+    print(f"    Length overflows      : {length_overflows}  (>{block_size} tok)")
+    print(f"  Average token length    : {avg_tokens:.1f} tokens / example")
+    status = "PASS ✅" if invalid_total == 0 else "FAIL ❌"
+    print(f"  Status                  : {status}")
+    print(f"{bar}\n")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
-    p = argparse.ArgumentParser(description="Karl training dataset validator")
-    p.add_argument(
+    parser = argparse.ArgumentParser(
+        description="Karl DPO/SFT training dataset pre-flight validator"
+    )
+    parser.add_argument(
         "--path", "-p",
         default=CURATED_PATH,
         help=f"Path to JSONL dataset (default: {CURATED_PATH})",
     )
-    args = p.parse_args()
-    ok = validate(args.path)
+    parser.add_argument(
+        "--block-size", "-b",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Token block-size cap for length checks "
+            f"(default: model context limit or {DEFAULT_BLOCK_SIZE})"
+        ),
+    )
+    args = parser.parse_args()
+    ok = validate(args.path, block_size_override=args.block_size)
     sys.exit(0 if ok else 1)
 
 

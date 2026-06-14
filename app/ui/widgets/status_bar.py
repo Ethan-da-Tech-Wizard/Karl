@@ -29,6 +29,7 @@ class StatusBar(QWidget):
         self._model_lbl   = _lbl("● no model", self)
         self._adapter_lbl = _lbl("", self)
         self._state_lbl   = _lbl("idle", self)
+        self._ctx_lbl     = _lbl("", self)
         self._ram_lbl     = _lbl("", self)
         
         self._bridge_dot = QLabel("●")
@@ -43,7 +44,8 @@ class StatusBar(QWidget):
         for w in (
             self._model_lbl, _sep(self),
             self._adapter_lbl, _sep(self),
-            self._state_lbl,
+            self._state_lbl, _sep(self),
+            self._ctx_lbl,
         ):
             layout.addWidget(w)
 
@@ -96,6 +98,18 @@ class StatusBar(QWidget):
         self._state_lbl.setObjectName(obj)
         self._state_lbl.style().unpolish(self._state_lbl)
         self._state_lbl.style().polish(self._state_lbl)
+
+    def set_context_stats(self, total: int, hist: int, rag: int, budget: int):
+        self._ctx_lbl.setText(f"ctx {total:,} / {budget:,}")
+        if total > 0.9 * budget:
+            self._ctx_lbl.setObjectName("lbl-danger")
+        elif total > 0.7 * budget:
+            self._ctx_lbl.setObjectName("lbl-warning")
+        else:
+            self._ctx_lbl.setObjectName("lbl-muted")
+        self._ctx_lbl.style().unpolish(self._ctx_lbl)
+        self._ctx_lbl.style().polish(self._ctx_lbl)
+        self._ctx_lbl.setToolTip(f"Context breakdown:\n- System/Prompt: {total-hist-rag:,}\n- History: {hist:,}\n- RAG: {rag:,}")
 
     def set_bridge_status(self, state: str, clients: int = 0, client_info: list[dict] | None = None):
         """Update the bridge indicator. state: 'connected' | 'listening' | 'offline' | 'error'"""

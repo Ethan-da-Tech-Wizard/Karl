@@ -198,6 +198,7 @@ class MainWindow(QMainWindow):
         self._workbench.model_changed.connect(self._status_bar.set_model)
         self._workbench.adapter_changed.connect(self._status_bar.set_adapter)
         self._workbench.adapter_changed.connect(self._on_adapter_changed)
+        self._workbench.context_stats.connect(self._status_bar.set_context_stats)
         self._workbench.appearance_requested.connect(self._open_appearance_controls)
         self._system.adapter_changed.connect(self._status_bar.set_adapter)
         self._system.adapter_changed.connect(self._on_adapter_changed)

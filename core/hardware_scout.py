@@ -48,11 +48,21 @@ def get_hardware_profile():
     ram_gb = psutil.virtual_memory().available / (1024 ** 3)
 
     vram_gb = 0.0
+    gpu_list: list[dict] = []
     try:
         import GPUtil
         gpus = GPUtil.getGPUs()
         if gpus:
             vram_gb = max(gpu.memoryFree / 1024 for gpu in gpus)
+            gpu_list = [
+                {
+                    "id": gpu.id,
+                    "name": gpu.name,
+                    "memory_free_mb": gpu.memoryFree,
+                    "memory_total_mb": gpu.memoryTotal,
+                }
+                for gpu in gpus
+            ]
     except Exception:
         pass  # No discrete GPU or GPUtil not available
 
@@ -67,7 +77,8 @@ def get_hardware_profile():
         "storage_gb": round(storage_gb, 2),
         "cpu_flags": get_cpu_flags(),
         "arch": platform.machine(),
-        "os": platform.system()
+        "os": platform.system(),
+        "gpu_list": gpu_list,
     }
 
 

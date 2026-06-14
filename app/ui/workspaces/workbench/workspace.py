@@ -69,6 +69,7 @@ class WorkbenchWorkspace(QMainWindow):
     model_changed = pyqtSignal(str)          # (model_name)
     adapter_changed = pyqtSignal(str)        # (adapter_name)
     appearance_requested = pyqtSignal()
+    context_stats = pyqtSignal(int, int, int, int) # (total, hist, rag, budget)
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -1215,6 +1216,7 @@ class WorkbenchWorkspace(QMainWindow):
         t.loop_finished.connect(self._on_loop_done)
         t.error_occurred.connect(self._on_error)
         t.reload_notice.connect(self._show_reload_notice)
+        t.context_stats.connect(self._on_context_stats)
         
         # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
         self._active_threads.add(t)
@@ -1632,6 +1634,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._last_hist_tokens  = hist
         self._last_rag_tokens   = rag
         self._update_token_budget()
+        self.context_stats.emit(total, hist, rag, budget)
     
     def _on_rag_context_used(self, chunks: list):
         if not hasattr(self, '_rag_sources_view'):

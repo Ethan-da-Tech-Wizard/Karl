@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import psutil
 from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.hot_reload import compile_and_reload
@@ -97,6 +98,19 @@ class LLMThread(QThread):
         return kept
 
     def run(self):
+        # ── CPU Core Pinning ──────────────────────────────────────────────────
+        # Pin inference to physical cores to optimize TPS.
+        original_affinity = None
+        try:
+            original_affinity = psutil.Process().cpu_affinity()
+            p_count = psutil.cpu_count(logical=False)
+            if p_count:
+                physical_cores = list(range(p_count))
+                psutil.Process().cpu_affinity(physical_cores)
+                logger.debug(f"LLMThread pinned to physical cores: {physical_cores}")
+        except Exception as e:
+            logger.warning(f"Could not set CPU affinity: {e}")
+
         try:
             core.interaction_loop = compile_and_reload(
                 core.interaction_loop,
@@ -107,6 +121,9 @@ class LLMThread(QThread):
 
             llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
             ModelLoader.lock_instance()
+            
+            # Fetch the actual (potentially fallback-scaled) context limit
+            actual_context_budget = ModelLoader.context_limit()
 
             # If retrieved_chunks is list of dicts, format it to list of strings early to prevent TypeError in context_str join
             rag_attribution_chunks = None
@@ -128,11 +145,10 @@ class LLMThread(QThread):
 
             # Emit context budget stats for the HUD
             try:
-                budget = ModelLoader.context_limit()
                 hist_tokens = sum(self._message_token_count(llm, m) for m in trimmed_history)
                 rag_tokens  = self._token_count(llm, context_str) if self.retrieved_chunks else 0
                 sys_tokens  = self._token_count(llm, system_prompt)
-                self.context_stats.emit(sys_tokens + hist_tokens + rag_tokens, hist_tokens, rag_tokens, budget)
+                self.context_stats.emit(sys_tokens + hist_tokens + rag_tokens, hist_tokens, rag_tokens, actual_context_budget)
             except Exception:
                 pass
 
@@ -419,3 +435,9 @@ class LLMThread(QThread):
             self.error_occurred.emit(f"Error: {str(e)}")
         finally:
             ModelLoader.unlock_instance()
+            # Restore original CPU affinity
+            if original_affinity:
+                try:
+                    psutil.Process().cpu_affinity(original_affinity)
+                except Exception as e:
+                    logger.debug(f"Could not restore CPU affinity: {e}")

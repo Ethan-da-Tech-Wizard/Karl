@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import psutil
 from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.hot_reload import compile_and_reload
@@ -33,6 +34,7 @@ class AgenticThread(QThread):
     loop_finished = pyqtSignal(int)
     reload_notice = pyqtSignal(str)   # module name that was hot-reloaded
     error_occurred = pyqtSignal(str)
+    context_stats = pyqtSignal(int, int, int, int)  # prompt_tokens, history_tokens, rag_tokens, budget
 
     def __init__(self, system_prompt, initial_history, hyperparams,
                  retrieved_chunks=None, workflow="general_chat",
@@ -279,6 +281,19 @@ class AgenticThread(QThread):
         return raw_output, parsed_thought, parsed_response, first_token_time
 
     def run(self):
+        # ── CPU Core Pinning ──────────────────────────────────────────────────
+        # Pin inference to physical cores to optimize TPS.
+        original_affinity = None
+        try:
+            original_affinity = psutil.Process().cpu_affinity()
+            p_count = psutil.cpu_count(logical=False)
+            if p_count:
+                physical_cores = list(range(p_count))
+                psutil.Process().cpu_affinity(physical_cores)
+                logger.debug(f"AgenticThread pinned to physical cores: {physical_cores}")
+        except Exception as e:
+            logger.warning(f"Could not set CPU affinity: {e}")
+
         try:
             core.interaction_loop = compile_and_reload(
                 core.interaction_loop,
@@ -298,6 +313,10 @@ class AgenticThread(QThread):
                 model_path = os.path.join("data", "models", self.model_name)
             llm = ModelLoader.get_instance(model_path=model_path, adapter_name=self.adapter_name)
             ModelLoader.lock_instance()
+            
+            # Fetch the actual (potentially fallback-scaled) context limit
+            actual_context_budget = ModelLoader.context_limit()
+
             iteration = 0
 
             while not self._stop_requested:
@@ -307,6 +326,7 @@ class AgenticThread(QThread):
 
                 # Inject RAG context into system prompt if present
                 system_prompt = self.system_prompt
+                context_str = "(No context retrieved.)"
                 if self.retrieved_chunks:
                     context_str = "\n".join(self.retrieved_chunks)
                     if "{rag_context}" in system_prompt:
@@ -317,6 +337,15 @@ class AgenticThread(QThread):
                 # Trim history to fit context before building prompt
                 trimmed_history = self._trim_history(self.chat_history, system_prompt, llm)
                 prompt = core.interaction_loop.build_prompt(system_prompt, trimmed_history)
+
+                # Emit context budget stats for the HUD
+                try:
+                    hist_tokens = sum(self._message_token_count(llm, m) for m in trimmed_history)
+                    rag_tokens  = self._token_count(llm, context_str) if self.retrieved_chunks else 0
+                    sys_tokens  = self._token_count(llm, system_prompt)
+                    self.context_stats.emit(sys_tokens + hist_tokens + rag_tokens, hist_tokens, rag_tokens, actual_context_budget)
+                except Exception:
+                    pass
 
                 # Tokenize prompt to get accurate prompt token count
                 prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
@@ -403,3 +432,9 @@ class AgenticThread(QThread):
             self.error_occurred.emit(f"Agentic Error: {str(e)}")
         finally:
             ModelLoader.unlock_instance()
+            # Restore original CPU affinity
+            if original_affinity:
+                try:
+                    psutil.Process().cpu_affinity(original_affinity)
+                except Exception as e:
+                    logger.debug(f"Could not restore CPU affinity: {e}")

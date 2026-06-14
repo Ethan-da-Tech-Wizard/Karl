@@ -196,10 +196,38 @@ class KarlSidebarProvider {
     }
 
     /**
+     * Reads the bridge token from disk, retrying up to 3 times with a 100 ms delay
+     * to tolerate file-lock races while the Python host is rotating the token file.
+     * Returns an empty string if the file is absent or unparseable after all retries.
+     * @returns {Promise<string>}
+     * @private
+     */
+    async _readBridgeToken() {
+        const wsRoot = currentWorkspacePath('') || process.cwd();
+        const tokenFile = path.join(wsRoot, 'data', 'bridge_token.json');
+        const MAX_RETRIES = 3;
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            try {
+                const raw = await fs.promises.readFile(tokenFile, 'utf8');
+                return JSON.parse(raw).token || '';
+            } catch (err) {
+                if (attempt < MAX_RETRIES - 1) {
+                    await new Promise(res => setTimeout(res, 100));
+                } else {
+                    // File absent or unreadable after all retries — connect tokenless;
+                    // the server will reject with 4001 if a token is required.
+                    console.warn('[Karl] Could not read bridge_token.json after 3 attempts:', err.message);
+                }
+            }
+        }
+        return '';
+    }
+
+    /**
      * Connects to the Karl WebSocket server.
      * @param {number} [port]
      */
-    connectToBridge(port) {
+    async connectToBridge(port) {
         if (this.socket) {
             this.teardownSocket();
         }
@@ -210,16 +238,9 @@ class KarlSidebarProvider {
         this.lastBridgeError = '';
         this._setConnectionState('connecting', 'Connecting');
 
-        // Read the current bridge token from data/bridge_token.json
-        let bridgeToken = '';
-        try {
-            const wsRoot = currentWorkspacePath('') || process.cwd();
-            const tokenFile = path.join(wsRoot, 'data', 'bridge_token.json');
-            const raw = fs.readFileSync(tokenFile, 'utf8');
-            bridgeToken = JSON.parse(raw).token || '';
-        } catch {
-            // Token file not yet written — connect without token; server will reject with 4001
-        }
+        // Re-read the token from disk on every connection attempt so token rotation
+        // (single-use handshake policy) is picked up without an extension reload.
+        const bridgeToken = await this._readBridgeToken();
         const wsUrl = `wss://127.0.0.1:${activePort}${bridgeToken ? `?token=${encodeURIComponent(bridgeToken)}` : ''}`;
         // rejectUnauthorized: false — the Python backend uses a self-signed localhost cert
         const wsOptions = { rejectUnauthorized: false };
