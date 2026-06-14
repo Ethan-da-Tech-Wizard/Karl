@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 import multiprocessing
+import time
 from llama_cpp import Llama
 
 from app.engine import config_store
@@ -27,7 +28,9 @@ class ModelLoader:
     _draft_instance = None
     _MEMORY_SAFETY_MARGIN = 0.92
     _instance_locked = False
-    _vocab_leak_report: dict = {}  # populated by _inspect_adapter_vocab after each load
+    _vocab_leak_report: dict = {}    # populated by _inspect_adapter_vocab after each load
+    _load_latency_s: float | None = None   # wall-clock seconds for the last successful load
+    _vram_bandwidth_gbs: float | None = None  # measured PCIe H2D bandwidth (GB/s)
 
 
     @classmethod
@@ -71,6 +74,84 @@ class ModelLoader:
             f"No model at {model_path} or fallback {fallback}. "
             "Run python download_test_model.py first."
         )
+
+    # ── CUDA Load Latency & VRAM Bandwidth Profiler ──────────────────────────
+
+    @staticmethod
+    def _bench_vram_bandwidth() -> float | None:
+        """
+        Measure effective PCIe host-to-device transfer bandwidth in GB/s.
+
+        Allocates a 64 MB pinned-CPU tensor and copies it to a CUDA device
+        tensor in a timed loop.  This reflects the PCIe throughput that
+        constrains GGUF weight loading — the same path taken when llama.cpp
+        transfers model layers from system RAM to VRAM.
+
+        Returns None on CPU-only systems or when PyTorch is unavailable.
+        Memory is always freed before returning.
+
+        Thresholds (PCIe bandwidth reference):
+          ≥ 15 GB/s — Gen3/Gen4 x16, healthy
+          8 – 15 GB/s — Gen3 x8 / Gen2 x16, moderate bottleneck
+          < 8 GB/s   — severely throttled lane, inference will be limited
+        """
+        src_cpu = None
+        dst_gpu = None
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                return None
+
+            SIZE_BYTES = 64 * 1024 * 1024   # 64 MB
+            N_ITER     = 8                   # 8 × 64 MB = 512 MB total transfer
+            n_floats   = SIZE_BYTES // 4     # float32 = 4 bytes per element
+
+            # Pinned (page-locked) host memory enables DMA transfers that
+            # saturate PCIe bandwidth; fall back to regular memory if the
+            # system denies the page lock.
+            try:
+                src_cpu = torch.empty(n_floats, dtype=torch.float32, pin_memory=True)
+            except Exception:
+                src_cpu = torch.empty(n_floats, dtype=torch.float32)
+            dst_gpu = torch.empty(n_floats, dtype=torch.float32, device="cuda")
+
+            # Warm-up: prime CUDA lazy init, allocator, and DMA engine
+            dst_gpu.copy_(src_cpu, non_blocking=False)
+            torch.cuda.synchronize()
+
+            # Timed measurement — synchronize ensures all kernels are complete
+            t0 = time.perf_counter()
+            for _ in range(N_ITER):
+                dst_gpu.copy_(src_cpu, non_blocking=False)
+            torch.cuda.synchronize()
+            elapsed = time.perf_counter() - t0
+
+            bw = (N_ITER * SIZE_BYTES) / elapsed / 1e9   # GB/s
+            return round(bw, 2)
+
+        except Exception:
+            return None
+        finally:
+            del src_cpu, dst_gpu
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+    @classmethod
+    def load_latency_s(cls) -> float | None:
+        """Wall-clock seconds for the most recent successful model load."""
+        return getattr(cls, "_load_latency_s", None)
+
+    @classmethod
+    def vram_bandwidth_gbs(cls) -> float | None:
+        """
+        PCIe H2D bandwidth in GB/s measured immediately before the last load.
+        Returns None on CPU-only systems or when PyTorch is not installed.
+        """
+        return getattr(cls, "_vram_bandwidth_gbs", None)
 
     # ── Tokenizer Vocabulary Leak Inspector ───────────────────────────────────
 
@@ -601,6 +682,18 @@ class ModelLoader:
                             return Llama(**kwargs)
                         raise # Re-raise OOM or other errors for the fallback loop to handle
 
+                # ── Pre-flight VRAM Bandwidth Benchmark ──────────────────────
+                # Measure PCIe H2D throughput before the model occupies VRAM so
+                # the allocator is in its cleanest state.  The result is stored
+                # and surfaced in the status bar after loading completes.
+                cls._vram_bandwidth_gbs = cls._bench_vram_bandwidth()
+                cls._load_latency_s = None   # reset; set on the successful attempt
+                if cls._vram_bandwidth_gbs is not None:
+                    logger.info(
+                        "VRAM bandwidth pre-flight: %.2f GB/s", cls._vram_bandwidth_gbs
+                    )
+                # ─────────────────────────────────────────────────────────────
+
                 # ── Fallback Context Scaling Loop ─────────────────────────────
                 # If loading fails due to VRAM/RAM exhaustion, halve n_ctx and retry.
                 current_n_ctx = cls._n_ctx
@@ -612,8 +705,10 @@ class ModelLoader:
                 # failures, which are not OOM conditions and cannot be fixed by halving
                 # n_ctx, so we skip straight to the single-GPU fallback loop below.
                 if tensor_split is not None:
+                    _t0 = time.perf_counter()
                     try:
                         cls._instance = _attempt_load(current_n_ctx, ts=tensor_split)
+                        cls._load_latency_s = time.perf_counter() - _t0
                         cls._n_ctx = current_n_ctx
                     except Exception as e:
                         logger.warning(
@@ -625,8 +720,10 @@ class ModelLoader:
                 # Single-GPU fallback: context halving loop (also the only path when
                 # only one GPU is present or the multi-GPU attempt did not succeed).
                 while cls._instance is None:
+                    _t0 = time.perf_counter()
                     try:
                         cls._instance = _attempt_load(current_n_ctx)
+                        cls._load_latency_s = time.perf_counter() - _t0
                         cls._n_ctx = current_n_ctx  # Store successfully allocated limit
                     except (MemoryError, OSError, RuntimeError) as e:
                         if current_n_ctx <= min_ctx:
@@ -651,7 +748,16 @@ class ModelLoader:
                             pass
                 # ─────────────────────────────────────────────────────────────
 
-                logger.info("Ready.")
+                _bw_str = (
+                    f"{cls._vram_bandwidth_gbs:.1f} GB/s"
+                    if cls._vram_bandwidth_gbs is not None
+                    else "N/A (no CUDA)"
+                )
+                logger.info(
+                    "Ready. Load: %.2fs | VRAM bandwidth: %s",
+                    cls._load_latency_s or 0.0,
+                    _bw_str,
+                )
 
                 # ── Tokenizer Vocabulary Leak Inspection ──────────────────────
                 # Run after the instance is live so llm.tokenize() and

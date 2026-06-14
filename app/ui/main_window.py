@@ -222,6 +222,13 @@ class MainWindow(QMainWindow):
         self._state.adapter_name = adapter
         self._status_bar.set_adapter(adapter)
 
+        # Surface load latency and VRAM bandwidth in the status bar
+        from app.engine.model_loader import ModelLoader
+        self._status_bar.set_load_stats(
+            ModelLoader.load_latency_s(),
+            ModelLoader.vram_bandwidth_gbs(),
+        )
+
         # Sync workspace dropdowns
         self._workbench._refresh_model_combo()
         self._system._scan_adapters()
@@ -254,6 +261,11 @@ class MainWindow(QMainWindow):
             self._apply_theme_from_state()
         elif name == "model_name":
             self._status_bar.set_model(str(value))
+            from app.engine.model_loader import ModelLoader
+            self._status_bar.set_load_stats(
+                ModelLoader.load_latency_s(),
+                ModelLoader.vram_bandwidth_gbs(),
+            )
         elif name == "adapter_name":
             self._status_bar.set_adapter(value)
 

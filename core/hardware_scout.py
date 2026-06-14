@@ -49,20 +49,56 @@ def get_hardware_profile():
 
     vram_gb = 0.0
     gpu_list: list[dict] = []
+    
+    # ── NVIDIA NVML Monitoring ───────────────────────────────────────────────
+    nvml_info = {}
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        try:
+            device_count = pynvml.nvmlDeviceGetCount()
+            for i in range(device_count):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                
+                # Fetch Temperature
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                
+                # Fetch Throttle Reasons
+                reasons = pynvml.nvmlDeviceGetCurrentClocksThrottleReasons(handle)
+                alerts = []
+                if reasons & pynvml.NVML_CLOCKS_THROTTLE_REASON_THERMAL:
+                    alerts.append("Thermal Throttling Active")
+                if reasons & pynvml.NVML_CLOCKS_THROTTLE_REASON_POWER_LIMIT:
+                    alerts.append("Power Limit Throttling Active")
+                
+                nvml_info[i] = {
+                    "temp_c": temp,
+                    "alerts": alerts
+                }
+        finally:
+            pynvml.nvmlShutdown()
+    except Exception:
+        pass # NVML not available or no NVIDIA GPU
+    # ─────────────────────────────────────────────────────────────────────────
+
     try:
         import GPUtil
         gpus = GPUtil.getGPUs()
         if gpus:
             vram_gb = max(gpu.memoryFree / 1024 for gpu in gpus)
-            gpu_list = [
-                {
+            for gpu in gpus:
+                gpu_data = {
                     "id": gpu.id,
                     "name": gpu.name,
                     "memory_free_mb": gpu.memoryFree,
                     "memory_total_mb": gpu.memoryTotal,
                 }
-                for gpu in gpus
-            ]
+                # Inject NVML data if available for this ID
+                if gpu.id in nvml_info:
+                    gpu_data["temperature_c"] = nvml_info[gpu.id]["temp_c"]
+                    gpu_data["alerts"] = nvml_info[gpu.id]["alerts"]
+                
+                gpu_list.append(gpu_data)
     except Exception:
         pass  # No discrete GPU or GPUtil not available
 

@@ -6,6 +6,7 @@ Coordinating traces, curation datasets, evaluations, and loss metrics.
 
 from __future__ import annotations
 
+import logging
 import os
 import json
 import glob
@@ -17,12 +18,15 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QTabWidget, QFrame,
     QSizePolicy, QTableWidget, QTableWidgetItem, QAbstractItemView,
+    QComboBox, QLineEdit, QStackedWidget,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QLinearGradient, QPainterPath
 
 from app.ui.themes import MONO
 from app.ui.widgets.glow_panel import GlowPanel
+
+logger = logging.getLogger("karl.flywheel_studio")
 
 
 def _section(text: str) -> QLabel:
@@ -573,6 +577,7 @@ class FlywheelStudioWorkspace(QWidget):
         self._tabs.addTab(quant_tab, "Quantization Benchmarks")
 
         # Tab 3: Curated Failure Pairs Inspector
+        failures_tab = QWidget()
         ft_lay = QVBoxLayout(failures_tab)
         ft_lay.setContentsMargins(12, 12, 12, 12)
         ft_lay.setSpacing(10)
@@ -629,6 +634,7 @@ class FlywheelStudioWorkspace(QWidget):
         self._tabs.addTab(failures_tab, "Eval Failure Pairs Inspector")
 
         self._tabs.addTab(self._build_leaderboard_tab(), "Leaderboard")
+        self._tabs.addTab(self._build_log_inspector_tab(), "Log Inspector")
 
         right_layout.addWidget(self._tabs)
         root.addWidget(right_col, 1)
@@ -855,3 +861,197 @@ class FlywheelStudioWorkspace(QWidget):
             )
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Export encountered an error:\n{e}")
+
+    # ── Log Inspector Tab ─────────────────────────────────────────────────────
+
+    def _build_log_inspector_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        self._log_inspector_stack = QStackedWidget()
+        lay.addWidget(self._log_inspector_stack)
+
+        # ── Page 0: Auth Card ─────────────────────────────────────────────
+        auth_host = QWidget()
+        ah_lay = QVBoxLayout(auth_host)
+        ah_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        auth_card = GlowPanel(self.state)
+        auth_card.setFixedWidth(440)
+        ac_lay = QVBoxLayout(auth_card)
+        ac_lay.setContentsMargins(32, 32, 32, 32)
+        ac_lay.setSpacing(14)
+
+        title_lbl = QLabel("Encrypted Log Inspection")
+        title_lbl.setObjectName("lbl-accent")
+        title_lbl.setStyleSheet("font-size: 13pt; font-weight: bold;")
+        ac_lay.addWidget(title_lbl)
+
+        subtitle = QLabel(
+            "Enter your bridge security token to decrypt and\n"
+            "view trace logs in memory."
+        )
+        subtitle.setObjectName("lbl-muted")
+        subtitle.setWordWrap(True)
+        ac_lay.addWidget(subtitle)
+
+        self._log_token_input = QLineEdit()
+        self._log_token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._log_token_input.setPlaceholderText("Bridge security token…")
+        self._log_token_input.returnPressed.connect(self._on_authorize_logs)
+        ac_lay.addWidget(self._log_token_input)
+
+        auth_btn = QPushButton("Authorize & Load Logs")
+        auth_btn.setObjectName("btn-primary")
+        auth_btn.clicked.connect(self._on_authorize_logs)
+        ac_lay.addWidget(auth_btn)
+
+        self._log_auth_error = QLabel("Authorization Failed: Invalid token.")
+        self._log_auth_error.setStyleSheet("color: #FF5C7A; font-weight: bold;")
+        self._log_auth_error.setVisible(False)
+        ac_lay.addWidget(self._log_auth_error)
+
+        ah_lay.addStretch()
+        ah_lay.addWidget(auth_card, 0, Qt.AlignmentFlag.AlignHCenter)
+        ah_lay.addStretch()
+        self._log_inspector_stack.addWidget(auth_host)
+
+        # ── Page 1: Telemetry Dashboard ───────────────────────────────────
+        dashboard = QWidget()
+        dash_lay = QVBoxLayout(dashboard)
+        dash_lay.setContentsMargins(12, 12, 12, 12)
+        dash_lay.setSpacing(10)
+
+        dash_header = QWidget()
+        dh_lay = QHBoxLayout(dash_header)
+        dh_lay.setContentsMargins(0, 0, 0, 0)
+        dh_lay.addWidget(_section("DECRYPTED TRACE TELEMETRY"))
+        dh_lay.addStretch()
+        lock_btn = QPushButton("Lock")
+        lock_btn.setObjectName("btn-ghost")
+        lock_btn.setToolTip("Return to token entry and clear decrypted data")
+        lock_btn.clicked.connect(self._on_lock_logs)
+        dh_lay.addWidget(lock_btn)
+        dash_lay.addWidget(dash_header)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(1)
+
+        self._log_trace_list = QListWidget()
+        self._log_trace_list.setFixedWidth(240)
+        self._log_trace_list.setToolTip("Decrypted trace entries")
+        splitter.addWidget(self._log_trace_list)
+
+        charts_host = QWidget()
+        ch_lay = QVBoxLayout(charts_host)
+        ch_lay.setContentsMargins(0, 0, 0, 0)
+        ch_lay.setSpacing(8)
+
+        self._log_speed_chart = CustomLineChart("Generation Speed", "Trace #", "tok/s")
+        ch_lay.addWidget(self._log_speed_chart, 1)
+
+        self._log_time_chart = CustomLineChart("Response Time", "Trace #", "seconds")
+        ch_lay.addWidget(self._log_time_chart, 1)
+
+        self._log_acc_chart = CustomLineChart("Feedback Quality", "Trace #", "thumbs up")
+        ch_lay.addWidget(self._log_acc_chart, 1)
+
+        splitter.addWidget(charts_host)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        dash_lay.addWidget(splitter, 1)
+        self._log_inspector_stack.addWidget(dashboard)
+
+        return w
+
+    def _on_authorize_logs(self) -> None:
+        from app.utils.trace_logger import TraceLogger
+
+        token_text = self._log_token_input.text().strip()
+        if not token_text:
+            self._log_auth_error.setText("Please enter a security token.")
+            self._log_auth_error.setVisible(True)
+            return
+
+        archive_dir = "data/logs/archive"
+        enc_files = sorted(
+            glob.glob(os.path.join(archive_dir, "*.jsonl.enc")),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+
+        if not enc_files:
+            self._log_auth_error.setText("No encrypted log archives found.")
+            self._log_auth_error.setVisible(True)
+            return
+
+        all_entries: list[dict] = []
+        auth_ok = False
+        for path in enc_files:
+            try:
+                entries = TraceLogger.decrypt_in_memory(token_text, path)
+                all_entries.extend(entries)
+                auth_ok = True
+            except ValueError:
+                # Wrong token — stop immediately rather than trying remaining archives
+                break
+            except Exception as e:
+                logger.warning("Could not decrypt %s: %s", path, e)
+
+        if not auth_ok:
+            self._log_auth_error.setText("Authorization Failed: Invalid token.")
+            self._log_auth_error.setVisible(True)
+            return
+
+        self._log_auth_error.setVisible(False)
+        self._populate_log_dashboard(all_entries)
+        self._log_inspector_stack.setCurrentIndex(1)
+
+    def _on_lock_logs(self) -> None:
+        self._log_trace_list.clear()
+        self._log_speed_chart.set_data([], [])
+        self._log_time_chart.set_data([], [])
+        self._log_acc_chart.set_data([], [])
+        self._log_token_input.clear()
+        self._log_auth_error.setVisible(False)
+        self._log_inspector_stack.setCurrentIndex(0)
+
+    def _populate_log_dashboard(self, logs: list[dict]) -> None:
+        self._log_trace_list.clear()
+
+        speed_pts: list[tuple[float, float]] = []
+        time_pts: list[tuple[float, float]] = []
+        acc_pts: list[tuple[float, float]] = []
+        speed_labels: list[str] = []
+        time_labels: list[str] = []
+        acc_labels: list[str] = []
+
+        for idx, entry in enumerate(logs):
+            ts = entry.get("timestamp", "")
+            model = entry.get("model", "?")
+            short_ts = ts[11:19] if len(ts) >= 19 else f"#{idx}"
+            adapter = entry.get("adapter") or ""
+            tag = f"  [{adapter}]" if adapter else ""
+            self._log_trace_list.addItem(f"{short_ts}  {model}{tag}")
+
+            label = f"#{idx}"
+            timing = entry.get("timing", {})
+
+            gen_tps = timing.get("generation_tps")
+            if gen_tps is not None:
+                speed_pts.append((float(idx), float(gen_tps)))
+                speed_labels.append(label)
+
+            total_s = timing.get("total_seconds")
+            if total_s is not None:
+                time_pts.append((float(idx), float(total_s)))
+                time_labels.append(label)
+
+            feedback = entry.get("feedback", "none")
+            acc_pts.append((float(idx), 1.0 if feedback == "thumbs_up" else 0.0))
+            acc_labels.append(label)
+
+        self._log_speed_chart.set_data(speed_pts, speed_labels)
+        self._log_time_chart.set_data(time_pts, time_labels)
+        self._log_acc_chart.set_data(acc_pts, acc_labels)

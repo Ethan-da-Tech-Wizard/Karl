@@ -261,6 +261,57 @@ class TraceLogger:
 
         return self._log_file
 
+    @staticmethod
+    def decrypt_in_memory(token: str, file_path: str) -> list[dict]:
+        """
+        Decrypts an archived .enc log file in RAM without writing to disk.
+        Returns a list of parsed JSON records.
+        """
+        try:
+            from cryptography.fernet import Fernet
+            import hashlib
+            import base64
+            import psutil
+            import platform
+            from core.hardware_scout import get_cpu_flags
+            
+            # 1. Derive key from PROVIDED token and STABLE hardware salt
+            total_ram = psutil.virtual_memory().total
+            total_storage = shutil.disk_usage(os.getcwd()).total
+            cpu_flags = "".join(get_cpu_flags())
+            os_name = platform.system()
+            salt_seed = f"{total_ram}-{total_storage}-{cpu_flags}-{os_name}"
+            
+            k = hashlib.pbkdf2_hmac('sha256', token.encode(), salt_seed.encode(), 100000)
+            key = base64.urlsafe_b64encode(k)
+            
+            # 2. Decrypt
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Archive not found: {file_path}")
+                
+            with open(file_path, 'rb') as f_in:
+                encrypted_data = f_in.read()
+            
+            fernet = Fernet(key)
+            try:
+                gzipped_data = fernet.decrypt(encrypted_data)
+            except Exception:
+                raise ValueError("Invalid bridge token or hardware profile mismatch.")
+            
+            # 3. Decompress and Parse
+            decompressed = gzip.decompress(gzipped_data).decode('utf-8')
+            records = []
+            for line in decompressed.strip().split('\n'):
+                if line.strip():
+                    records.append(json.loads(line))
+            return records
+            
+        except (ValueError, FileNotFoundError):
+            raise
+        except Exception as e:
+            logger.error(f"In-memory decryption error: {e}")
+            raise RuntimeError(f"Failed to decrypt log: {e}")
+
     def update_last_entry_feedback(self, feedback: str, corrected_response: str | None = None):
         """
         Rewrite the last line of the active jsonl file with the updated feedback
