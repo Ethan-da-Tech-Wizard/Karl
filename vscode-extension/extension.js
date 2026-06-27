@@ -1,6 +1,7 @@
 // @ts-check
 const vscode = require('vscode');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const cp = require('child_process');
 const { KarlSidebarProvider, sendActiveStateToWebview } = require('./src/sidebarProvider');
@@ -12,8 +13,31 @@ const {
     revealKarlPanel
 } = require('./src/commands');
 
+/**
+ * Read the Karl service-discovery descriptor written by the Python backend.
+ * Returns the parsed JSON or null if the file is absent / unreadable.
+ * @returns {{ active_port: number, token: string, bound_at: string } | null}
+ */
+function readServiceDiscovery() {
+    const discoveryPath = path.join(os.homedir(), '.karl', 'service_discovery.json');
+    try {
+        const raw = fs.readFileSync(discoveryPath, 'utf8');
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
 function activate(context) {
     const sidebarProvider = new KarlSidebarProvider(context);
+
+    // Pre-populate the provider with the discovered endpoint so that
+    // connectToBridge() can use the correct port without manual config.
+    const discovery = readServiceDiscovery();
+    if (discovery && discovery.active_port) {
+        sidebarProvider.discoveredPort = discovery.active_port;
+        sidebarProvider.discoveredToken = discovery.token || '';
+    }
     const provider = sidebarProvider;
     Object.defineProperty(provider, '_view', {
         get() { return this.webviewView; }

@@ -1,0 +1,44 @@
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+no_implicit_optional = false
+follow_imports = "skip"
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+explicit_package_bases = true
+files = [
+    "app/engine/config_store.py",
+    "app/engine/hot_reload.py",
+    "app/utils/memory_manager.py",
+    "core/cognitive_parser.py",
+    "core/interaction_loop.py",
+    "core/prompt_templates.py",
+    "core/workflows.py",
+    # Strict-typed modules (see overrides below)
+    "app/engine/model_loader.py",
+    "app/utils/session_tree.py",
+    "app/utils/trace_logger.py",
+    "eval/harness.py",
+]
+exclude = [
+    "^venv/",
+    "^\\.venv/",
+    "^Karl-main/",
+    "^data/",
+    "^scratch/",
+    "^unsloth_compiled_cache/",
+    "^tools/conversion/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "app.engine.model_loader",
+    "app.utils.session_tree",
+    "app.utils.trace_logger",
+    "eval.harness",
+]
+disallow_untyped_defs = true
+warn_return_any = true
+no_implicit_optional = true

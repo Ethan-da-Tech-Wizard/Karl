@@ -15,35 +15,41 @@ import time
 import uuid
 import ssl
 import subprocess
+import pathlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 import websockets
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 from typing import Set, Optional, Any
 from PyQt6.QtCore import Qt
 
 from app.engine import config_store
 from app.engine.swarm_orchestrator import SwarmOrchestratorThread
-from app.engine.llm_thread import LLMThread
-from app.engine.agentic_thread import AgenticThread
-from app.engine.model_loader import ModelLoader
+from app.engine.inference_service import InferenceService
+from app.engine.model_loader import CircuitBreakerOpenException, ModelLoader
 from app.utils.rag_pipeline import RAGPipeline
 from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
 from app.ui.workspaces.prompt_lab import generate_char_diff_html
 from app.utils.keychain_manager import save_cached_token
+from app.utils.correlation_logger import new_correlation_id, set_correlation_id
 
 
 logger = logging.getLogger("karl.websocket")
 
 
 class WebSocketServerManager:
+    """Secure JSON-RPC 2.0 WebSocket bridge for editor integrations."""
+
     _instance = None
     _lock = threading.Lock()
 
     @classmethod
-    def get_instance(cls, port: int = 8080) -> "WebSocketServerManager":
+    def get_instance(cls, port: int = 8080, state=None) -> "WebSocketServerManager":
+        """Return the process-wide bridge manager, creating it if necessary."""
         with cls._lock:
             if cls._instance is None:
-                cls._instance = cls(port)
+                cls._instance = cls(port, state)
             return cls._instance
 
     @classmethod
@@ -54,21 +60,41 @@ class WebSocketServerManager:
                 cls._instance.stop()
                 cls._instance = None
 
-    def __init__(self, port: int = 8080):
+    def __init__(self, port: int = 8080, state=None):
+        """Initialize bridge state, token security, SSL files, and event loop.
+
+        Args:
+            port: Preferred local WSS port. Startup may use the next available
+                port in the configured range.
+            state: Optional AppState. When provided, its RAG pipeline is reused.
+        """
         self.port = port
+        self.state = state
         self.clients: Set[Any] = set()
         self.client_metadata = {} # client -> {id, ip, latency}
         self.client_histories = {}
+        self._clients_lock = threading.Lock()
+        self.last_generation_metrics = {
+            "prefill_duration_seconds": 0.0,
+            "tokens_per_second": 0.0,
+            "kv_cache_hit_rate": 0.0,
+            "vram_delta_mb": 0.0,
+        }
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.loop_thread: Optional[threading.Thread] = None
         self.orchestrator: Optional[SwarmOrchestratorThread] = None
         self.chat_thread = None
         self.mini_train_thread = None
+        self._lease_audit_task: asyncio.Task | None = None
         # Guards orchestrator/chat_thread hand-off: the asyncio handler
         # (loop thread) and stop() (Qt thread) both stop/replace them.
         self._threads_lock = threading.Lock()
         self.kb_ingest_thread: Optional[threading.Thread] = None
-        self.rag = RAGPipeline()
+        if state is not None:
+            self.rag = state.rag
+        else:
+            self.rag = RAGPipeline()
+        self._inference_service = InferenceService(state)
         self._seed_codex()
         self._init_security()
         self._ensure_ssl_certs()
@@ -76,10 +102,66 @@ class WebSocketServerManager:
         self.started_event = threading.Event()
         self._start_loop_thread()
 
-    _TOKEN_LIFETIME = 43_200  # 12 hours in seconds
+    _TOKEN_LIFETIME = 43_200      # 12 hours in seconds
+    _LEASE_AUDIT_INTERVAL = 60    # seconds between session-lease sweeps
+    _CLOSE_CODE_UNAUTHORIZED = 4001
+    _CLOSE_CODE_LEASE_EXPIRED = 4002
+    _CLOSE_CODE_REVOKED = 4003
     _TOKEN_PATH = "data/bridge_token.json"
+
+    # Ordered from least to most privileged — also written to bridge_token.json.
+    _FULL_SCOPES: list[str] = [
+        "read:telemetry",
+        "read:kb",
+        "write:kb",
+        "admin:execute",
+    ]
+
+    # Maps each guarded RPC method to the single scope it requires.
+    # Methods absent from this dict are accessible to any authenticated client.
+    METHOD_SCOPES: dict[str, str] = {
+        "get_runtime_status": "read:telemetry",
+        "list_kb_sources":    "read:kb",
+        "search_kb":          "read:kb",
+        "ingest_path":        "write:kb",
+        "submit_task":        "admin:execute",
+        "submit_chat":        "admin:execute",
+    }
     _SSL_CERT_PATH = "data/ssl/localhost.crt"
     _SSL_KEY_PATH = "data/ssl/localhost.key"
+    _JSONRPC_VERSION = "2.0"
+    _RPC_ERROR_MESSAGES = {
+        -32700: "Parse error",
+        -32600: "Invalid Request",
+        -32601: "Method not found",
+        -32602: "Invalid params",
+        -32603: "Internal error",
+    }
+    _RPC_METHODS = {
+        "authenticate",
+        "refresh_token",
+        "get_runtime_status",
+        "list_models",
+        "set_active_model",
+        "list_prompt_pairs",
+        "get_prompt_pair",
+        "save_prompt_pair",
+        "delete_prompt_pair",
+        "list_kb_sources",
+        "ingest_path",
+        "search_kb",
+        "submit_task",
+        "stop_task",
+        "submit_chat",
+        "list_codex_topics",
+        "get_codex_content",
+        "compute_diff",
+        "start_auto_train",
+        "fit_vectorizer",
+        "start_mini_train",
+        "create_custom_agent",
+        "list_custom_agents",
+    }
 
     def _ensure_ssl_certs(self):
         """Generates self-signed localhost SSL certificates if missing."""
@@ -103,18 +185,38 @@ class WebSocketServerManager:
                 logger.error(f"Failed to generate SSL certificates: {e}. WSS server will fail to start.")
 
     def _init_security(self):
-        """Initializes security token (JSON with timestamp) and safe path rules."""
+        """Initialise the multi-token store and safe-path rules."""
         self.bridge_token: str = ""
         self._token_created_at: float = 0.0
+        self._token_store: dict[str, list[str]] = {}
 
-        if os.path.exists(self._TOKEN_PATH):
+        env_token = os.environ.get("KARL_BRIDGE_TOKEN", "").strip()
+        if env_token:
+            self.bridge_token = env_token
+            self._token_created_at = time.time()
+            self._token_store = {env_token: list(self._FULL_SCOPES)}
+            self._persist_token_store()
+            save_cached_token(self.bridge_token)
+        elif os.path.exists(self._TOKEN_PATH):
             try:
                 with open(self._TOKEN_PATH, "r", encoding="utf-8") as f:
                     payload = json.load(f)
-                self.bridge_token = payload["token"]
-                self._token_created_at = float(payload["created_at"])
-                # Rotate immediately if the stored token has already expired
-                if time.time() - self._token_created_at > self._TOKEN_LIFETIME:
+                if "tokens" in payload:
+                    # New multi-token format
+                    self._token_store = {k: list(v) for k, v in payload["tokens"].items()}
+                    self._token_created_at = float(payload.get("created_at", 0.0))
+                else:
+                    # Legacy single-token format — migrate in place
+                    old_tok = payload.get("token", "")
+                    self._token_created_at = float(payload.get("created_at", 0.0))
+                    if old_tok:
+                        self._token_store = {old_tok: list(self._FULL_SCOPES)}
+                # Identify the admin token (first one carrying admin:execute scope)
+                self.bridge_token = next(
+                    (tok for tok, sc in self._token_store.items() if "admin:execute" in sc),
+                    "",
+                )
+                if time.time() - self._token_created_at > self._TOKEN_LIFETIME or not self.bridge_token:
                     self._rotate_token()
                 else:
                     save_cached_token(self.bridge_token)
@@ -138,47 +240,79 @@ class WebSocketServerManager:
         return uuid.uuid4().hex
 
     def _rotate_token(self) -> None:
-        """Generates a fresh token, persists it to data/bridge_token.json."""
+        """Generate a fresh admin token.
+
+        Non-admin scoped tokens in _token_store are preserved so that
+        previously issued read-only/KB keys stay valid after rotation.
+        """
+        # Drop the previous admin token only
+        if not hasattr(self, "_token_store"):
+            self._token_store = {}
+        self._token_store.pop(self.bridge_token, None)
         self.bridge_token = self._generate_token()
         self._token_created_at = time.time()
+        self._token_store[self.bridge_token] = list(self._FULL_SCOPES)
+        self._persist_token_store()
+        save_cached_token(self.bridge_token)
+
+    def _persist_token_store(self) -> None:
+        """Write the in-memory token store to data/bridge_token.json."""
         try:
             os.makedirs("data", exist_ok=True)
             with open(self._TOKEN_PATH, "w", encoding="utf-8") as f:
-                json.dump({"token": self.bridge_token, "created_at": self._token_created_at}, f)
-            save_cached_token(self.bridge_token)
-        except Exception as e:
-            logger.warning(f"Could not save bridge token: {e}")
+                json.dump(
+                    {
+                        "token": self.bridge_token,
+                        "tokens": self._token_store,
+                        "created_at": self._token_created_at,
+                    },
+                    f,
+                    indent=2,
+                )
+        except Exception as exc:
+            logger.warning("Could not persist token store: %s", exc)
+
+    def add_scoped_token(self, scopes: list[str]) -> str:
+        """Generate and register a new token with *scopes*. Returns the token hex."""
+        token = self._generate_token()
+        if not hasattr(self, "_token_store"):
+            self._token_store = {}
+        self._token_store[token] = list(scopes)
+        self._persist_token_store()
+        logger.info("Scoped token added: scopes=%s", scopes)
+        return token
+
+    def _get_token_scopes(self, token: str) -> list[str] | None:
+        """Return scopes for *token* if valid and unexpired, else None."""
+        if not token:
+            return None
+        if not hasattr(self, "_token_store"):
+            return None
+        if time.time() - self._token_created_at > self._TOKEN_LIFETIME:
+            logger.info("Token store expired (12h). Rotating.")
+            self._rotate_token()
+            return None
+        return self._token_store.get(token)
 
     def _validate_token(self, token: str) -> bool:
-        """Returns True if token matches and has not exceeded the 12-hour lifetime.
-        Silently rotates an expired token so the next connection uses the new one.
-        """
-        if not token:
-            return False
-        
-        # Check expiry first
-        if time.time() - self._token_created_at > self._TOKEN_LIFETIME:
-            logger.info("Bridge token expired (12h). Rotating.")
-            self._rotate_token()
-            return False  # Force the client to re-read the new token file
-            
-        if not self.bridge_token:
-            return False
-            
-        return token == self.bridge_token
+        """Returns True if token is present in the store and unexpired."""
+        return self._get_token_scopes(token) is not None
 
     def _is_safe_path(self, path: str) -> bool:
-        """Checks if a path is outside sensitive system directories."""
+        """Checks if a path is outside sensitive system directories.
+
+        Uses os.path.realpath so that symlinks pointing into blocked directories
+        are caught before any filesystem operation is performed on them.
+        """
         if not path:
             return False
-        abs_path = os.path.abspath(os.path.expanduser(path))
-        
-        # Check against blocked paths
+        real_path = os.path.realpath(os.path.expanduser(path))
+
         for blocked in self.blocked_paths:
-            if abs_path == blocked or abs_path.startswith(blocked + os.sep):
-                # Allow the project directory itself even if it's in a subfolder of home
-                project_root = os.getcwd()
-                if abs_path.startswith(project_root):
+            real_blocked = os.path.realpath(blocked)
+            if real_path == real_blocked or real_path.startswith(real_blocked + os.sep):
+                project_root = os.path.realpath(os.getcwd())
+                if real_path == project_root or real_path.startswith(project_root + os.sep):
                     return True
                 return False
         return True
@@ -296,6 +430,9 @@ class WebSocketServerManager:
 
         active = {"filename": safe_filename}
         if adapter:
+            safe_adapter = os.path.basename(adapter)
+            if not safe_adapter or safe_adapter != adapter or "." in adapter:
+                raise ValueError("Invalid adapter name.")
             active["adapter"] = adapter
 
         if not config_store.set_active_model(safe_filename, adapter):
@@ -468,45 +605,67 @@ class WebSocketServerManager:
         task_id = str(uuid.uuid4())
 
         def worker():
-            total_chunks = 0
-            per_file = []
-            errors = []
             total = len(files)
-            for index, filepath in enumerate(files, 1):
-                filename = os.path.basename(filepath)
+
+            def progress_cb(current: int, total_files: int, event: dict):
                 self._send_notification("kb_ingest_progress", {
                     "task_id": task_id,
-                    "current": index,
-                    "total": total,
-                    "filename": filename,
-                    "status": "ingesting",
+                    "current": current,
+                    "total": total_files,
+                    "filename": event.get("filename", ""),
+                    "chunks": int(event.get("chunks", 0) or 0),
+                    "status": event.get("status", "parsed"),
                 })
-                try:
-                    chunks = self.rag.ingest_file(
-                        filepath,
-                        chunk_size=chunk_size,
-                        overlap=overlap,
-                    )
-                    total_chunks += chunks
-                    per_file.append({
-                        "path": filepath,
-                        "filename": filename,
-                        "chunks": chunks,
-                    })
-                except Exception as exc:
-                    errors.append({
-                        "path": filepath,
-                        "filename": filename,
-                        "error": str(exc),
-                    })
+
+            if hasattr(self.rag, "ingest_files"):
+                result = self.rag.ingest_files(
+                    files,
+                    chunk_size=chunk_size,
+                    overlap=overlap,
+                    batch_size=32,
+                    progress_cb=progress_cb,
+                )
+            else:
+                total_chunks = 0
+                per_file = []
+                errors = []
+                for index, filepath in enumerate(files, 1):
+                    filename = os.path.basename(filepath)
+                    progress_cb(index, total, {"filename": filename, "status": "parsed"})
+                    try:
+                        chunks = self.rag.ingest_file(
+                            filepath,
+                            chunk_size=chunk_size,
+                            overlap=overlap,
+                        )
+                        total_chunks += chunks
+                        per_file.append({
+                            "path": filepath,
+                            "filename": filename,
+                            "chunks": chunks,
+                        })
+                    except Exception as exc:
+                        errors.append({
+                            "path": filepath,
+                            "filename": filename,
+                            "error": str(exc),
+                        })
+                result = {
+                    "files": per_file,
+                    "errors": errors,
+                    "file_count": len(per_file),
+                    "error_count": len(errors),
+                    "chunks_added": total_chunks,
+                }
 
             self._send_notification("kb_ingest_finished", {
                 "task_id": task_id,
-                "files": per_file,
-                "errors": errors,
-                "file_count": len(per_file),
-                "error_count": len(errors),
-                "chunks_added": total_chunks,
+                "files": result["files"],
+                "errors": result["errors"],
+                "file_count": result["file_count"],
+                "error_count": result["error_count"],
+                "chunks_added": result["chunks_added"],
+                "queued_file_count": total,
                 "snapshot": self._kb_snapshot(),
             })
 
@@ -599,6 +758,280 @@ class WebSocketServerManager:
             },
         }
 
+    def _rpc_error_response(
+        self,
+        code: int,
+        req_id: Any = None,
+        message: str | None = None,
+        data: Any = None,
+    ) -> dict:
+        error = {
+            "code": code,
+            "message": message or self._RPC_ERROR_MESSAGES.get(code, "Error"),
+        }
+        if data is not None:
+            error["data"] = data
+        return {
+            "jsonrpc": self._JSONRPC_VERSION,
+            "error": error,
+            "id": req_id,
+        }
+
+    def _rpc_result_response(self, req_id: Any, result: Any) -> dict:
+        return {
+            "jsonrpc": self._JSONRPC_VERSION,
+            "id": req_id,
+            "result": result,
+        }
+
+    async def _send_rpc_error(
+        self,
+        websocket,
+        code: int,
+        req_id: Any = None,
+        message: str | None = None,
+        data: Any = None,
+    ) -> None:
+        await websocket.send(json.dumps(self._rpc_error_response(code, req_id, message, data)))
+
+    async def _send_rpc_result(self, websocket, req_id: Any, result: Any) -> None:
+        await websocket.send(json.dumps(self._rpc_result_response(req_id, result)))
+
+    def _parse_json_rpc_request(self, message: str) -> tuple[dict | None, dict | None]:
+        try:
+            data = json.loads(message)
+        except json.JSONDecodeError as exc:
+            return None, self._rpc_error_response(-32700, None, data=str(exc))
+
+        req_id = data.get("id") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None, self._rpc_error_response(-32600, req_id)
+        if data.get("jsonrpc") != self._JSONRPC_VERSION:
+            return None, self._rpc_error_response(-32600, req_id)
+        method = data.get("method")
+        if not isinstance(method, str) or not method:
+            return None, self._rpc_error_response(-32600, req_id)
+        if method not in self._RPC_METHODS:
+            return None, self._rpc_error_response(
+                -32601,
+                req_id,
+                data=f"Method not found: {method}",
+            )
+
+        params = data.get("params", {})
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            return None, self._rpc_error_response(
+                -32602,
+                req_id,
+                data="params must be an object when provided.",
+            )
+        data["params"] = params
+        return data, None
+
+    def _validate_rpc_params(self, method: str, params: dict) -> str | None:
+        def require_string(name: str) -> str | None:
+            value = params.get(name)
+            if not isinstance(value, str) or not value.strip():
+                return f"{name} is required and must be a string."
+            return None
+
+        if method == "set_active_model":
+            return require_string("filename")
+        if method == "get_prompt_pair":
+            return require_string("name")
+        if method == "save_prompt_pair":
+            return require_string("name")
+        if method == "delete_prompt_pair":
+            return require_string("name")
+        if method == "ingest_path":
+            return require_string("path")
+        if method == "search_kb":
+            return require_string("query")
+        if method == "submit_chat":
+            return require_string("message")
+        if method == "submit_task":
+            for name in ("objective", "workspace_path"):
+                error = require_string(name)
+                if error:
+                    return error
+        if method == "start_auto_train":
+            for name in ("topic", "adapter_name"):
+                error = require_string(name)
+                if error:
+                    return error
+        if method == "fit_vectorizer":
+            documents = params.get("documents")
+            if not isinstance(documents, list) or not documents:
+                return "documents is required and must be a non-empty list."
+        return None
+
+    def _record_generation_metrics(self, diagnostics: dict | None) -> None:
+        diagnostics = diagnostics or {}
+        prefill = diagnostics.get("prefill_duration_sec", diagnostics.get("prefill_time", 0.0))
+        tps = diagnostics.get("tokens_per_second", diagnostics.get("generation_tps", 0.0))
+        vram_delta = diagnostics.get("vram_usage_mb_delta", diagnostics.get("vram_delta_mb", 0.0))
+
+        kv_hit_rate = diagnostics.get("kv_cache_hit_rate")
+        if kv_hit_rate is None:
+            kv_cache = diagnostics.get("kv_cache") or {}
+            cached = kv_cache.get("tokens_from_cache", diagnostics.get("kv_cache_hits", 0))
+            total = (
+                diagnostics.get("prefill_tokens_count")
+                or cached + kv_cache.get("tokens_to_eval", 0)
+            )
+            kv_hit_rate = (float(cached) / float(total)) if total else 0.0
+
+        self.last_generation_metrics = {
+            "prefill_duration_seconds": self._metric_float(prefill),
+            "tokens_per_second": self._metric_float(tps),
+            "kv_cache_hit_rate": max(0.0, min(1.0, self._metric_float(kv_hit_rate))),
+            "vram_delta_mb": self._metric_float(vram_delta),
+        }
+
+    def _metric_float(self, value: Any) -> float:
+        try:
+            if value is None:
+                return 0.0
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _process_rss_bytes(self) -> int:
+        try:
+            import psutil
+            return int(psutil.Process(os.getpid()).memory_info().rss)
+        except Exception:
+            return 0
+
+    def _prometheus_metrics(self) -> str:
+        metrics = {
+            "karl_active_connections": len(self.clients),
+            "karl_system_memory_usage_bytes": self._process_rss_bytes(),
+            "karl_prefill_duration_seconds": self.last_generation_metrics.get(
+                "prefill_duration_seconds", 0.0
+            ),
+            "karl_tokens_per_second": self.last_generation_metrics.get(
+                "tokens_per_second", 0.0
+            ),
+            "karl_kv_cache_hit_rate": self.last_generation_metrics.get(
+                "kv_cache_hit_rate", 0.0
+            ),
+            "karl_vram_delta_mb": self.last_generation_metrics.get("vram_delta_mb", 0.0),
+        }
+        specs = [
+            ("karl_active_connections", "Number of active WebSocket clients"),
+            ("karl_system_memory_usage_bytes", "Resident memory usage of the Karl process in bytes"),
+            ("karl_prefill_duration_seconds", "Prefill latency of the last generation in seconds"),
+            ("karl_tokens_per_second", "Token generation throughput of the last generation"),
+            ("karl_kv_cache_hit_rate", "KV cache hit rate of the last generation from 0.0 to 1.0"),
+            ("karl_vram_delta_mb", "VRAM consumption delta of the last generation in megabytes"),
+        ]
+
+        lines = []
+        for name, help_text in specs:
+            lines.append(f"# HELP {name} {help_text}")
+            lines.append(f"# TYPE {name} gauge")
+            lines.append(f"{name} {metrics[name]}")
+        return "\n".join(lines) + "\n"
+
+    def _http_response(self, status_code: int, reason: str, content_type: str, body: str) -> Response:
+        return Response(
+            status_code,
+            reason,
+            Headers([
+                ("Content-Type", content_type),
+                ("Content-Length", str(len(body.encode("utf-8")))),
+            ]),
+            body.encode("utf-8"),
+        )
+
+    def _is_websocket_upgrade(self, request) -> bool:
+        headers = getattr(request, "headers", {}) or {}
+        try:
+            upgrade = headers.get("Upgrade", "")
+            connection = headers.get("Connection", "")
+        except Exception:
+            return False
+        return upgrade.lower() == "websocket" or "upgrade" in connection.lower()
+
+    def _process_http_request(self, connection, request) -> Response | None:
+        path = getattr(request, "path", "") or ""
+        parsed = urlparse(path)
+        if parsed.path == "/metrics":
+            return self._http_response(
+                200,
+                "OK",
+                "text/plain; version=0.0.4; charset=utf-8",
+                self._prometheus_metrics(),
+            )
+        if self._is_websocket_upgrade(request):
+            return None
+        return self._http_response(404, "Not Found", "text/plain; charset=utf-8", "Not Found\n")
+
+    async def _audit_session_leases(self) -> None:
+        """Periodically sweeps active connections and closes sessions whose lease
+        has exceeded _TOKEN_LIFETIME without a refresh."""
+        while True:
+            await asyncio.sleep(self._LEASE_AUDIT_INTERVAL)
+            now = time.time()
+            expired = [
+                ws
+                for ws, meta in list(self.client_metadata.items())
+                if now - meta.get("session_start", now) > self._TOKEN_LIFETIME
+            ]
+            for ws in expired:
+                cid = self.client_metadata.get(ws, {}).get("id", "?")
+                logger.info("Session lease expired for client %s — closing 4002.", cid)
+                try:
+                    await ws.close(self._CLOSE_CODE_LEASE_EXPIRED, "Session lease expired")
+                except Exception as exc:
+                    logger.debug("Error closing expired session %s: %s", cid, exc)
+
+    async def _close_all_clients(self, code: int, reason: str) -> None:
+        """Close every active WebSocket connection with *code* and *reason*."""
+        clients = list(self.clients)
+        if clients:
+            await asyncio.gather(
+                *[ws.close(code, reason) for ws in clients],
+                return_exceptions=True,
+            )
+
+    def force_revoke(self) -> None:
+        """Revoke the bridge token and force-close all active connections.
+
+        Safe to call from any thread (e.g. management UI or CLI signal handler).
+        """
+        # Invalidate all in-memory tokens so no new auth can succeed
+        self.bridge_token = ""
+        self._token_created_at = 0.0
+        self._token_store = {}
+
+        # Wipe the on-disk token
+        try:
+            if os.path.exists(self._TOKEN_PATH):
+                os.remove(self._TOKEN_PATH)
+        except Exception as exc:
+            logger.warning("force_revoke: could not remove token file: %s", exc)
+
+        # Remove from OS keychain
+        try:
+            from app.utils.keychain_manager import revoke_tokens
+            revoke_tokens()
+        except Exception as exc:
+            logger.warning("force_revoke: keychain revocation failed: %s", exc)
+
+        # Close active WebSocket sessions
+        if self.loop and self.loop.is_running():
+            close_coro = self._close_all_clients(self._CLOSE_CODE_REVOKED, "Token revoked")
+            try:
+                asyncio.run_coroutine_threadsafe(close_coro, self.loop)
+                logger.info("force_revoke: all connections scheduled for closure.")
+            except Exception as exc:
+                close_coro.close()
+                logger.warning("force_revoke: could not schedule client closure: %s", exc)
+
     def _start_loop_thread(self):
         """Starts a background daemon thread running an asyncio event loop."""
         self.loop = asyncio.new_event_loop()
@@ -607,29 +1040,83 @@ class WebSocketServerManager:
 
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
-        # Start server inside loop
         self.loop.run_until_complete(self._start_server())
+        if self.server is not None:
+            self._lease_audit_task = self.loop.create_task(self._audit_session_leases())
         self.loop.run_forever()
+
+    _DISCOVERY_PATH = pathlib.Path.home() / ".karl" / "service_discovery.json"
+    _PORT_RANGE = 10  # try self.port through self.port + 9
+
+    def _build_ssl_context(self):
+        """Return an SSL context from the project cert files, or raise RuntimeError."""
+        if os.path.exists(self._SSL_CERT_PATH) and os.path.exists(self._SSL_KEY_PATH):
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(self._SSL_CERT_PATH, self._SSL_KEY_PATH)
+            logger.info("WSS Secure WebSockets enabled.")
+            return ctx
+        logger.error("WSS SSL certificates missing. Server will NOT start without WSS.")
+        raise RuntimeError("SSL context required for WSS enforcement.")
 
     async def _start_server(self):
         try:
-            ssl_context = None
-            if os.path.exists(self._SSL_CERT_PATH) and os.path.exists(self._SSL_KEY_PATH):
-                ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-                ssl_context.load_cert_chain(self._SSL_CERT_PATH, self._SSL_KEY_PATH)
-                logger.info("WSS Secure WebSockets enabled.")
-            else:
-                logger.error("WSS SSL certificates missing. Server will NOT start without WSS.")
-                raise RuntimeError("SSL context required for WSS enforcement.")
+            ssl_context = self._build_ssl_context()
 
-            self.server = await websockets.serve(
-                self._handler, "localhost", self.port, ssl=ssl_context
-            )
-            logger.info(f"Server running on wss://localhost:{self.port}")
+            # Try self.port through self.port + _PORT_RANGE - 1 to survive conflicts.
+            server = None
+            last_exc: Exception | None = None
+            host = os.environ.get("KARL_WS_HOST", "localhost")
+            for candidate in range(self.port, self.port + self._PORT_RANGE):
+                try:
+                    server = await websockets.serve(
+                        self._handler,
+                        host,
+                        candidate,
+                        ssl=ssl_context,
+                        process_request=self._process_http_request,
+                    )
+                    self.port = candidate
+                    break
+                except OSError as exc:
+                    logger.info("Port %d in use (%s). Trying %d.", candidate, exc, candidate + 1)
+                    last_exc = exc
+
+            if server is None:
+                raise last_exc or OSError(
+                    f"No port available in {self.port}–{self.port + self._PORT_RANGE - 1}"
+                )
+
+            self.server = server
+            logger.info("Server running on wss://%s:%d", host, self.port)
+            self._write_service_discovery()
         except Exception as e:
-            logger.warning(f"Failed to start server: {e}")
+            logger.warning("Failed to start server: %s", e)
         finally:
             self.started_event.set()
+
+    def _write_service_discovery(self) -> None:
+        """Write ~/.karl/service_discovery.json so clients can locate this instance."""
+        try:
+            self._DISCOVERY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._DISCOVERY_PATH.write_text(
+                json.dumps({
+                    "active_port": self.port,
+                    "token": self.bridge_token,
+                    "bound_at": datetime.now(timezone.utc).isoformat(),
+                }),
+                encoding="utf-8",
+            )
+            logger.info("Service discovery written: %s", self._DISCOVERY_PATH)
+        except Exception as exc:
+            logger.warning("Could not write service discovery: %s", exc)
+
+    def _remove_service_discovery(self) -> None:
+        """Remove ~/.karl/service_discovery.json on shutdown."""
+        try:
+            self._DISCOVERY_PATH.unlink(missing_ok=True)
+            logger.info("Service discovery file removed.")
+        except Exception as exc:
+            logger.warning("Could not remove service discovery: %s", exc)
 
     def stop(self):
         """Synchronously shuts down the server and joins the background thread."""
@@ -665,6 +1152,15 @@ class WebSocketServerManager:
         self.clients.clear()
 
     async def _stop_server(self):
+        audit_task = getattr(self, "_lease_audit_task", None)
+        if audit_task is not None:
+            audit_task.cancel()
+            try:
+                await audit_task
+            except asyncio.CancelledError:
+                pass
+            self._lease_audit_task = None
+
         if self.clients:
             await asyncio.gather(
                 *[client.close() for client in list(self.clients)],
@@ -677,6 +1173,8 @@ class WebSocketServerManager:
             await self.server.wait_closed()
             self.server = None
             logger.info("Server stopped.")
+
+        self._remove_service_discovery()
 
     async def _handler(self, websocket, path=None):
         # ── Connection-stage token authentication ─────────────────────────────
@@ -693,12 +1191,17 @@ class WebSocketServerManager:
         parsed = urlparse(raw_path)
         qs = parse_qs(parsed.query)
         url_token = qs.get("token", [""])[0]
-        
-        if not self._validate_token(url_token):
+
+        token_scopes = self._get_token_scopes(url_token)
+        if token_scopes is None and self._validate_token(url_token):
+            token_scopes = list(self._FULL_SCOPES)
+        if token_scopes is None:
             remote = getattr(websocket, "remote_address", "unknown")
-            logger.warning("Rejected connection from %s: invalid or expired token (path: %s)", remote, raw_path)
-            # Close with 4001 Unauthorized
-            await websocket.close(4001, "Unauthorized: invalid or expired token")
+            logger.warning(
+                "Rejected connection from %s: invalid or expired token (path: %s)",
+                remote, raw_path,
+            )
+            await websocket.close(self._CLOSE_CODE_UNAUTHORIZED, "Unauthorized: invalid or expired token")
             return
         # ─────────────────────────────────────────────────────────────────────
 
@@ -714,16 +1217,17 @@ class WebSocketServerManager:
             "id": client_id,
             "ip": ip,
             "connected_at": datetime.now(timezone.utc).isoformat(),
-            "authenticated": True  # Token was validated at handshake
+            "session_start": time.time(),  # reset by refresh_token to extend lease
+            "authenticated": True,
+            "scopes": token_scopes,         # RBAC scope list for this connection
         }
         self.client_histories[websocket] = []
         logger.info(f"Client connected: {websocket.remote_address} (ID: {client_id})")
         try:
             async for message in websocket:
-                try:
-                    data = json.loads(message)
-                except json.JSONDecodeError:
-                    await websocket.send(json.dumps({"error": "Invalid JSON"}))
+                data, rpc_error = self._parse_json_rpc_request(message)
+                if rpc_error is not None:
+                    await websocket.send(json.dumps(rpc_error))
                     continue
 
                 method = data.get("method")
@@ -731,9 +1235,18 @@ class WebSocketServerManager:
                 req_id = data.get("id")
                 token = params.get("token")
 
-                # Authentication check
+                # Bind a per-frame correlation ID so every log line emitted
+                # during this request is tagged with the client and request ID.
+                set_correlation_id(
+                    f"ws:{client_id}:{req_id if req_id is not None else new_correlation_id()}"
+                )
+
+                params_error = self._validate_rpc_params(method, params)
+                if params_error:
+                    await self._send_rpc_error(websocket, -32602, req_id, data=params_error)
+                    continue
+
                 client_meta = self.client_metadata.get(websocket, {})
-                authenticated = client_meta.get("authenticated", False)
 
                 if method == "authenticate":
                     # This method is now redundant for clients who passed handshake
@@ -753,23 +1266,50 @@ class WebSocketServerManager:
                         }))
                     continue
 
-                # Block sensitive methods if not authenticated
-                sensitive_methods = {
-                    "submit_task", "submit_chat", "ingest_path", 
-                    "set_active_model", "start_auto_train", "save_prompt_pair",
-                    "delete_prompt_pair"
-                }
-                
-                if method in sensitive_methods and not authenticated:
-                    await websocket.send(json.dumps({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": {
-                            "code": -32000, 
-                            "message": "Authentication required. Call 'authenticate' with the token found in 'data/bridge_token.json'."
-                        }
-                    }))
+                if method == "refresh_token":
+                    client_token = params.get("token", "")
+                    # Accept if the supplied token is current OR the connection is
+                    # already authenticated (token was valid at handshake).
+                    if self._validate_token(client_token) or client_meta.get("authenticated"):
+                        old_scopes = list(client_meta.get("scopes", self._FULL_SCOPES))
+                        self._rotate_token()
+                        # Re-map this connection's scopes to the new admin token scopes.
+                        # Non-admin connections keep their original (narrower) scopes.
+                        client_meta["scopes"] = old_scopes
+                        client_meta["session_start"] = time.time()
+                        expires_at = client_meta["session_start"] + self._TOKEN_LIFETIME
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "token": self.bridge_token,
+                                "expires_at": expires_at,
+                            },
+                        }))
+                        logger.info(
+                            "Token refreshed for client %s. New expiry in %ds.",
+                            client_meta.get("id", "?"),
+                            int(self._TOKEN_LIFETIME),
+                        )
+                    else:
+                        await self._send_rpc_error(
+                            websocket, -32000, req_id, message="Invalid token for refresh."
+                        )
                     continue
+
+                # Scope enforcement — verify the client's token carries the
+                # required scope for this method before dispatching.
+                required_scope = self.METHOD_SCOPES.get(method)
+                if required_scope is not None:
+                    client_scopes = client_meta.get("scopes", [])
+                    if required_scope not in client_scopes:
+                        await self._send_rpc_error(
+                            websocket,
+                            -32001,
+                            req_id,
+                            message=f"Permission Denied: Missing scope {required_scope}",
+                        )
+                        continue
 
                 try:
                     if method == "get_runtime_status":
@@ -996,71 +1536,179 @@ class WebSocketServerManager:
                                 "Double-check your derivations and arithmetic before writing the final answer."
                             )
 
-                        agentic = hyperparams.get("agentic_loop_enabled", False)
-                        if agentic:
-                            chat_thread = AgenticThread(
-                                system_prompt=system_prompt,
-                                initial_history=history,
-                                hyperparams=hyperparams,
-                                retrieved_chunks=retrieved_chunks
+                        # Resolve agent profile overrides (model / adapter / system prompt prefix)
+                        agent_id = params.get("agent")
+                        agent_model_name: str | None = None
+                        agent_adapter_name: str | None = None
+                        if agent_id:
+                            from app.ui.workspaces.workbench.profiles import AGENT_PROFILES
+                            profile = AGENT_PROFILES.get(agent_id, {})
+                            agent_model_name = profile.get("base_model") or None
+                            agent_adapter_name = profile.get("adapter") or None
+                            # Prepend profile system-prompt prefix if present
+                            profile_prompt = profile.get("prompt", "")
+                            if profile_prompt and not system_prompt.startswith(profile_prompt):
+                                system_prompt = profile_prompt + "\n" + system_prompt
+
+                        _history_ref = history
+
+                        def _on_chat_finished(
+                            thought: str, response: str, diagnostics: dict
+                        ) -> None:
+                            self._record_generation_metrics(diagnostics)
+                            if response:
+                                _history_ref.append(
+                                    {"role": "assistant", "content": response}
+                                )
+                            self._send_notification("chat_finished", {})
+
+                        def _on_chat_error(err: str) -> None:
+                            message_text = str(err)
+                            self._send_notification(
+                                "status_update",
+                                {"message": message_text},
                             )
-                        else:
-                            chat_thread = LLMThread(
+                            self._send_notification(
+                                "chat_finished",
+                                {"error": message_text},
+                            )
+
+                        try:
+                            chat_thread = self._inference_service.run_generation(
+                                prompt=message,
                                 system_prompt=system_prompt,
                                 chat_history=history,
                                 hyperparams=hyperparams,
-                                retrieved_chunks=retrieved_chunks
+                                on_thought_token_cb=lambda token: self._send_notification(
+                                    "chat_thought_token", {"token": token}
+                                ),
+                                on_token_cb=lambda token: self._send_notification(
+                                    "chat_response_token", {"token": token}
+                                ),
+                                on_finished_cb=_on_chat_finished,
+                                on_error_cb=_on_chat_error,
+                                retrieved_chunks=retrieved_chunks,
+                                model_name=agent_model_name,
+                                adapter_name=agent_adapter_name,
+                                connection_type=Qt.ConnectionType.DirectConnection,
                             )
-
-                        # Wire signals to broadcast methods (DirectConnection)
-                        chat_thread.new_thought_token.connect(
-                            lambda token: self._send_notification("chat_thought_token", {"token": token}),
-                            Qt.ConnectionType.DirectConnection
-                        )
-                        chat_thread.new_chat_token.connect(
-                            lambda token: self._send_notification("chat_response_token", {"token": token}),
-                            Qt.ConnectionType.DirectConnection
-                        )
-
-                        def make_on_finished(ws, hist, is_agentic, thread_ref):
-                            def on_finished(*args):
-                                response_text = ""
-                                if not is_agentic and len(args) >= 2:
-                                    response_text = args[1]
-                                elif is_agentic and thread_ref is not None:
-                                    th = getattr(thread_ref, "chat_history", [])
-                                    if th and th[-1].get("role") == "assistant":
-                                        response_text = th[-1].get("content", "")
-
-                                if response_text:
-                                    hist.append({"role": "assistant", "content": response_text})
-
-                                self._send_notification("chat_finished", {})
-                            return on_finished
-
-                        if agentic:
-                            chat_thread.loop_finished.connect(
-                                make_on_finished(websocket, history, True, chat_thread),
-                                Qt.ConnectionType.DirectConnection
-                            )
-                        else:
-                            chat_thread.generation_finished.connect(
-                                make_on_finished(websocket, history, False, chat_thread),
-                                Qt.ConnectionType.DirectConnection
-                            )
-
-                        chat_thread.error_occurred.connect(
-                            lambda err: self._send_notification("status_update", {"message": f"[Error] {err}"}),
-                            Qt.ConnectionType.DirectConnection
-                        )
+                        except CircuitBreakerOpenException as exc:
+                            await websocket.send(json.dumps(
+                                self._rpc_error_response(
+                                    -32603,
+                                    req_id,
+                                    message=str(exc),
+                                )
+                            ))
+                            continue
 
                         with self._threads_lock:
                             self.chat_thread = chat_thread
-                            self.chat_thread.start()
                         await websocket.send(json.dumps({
                             "jsonrpc": "2.0",
                             "id": req_id,
                             "result": {"status": "started"}
+                        }))
+
+                    elif method == "create_custom_agent":
+                        # Validate params
+                        name = params.get("name", "")
+                        label = params.get("label", "")
+                        prompt_text = params.get("prompt", "")
+                        import re as _re
+                        if not _re.match(r'^[a-z0-9_]+$', name):
+                            await websocket.send(json.dumps(self._rpc_error_response(
+                                -32602, req_id,
+                                message=f"Invalid params: name '{name}' must be alphanumeric lowercase (a-z, 0-9, _)."
+                            )))
+                            continue
+                        from app.ui.workspaces.workbench.profiles import (
+                            AGENT_PROFILES, DEFAULT_PROFILES, reload_profiles
+                        )
+                        if name in DEFAULT_PROFILES:
+                            await websocket.send(json.dumps(self._rpc_error_response(
+                                -32602, req_id,
+                                message=f"Invalid params: '{name}' is a default profile name and cannot be overridden."
+                            )))
+                            continue
+                        if name in AGENT_PROFILES and name not in DEFAULT_PROFILES:
+                            await websocket.send(json.dumps(self._rpc_error_response(
+                                -32602, req_id,
+                                message=f"Invalid params: custom agent '{name}' already exists."
+                            )))
+                            continue
+
+                        # Validate optional model/adapter paths
+                        base_model = params.get("base_model") or None
+                        adapter = params.get("adapter") or None
+                        if base_model:
+                            model_path = os.path.join("data", "models", base_model)
+                            if not os.path.isfile(model_path):
+                                await websocket.send(json.dumps(self._rpc_error_response(
+                                    -32602, req_id,
+                                    message=f"Invalid params: model file not found: {model_path}"
+                                )))
+                                continue
+                        if adapter:
+                            adapter_path = os.path.join("data", "adapters", adapter)
+                            if not os.path.isdir(adapter_path):
+                                await websocket.send(json.dumps(self._rpc_error_response(
+                                    -32602, req_id,
+                                    message=f"Invalid params: adapter directory not found: {adapter_path}"
+                                )))
+                                continue
+
+                        # Build and persist the new profile
+                        new_profile: dict = {
+                            "label": label or name,
+                            "description": params.get("description", ""),
+                            "prompt": prompt_text,
+                        }
+                        if base_model:
+                            new_profile["base_model"] = base_model
+                        if adapter:
+                            new_profile["adapter"] = adapter
+                        if "rag_enabled" in params:
+                            new_profile["rag_enabled"] = bool(params["rag_enabled"])
+                        if "rag_top_k" in params:
+                            new_profile["rag_top_k"] = int(params["rag_top_k"])
+
+                        # Load existing custom agents, add new entry, save
+                        custom_agents_path = os.path.join("data", "custom_agents.json")
+                        existing: dict = {}
+                        if os.path.isfile(custom_agents_path):
+                            try:
+                                with open(custom_agents_path, "r", encoding="utf-8") as _f:
+                                    existing = json.load(_f) or {}
+                            except (json.JSONDecodeError, OSError):
+                                existing = {}
+                        existing[name] = new_profile
+                        os.makedirs("data", exist_ok=True)
+                        with open(custom_agents_path, "w", encoding="utf-8") as _f:
+                            json.dump(existing, _f, indent=2)
+
+                        reload_profiles()
+
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0", "id": req_id,
+                            "result": {"status": "success", "name": name}
+                        }))
+                        # Broadcast profile update to all connected clients
+                        self._send_notification("agent_profiles_updated", {
+                            "name": name, "profile": new_profile
+                        })
+
+                    elif method == "list_custom_agents":
+                        from app.ui.workspaces.workbench.profiles import (
+                            AGENT_PROFILES, DEFAULT_PROFILES
+                        )
+                        custom_only = {
+                            k: v for k, v in AGENT_PROFILES.items()
+                            if k not in DEFAULT_PROFILES
+                        }
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0", "id": req_id,
+                            "result": custom_only
                         }))
 
                     elif method == "list_codex_topics":
@@ -1337,15 +1985,8 @@ class WebSocketServerManager:
                         }))
 
                 except Exception as inner_e:
-                    logger.warning(f"Error handling method '{method}': {inner_e}")
-                    await websocket.send(json.dumps({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": {
-                            "code": -32603,
-                            "message": f"Internal swarm error: {inner_e}"
-                        }
-                    }))
+                    logger.exception("Error handling WebSocket RPC method %r", method)
+                    await self._send_rpc_error(websocket, -32603, req_id, data=str(inner_e))
 
         except websockets.exceptions.ConnectionClosed:
             pass
@@ -1356,7 +1997,7 @@ class WebSocketServerManager:
             logger.info(f"Client disconnected: {websocket.remote_address}")
 
     def get_client_info(self) -> list[dict]:
-        """Returns metadata for all connected clients. Thread-safe."""
+        """Return metadata for all connected clients. Thread-safe snapshot."""
         info = []
         for ws, meta in list(self.client_metadata.items()):
             latency = -1.0
@@ -1381,6 +2022,13 @@ class WebSocketServerManager:
                 self._broadcast_notification(method, params), self.loop
             )
 
+    def client_count(self) -> int:
+        """Return the connected client count under the clients lock."""
+        if not hasattr(self, "_clients_lock"):
+            self._clients_lock = threading.Lock()
+        with self._clients_lock:
+            return len(self.clients)
+
     async def _broadcast_notification(self, method: str, params: dict):
         payload = json.dumps({
             "jsonrpc": "2.0",
@@ -1389,7 +2037,21 @@ class WebSocketServerManager:
         })
         if self.clients:
             # Broadcast to all registered websocket connections
-            await asyncio.gather(
-                *[client.send(payload) for client in self.clients],
-                return_exceptions=True
+            if not hasattr(self, "_clients_lock"):
+                self._clients_lock = threading.Lock()
+            with self._clients_lock:
+                clients = list(self.clients)
+            results = await asyncio.gather(
+                *[client.send(payload) for client in clients],
+                return_exceptions=True,
             )
+            failed = [
+                client for client, result in zip(clients, results)
+                if isinstance(result, Exception)
+            ]
+            if failed:
+                with self._clients_lock:
+                    for client in failed:
+                        self.clients.discard(client)
+                        self.client_metadata.pop(client, None)
+                        self.client_histories.pop(client, None)

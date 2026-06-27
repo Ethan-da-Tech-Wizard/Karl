@@ -1,0 +1,125 @@
+replicaCount: 1
+
+image:
+  repository: karl/backend
+  tag: cuda
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+
+runtime:
+  command: ["python", "main.py", "--headless"]
+  env:
+    KARL_HEADLESS: "1"
+    KARL_WS_HOST: "0.0.0.0"
+    KARL_WS_PORT: "8080"
+    QT_QPA_PLATFORM: "offscreen"
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+    NVIDIA_VISIBLE_DEVICES: "all"
+    NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+
+bridge:
+  existingSecret: ""
+  secretKey: bridge-token
+  token: change-me-before-deploy
+
+config:
+  activeModel:
+    filename: deepseek-r1-1.5b.gguf
+    adapter: null
+  modelRegistry:
+    - tier: 1
+      name: DeepSeek-R1-Distill-Qwen-1.5B Q4_K_M
+      filename: deepseek-r1-1.5b.gguf
+      min_ram_gb: 3.0
+      min_vram_gb: 0.0
+      min_storage_gb: 1.5
+      url: https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf
+      n_ctx: 4096
+    - tier: 2
+      name: DeepSeek-R1-Distill-Qwen-7B Q4_K_M
+      filename: deepseek-r1-7b.gguf
+      min_ram_gb: 8.0
+      min_vram_gb: 0.0
+      min_storage_gb: 5.0
+      url: https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf
+      n_ctx: 8192
+    - tier: 3
+      name: DeepSeek-R1-Distill-Qwen-14B Q4_K_M
+      filename: deepseek-r1-14b.gguf
+      min_ram_gb: 16.0
+      min_vram_gb: 0.0
+      min_storage_gb: 10.0
+      url: https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf
+      n_ctx: 16384
+
+gpu:
+  enabled: true
+  resourceName: nvidia.com/gpu
+  count: 1
+  nodeSelectorKey: k8s.amazonaws.com/accelerator
+  nodeSelectorValues:
+    - nvidia-gpu
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+resources:
+  requests:
+    cpu: "2"
+    memory: 8Gi
+  limits:
+    cpu: "8"
+    memory: 32Gi
+
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClassName: gp3
+  accessModes:
+    - ReadWriteOnce
+  size: 100Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: internal-ca
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: karl.internal.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: karl-backend-tls
+      hosts:
+        - karl.internal.example.com
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+affinity: {}
+podAnnotations: {}

@@ -1,6 +1,5 @@
 // @ts-check
 const vscode = require('vscode');
-const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 const { writeTempFileAndDiff } = require('./fileOps');
@@ -208,7 +207,9 @@ class KarlSidebarProvider {
         const MAX_RETRIES = 3;
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
             try {
-                const raw = await fs.promises.readFile(tokenFile, 'utf8');
+                const uri = vscode.Uri.file(tokenFile);
+                const bytes = await vscode.workspace.fs.readFile(uri);
+                const raw = new TextDecoder('utf-8').decode(bytes);
                 return JSON.parse(raw).token || '';
             } catch (err) {
                 if (attempt < MAX_RETRIES - 1) {
@@ -233,14 +234,21 @@ class KarlSidebarProvider {
         }
 
         const config = vscode.workspace.getConfiguration('karl');
-        const activePort = port !== undefined ? port : config.get('port', 8080);
+
+        // Prefer the port injected by the extension host from the service-discovery
+        // file; fall back to the explicit argument, then to VS Code config.
+        const activePort = port !== undefined
+            ? port
+            : (this.discoveredPort !== undefined ? this.discoveredPort : config.get('port', 8080));
 
         this.lastBridgeError = '';
         this._setConnectionState('connecting', 'Connecting');
 
-        // Re-read the token from disk on every connection attempt so token rotation
-        // (single-use handshake policy) is picked up without an extension reload.
-        const bridgeToken = await this._readBridgeToken();
+        // Use token from service-discovery if available (avoids a second disk read);
+        // otherwise fall through to the per-workspace bridge_token.json.
+        const bridgeToken = (this.discoveredPort !== undefined && this.discoveredToken)
+            ? this.discoveredToken
+            : await this._readBridgeToken();
         const wsUrl = `wss://127.0.0.1:${activePort}${bridgeToken ? `?token=${encodeURIComponent(bridgeToken)}` : ''}`;
         // rejectUnauthorized: false — the Python backend uses a self-signed localhost cert
         const wsOptions = { rejectUnauthorized: false };
@@ -635,8 +643,18 @@ class KarlSidebarProvider {
         const filename = path.basename(filepath);
         let previous = '';
         try {
-            const fileExists = await fs.promises.access(filepath).then(() => true).catch(() => false);
-            previous = fileExists ? await fs.promises.readFile(filepath, 'utf8') : '';
+            const fileUri = vscode.Uri.file(filepath);
+            let fileExists = false;
+            try {
+                await vscode.workspace.fs.stat(fileUri);
+                fileExists = true;
+            } catch {}
+            if (fileExists) {
+                const bytes = await vscode.workspace.fs.readFile(fileUri);
+                previous = new TextDecoder('utf-8').decode(bytes);
+            } else {
+                previous = '';
+            }
         } catch {
             previous = '';
         }
@@ -704,20 +722,41 @@ class KarlSidebarProvider {
 
         try {
             const backupPath = edit.filepath + '.original';
-            const fileExists = await fs.promises.access(edit.filepath).then(() => true).catch(() => false);
-            const backupExists = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+            const fileUri = vscode.Uri.file(edit.filepath);
+            const backupUri = vscode.Uri.file(backupPath);
+
+            let fileExists = false;
+            try {
+                await vscode.workspace.fs.stat(fileUri);
+                fileExists = true;
+            } catch {}
+
+            let backupExists = false;
+            try {
+                await vscode.workspace.fs.stat(backupUri);
+                backupExists = true;
+            } catch {}
+
             if (fileExists && !backupExists) {
-                await fs.promises.copyFile(edit.filepath, backupPath);
+                await vscode.workspace.fs.copy(fileUri, backupUri, { overwrite: true });
             }
-            await fs.promises.writeFile(edit.filepath, edit.content, 'utf8');
+
+            const encoder = new TextEncoder();
+            await vscode.workspace.fs.writeFile(fileUri, encoder.encode(edit.content));
             edit.status = 'applied';
             edit.backupPath = backupPath;
             this.pendingEdits.set(editId, edit);
             this._savePendingEdits();
-            const backupExistsAfter = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+
+            let backupExistsAfter = false;
+            try {
+                await vscode.workspace.fs.stat(backupUri);
+                backupExistsAfter = true;
+            } catch {}
+
             this.postMessageToWebview({ command: 'file_edit_applied', editId, backupExists: backupExistsAfter });
             vscode.window.showInformationMessage(`Karl applied changes to ${edit.filename}.`);
-            await vscode.window.showTextDocument(vscode.Uri.file(edit.filepath), { preview: false });
+            await vscode.window.showTextDocument(fileUri, { preview: false });
             sendActiveStateToWebview(this);
         } catch (err) {
             vscode.window.showErrorMessage(`Failed to apply Karl edit: ${err.message}`);
@@ -753,9 +792,14 @@ class KarlSidebarProvider {
     async openFile(editId) {
         const edit = this.pendingEdits.get(editId);
         if (edit) {
-            const fileExists = await fs.promises.access(edit.filepath).then(() => true).catch(() => false);
+            const fileUri = vscode.Uri.file(edit.filepath);
+            let fileExists = false;
+            try {
+                await vscode.workspace.fs.stat(fileUri);
+                fileExists = true;
+            } catch {}
             if (fileExists) {
-                await vscode.window.showTextDocument(vscode.Uri.file(edit.filepath), { preview: false });
+                await vscode.window.showTextDocument(fileUri, { preview: false });
             }
         }
     }
@@ -772,13 +816,21 @@ class KarlSidebarProvider {
         const edit = this.pendingEdits.get(editId);
         if (!edit) return;
         const backupPath = edit.backupPath || edit.filepath + '.original';
-        const backupExists = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+        const fileUri = vscode.Uri.file(edit.filepath);
+        const backupUri = vscode.Uri.file(backupPath);
+
+        let backupExists = false;
+        try {
+            await vscode.workspace.fs.stat(backupUri);
+            backupExists = true;
+        } catch {}
+
         if (!backupExists) {
             vscode.window.showWarningMessage('No backup file found to rollback.');
             return;
         }
-        await fs.promises.copyFile(backupPath, edit.filepath);
-        await fs.promises.unlink(backupPath);
+        await vscode.workspace.fs.copy(backupUri, fileUri, { overwrite: true });
+        await vscode.workspace.fs.delete(backupUri, { recursive: false, useTrash: false });
         edit.status = 'rolled_back';
         this.pendingEdits.set(editId, edit);
         this._savePendingEdits();
@@ -790,9 +842,16 @@ class KarlSidebarProvider {
     async acceptLegacyFile(filepath) {
         if (!filepath) return;
         const backupPath = filepath + '.original';
-        const backupExists = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+        const backupUri = vscode.Uri.file(backupPath);
+
+        let backupExists = false;
+        try {
+            await vscode.workspace.fs.stat(backupUri);
+            backupExists = true;
+        } catch {}
+
         if (backupExists) {
-            await fs.promises.unlink(backupPath);
+            await vscode.workspace.fs.delete(backupUri, { recursive: false, useTrash: false });
             vscode.window.showInformationMessage(`Accepted changes for ${path.basename(filepath)}.`);
         }
     }
@@ -800,13 +859,21 @@ class KarlSidebarProvider {
     async rollbackLegacyFile(filepath) {
         if (!filepath) return;
         const backupPath = filepath + '.original';
-        const backupExists = await fs.promises.access(backupPath).then(() => true).catch(() => false);
+        const fileUri = vscode.Uri.file(filepath);
+        const backupUri = vscode.Uri.file(backupPath);
+
+        let backupExists = false;
+        try {
+            await vscode.workspace.fs.stat(backupUri);
+            backupExists = true;
+        } catch {}
+
         if (!backupExists) {
             vscode.window.showWarningMessage('No backup file found to rollback.');
             return;
         }
-        await fs.promises.copyFile(backupPath, filepath);
-        await fs.promises.unlink(backupPath);
+        await vscode.workspace.fs.copy(backupUri, fileUri, { overwrite: true });
+        await vscode.workspace.fs.delete(backupUri, { recursive: false, useTrash: false });
         vscode.window.showInformationMessage(`Rolled back changes for ${path.basename(filepath)}.`);
     }
 
@@ -862,7 +929,8 @@ class KarlSidebarProvider {
             port,
             autoConnect,
             workspaceFolder,
-            persisted: persisted || {}
+            persisted: persisted || {},
+            token: this.discoveredToken || '',
         }).replace(/</g, '\\u003c');
 
         return `<!DOCTYPE html>

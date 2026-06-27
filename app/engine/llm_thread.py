@@ -1,27 +1,69 @@
+import json
 import logging
 import os
 import time
 import psutil
 import re
+import threading
 from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.hot_reload import compile_and_reload
-from app.engine.model_loader import ModelLoader
+from app.engine.model_loader import CircuitBreakerOpenException, ModelLoader
+from app.engine.kv_cache import kv_cache_stats, log_cache_stats
+from app.engine.event_broker import EventBroker
+from app.engine.task_supervisor import TaskSupervisor
 from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
 
 RAW_LOG_DIR = "data/logs/raw"
+_PERF_LOG = "data/logs/performance_telemetry.jsonl"
+_PERF_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB rotation threshold
 _RESPONSE_RESERVE = 1024
 _MAX_MSG_CHARS = 100000   # Truncate any single message to this length before it enters the prompt
 
 _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
 _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
+_WATCHDOG_TIMEOUT_SECONDS = 30.0
+_WATCHDOG_ERROR = (
+    "Inference Watchdog Timeout: Token generation froze for more than 30s. "
+    "Inference terminated safely."
+)
 
 
 logger = logging.getLogger("karl.llm_thread")
 
 # Set to True on Stage 3 emergency; cleared when GPU cools below 85°C.
 _thermal_suspended: bool = False
+
+
+def _free_vram_mb() -> float | None:
+    """Return the minimum free VRAM across all GPUs, or None if unavailable."""
+    try:
+        from core.hardware_scout import get_hardware_profile
+        gpus = get_hardware_profile().get("gpu_list", [])
+        if not gpus:
+            return None
+        return min(g.get("memory_free_mb", float("inf")) for g in gpus)
+    except Exception:
+        return None
+
+
+def _write_performance_telemetry(entry: dict) -> None:
+    """
+    Append a structured JSONL entry to the performance telemetry log.
+    Rotates the log file to .1 when it reaches 5 MB to limit disk overhead.
+    """
+    try:
+        os.makedirs("data/logs", exist_ok=True)
+        if os.path.exists(_PERF_LOG) and os.path.getsize(_PERF_LOG) >= _PERF_LOG_MAX_BYTES:
+            rotated = _PERF_LOG + ".1"
+            if os.path.exists(rotated):
+                os.remove(rotated)
+            os.rename(_PERF_LOG, rotated)
+        with open(_PERF_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def _get_gpu_temp() -> float | None:
@@ -39,6 +81,8 @@ def _get_gpu_temp() -> float | None:
 
 
 class LLMThread(QThread):
+    """Single-shot inference worker that streams raw, thought, and answer tokens."""
+
     new_thought_token = pyqtSignal(str)
     new_chat_token = pyqtSignal(str)
     new_raw_token = pyqtSignal(str)
@@ -55,7 +99,25 @@ class LLMThread(QThread):
     def __init__(self, system_prompt, chat_history, hyperparams,
                  retrieved_chunks=None, start_in_thought=False,
                  workflow="general_chat", template="reasoning_minimal",
-                 adapter_name=None):
+                 adapter_name=None, model_name=None):
+        """Create a generation worker.
+
+        Args:
+            system_prompt: System prompt passed into core.interaction_loop.
+            chat_history: ChatML-style role/content messages.
+            hyperparams: Inference parameters including temperature, top_p,
+                max_tokens, and optional watchdog_timeout_seconds.
+            retrieved_chunks: Optional RAG chunks or attribution dicts.
+            start_in_thought: Continue parsing as thought text after a length stop.
+            workflow: Trace workflow name.
+            template: Trace prompt template name.
+            adapter_name: Optional LoRA adapter to load through ModelLoader.
+            model_name: Optional GGUF filename override. When provided the thread
+                calls ``ModelLoader.get_instance(model_path=...)`` with an
+                absolute path under ``data/models/``, allowing custom agent
+                profiles to use a different base model without changing the
+                global active-model selection.
+        """
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = chat_history
@@ -65,12 +127,74 @@ class LLMThread(QThread):
         self.workflow = workflow
         self.template = template
         self.adapter_name = adapter_name
+        self.model_name = model_name  # optional GGUF filename override for custom agents
         self.logger = TraceLogger()
         self.enable_tools = False
         self._stop_requested = False
+        self.watchdog_timeout_seconds = float(
+            self.hyperparams.get("watchdog_timeout_seconds", _WATCHDOG_TIMEOUT_SECONDS)
+        )
+        self.last_token_timestamp = time.time()
+        self._watchdog_timed_out = False
+        self._watchdog_error_emitted = False
+        self._watchdog_stop = threading.Event()
+        self._active_response_generator = None
+        self.task_id: str | None = None
 
     def request_stop(self):
+        """Request cooperative cancellation and stop the watchdog."""
         self._stop_requested = True
+        self._watchdog_stop.set()
+
+    def _mark_token_activity(self):
+        self.last_token_timestamp = time.time()
+
+    def _emit_watchdog_timeout(self):
+        if self._watchdog_error_emitted:
+            return
+        self._watchdog_error_emitted = True
+        self.error_occurred.emit(_WATCHDOG_ERROR)
+
+    def _cleanup_after_watchdog_timeout(self, llm=None):
+        self._stop_requested = True
+        self._watchdog_timed_out = True
+        self._emit_watchdog_timeout()
+        generator = self._active_response_generator
+        close_fn = getattr(generator, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
+        reset_fn = getattr(llm, "reset", None)
+        if callable(reset_fn):
+            try:
+                reset_fn()
+            except Exception:
+                pass
+
+    def _start_watchdog(self, llm=None) -> threading.Thread:
+        self._watchdog_stop.clear()
+        self._watchdog_timed_out = False
+        self._watchdog_error_emitted = False
+        self._mark_token_activity()
+
+        def _monitor():
+            while not self._watchdog_stop.wait(0.25):
+                if self._stop_requested:
+                    return
+                if time.time() - self.last_token_timestamp > self.watchdog_timeout_seconds:
+                    self._cleanup_after_watchdog_timeout(llm)
+                    return
+
+        thread = threading.Thread(target=_monitor, name="karl-llm-watchdog", daemon=True)
+        thread.start()
+        return thread
+
+    def _stop_watchdog(self, thread: threading.Thread | None):
+        self._watchdog_stop.set()
+        if thread and thread.is_alive():
+            thread.join(timeout=1.0)
 
     def _token_count(self, llm, text: str) -> int:
         if not text:
@@ -161,6 +285,15 @@ class LLMThread(QThread):
         return kept
 
     def run(self):
+        """Load the model, stream tokens, write traces, and emit completion signals.
+
+        CircuitBreakerOpenException is converted into error_occurred with the
+        operator-facing circuit-breaker message.
+        """
+        supervisor = TaskSupervisor.instance()
+        if self.task_id is None:
+            self.task_id = supervisor.register("LLM generation", cancellable=self)
+
         # ── CPU Core Pinning ──────────────────────────────────────────────────
         # Pin inference to physical cores to optimize TPS.
         original_affinity = None
@@ -199,8 +332,13 @@ class LLMThread(QThread):
                 logger,
             )
 
-            llm = ModelLoader.get_instance(adapter_name=self.adapter_name)
-            ModelLoader.lock_instance()
+            if self.model_name:
+                model_path = os.path.join("data", "models", self.model_name)
+                llm = ModelLoader.acquire_instance(
+                    model_path=model_path, adapter_name=self.adapter_name
+                )
+            else:
+                llm = ModelLoader.acquire_instance(adapter_name=self.adapter_name)
             
             # Fetch the actual (potentially fallback-scaled) context limit
             actual_context_budget = ModelLoader.context_limit()
@@ -242,6 +380,11 @@ class LLMThread(QThread):
             os.makedirs(RAW_LOG_DIR, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
             raw_log_path = os.path.join(RAW_LOG_DIR, f"{ts}.tokens")
+
+            # Snapshot cache state BEFORE inference so we can report how many tokens
+            # will be served from the KV-cache vs freshly evaluated this turn.
+            _init_cache_stats = kv_cache_stats(llm, prompt)
+            _vram_before_mb = _free_vram_mb()
 
             start_time = time.perf_counter()
             first_token_time = None
@@ -302,75 +445,96 @@ class LLMThread(QThread):
                         stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"],
                         echo=False
                     )
+                    self._active_response_generator = response_generator
+                    watchdog_thread = self._start_watchdog(llm)
 
                     finish_reason = "stop"
                     has_tokens = False
                     state_transitioned = False
 
-                    for chunk in response_generator:
-                        if 'choices' not in chunk or not chunk['choices']:
-                            continue
-
-                        choice = chunk['choices'][0]
-
-                        # Track finish_reason from every chunk (last non-None wins)
-                        fr = choice.get('finish_reason')
-                        if fr is not None:
-                            finish_reason = fr
-
-                        text = choice.get('text', '')
-                        if not text:
-                            continue
-
-                        if first_token_time is None:
-                            first_token_time = time.perf_counter()
-
-                        chunk_tokens = len(llm.tokenize(text.encode('utf-8'), add_bos=False))
-                        gen_token_count += chunk_tokens
-                        elapsed = time.perf_counter() - first_token_time
-                        speed = gen_token_count / elapsed if elapsed > 0 else 0.0
-                        self.live_stats.emit(gen_token_count, speed)
-
-                        has_tokens = True
-                        micro_ts = f"{time.time():.6f}"
-                        raw_file.write(f"{micro_ts}\t{text}\n")
-                        raw_file.flush()
-                        self.new_raw_token.emit(text)
-
-                        raw_output += text
-                        buffer += text
-
-                        if "<think>" in buffer and not in_thought:
-                            in_thought = True
-                            pre_think = buffer.split("<think>")[0]
-                            if pre_think:
-                                self.new_chat_token.emit(pre_think)
-                                parsed_response += pre_think
-                            buffer = buffer.split("<think>", 1)[1]
-
-                        if in_thought and "</think>" in buffer:
-                            in_thought = False
-                            parts = buffer.split("</think>", 1)
-                            if parts[0]:
-                                self.new_thought_token.emit(parts[0])
-                                parsed_thought += parts[0]
-                            buffer = parts[1]
-                            
-                            if self.hyperparams.get("enable_dynamic_scheduling", True):
-                                logger.info("Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
-                                state_transitioned = True
+                    try:
+                        for chunk in response_generator:
+                            if self._watchdog_timed_out or self._stop_requested:
                                 break
+                            if 'choices' not in chunk or not chunk['choices']:
+                                continue
 
-                        if in_thought:
-                            if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
-                                self.new_thought_token.emit(buffer)
-                                parsed_thought += buffer
-                                buffer = ""
-                        else:
-                            if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
-                                self.new_chat_token.emit(buffer)
-                                parsed_response += buffer
-                                buffer = ""
+                            choice = chunk['choices'][0]
+
+                            # Track finish_reason from every chunk (last non-None wins)
+                            fr = choice.get('finish_reason')
+                            if fr is not None:
+                                finish_reason = fr
+
+                            text = choice.get('text', '')
+                            if not text:
+                                continue
+
+                            self._mark_token_activity()
+
+                            if first_token_time is None:
+                                first_token_time = time.perf_counter()
+
+                            chunk_tokens = len(llm.tokenize(text.encode('utf-8'), add_bos=False))
+                            gen_token_count += chunk_tokens
+                            elapsed = time.perf_counter() - first_token_time
+                            speed = gen_token_count / elapsed if elapsed > 0 else 0.0
+                            self.live_stats.emit(gen_token_count, speed)
+
+                            has_tokens = True
+                            micro_ts = f"{time.time():.6f}"
+                            raw_file.write(f"{micro_ts}\t{text}\n")
+                            raw_file.flush()
+                            self.new_raw_token.emit(text)
+                            EventBroker.get_instance().publish("tokens:raw", {"token": text})
+
+                            raw_output += text
+                            buffer += text
+
+                            if "<think>" in buffer and not in_thought:
+                                in_thought = True
+                                pre_think = buffer.split("<think>")[0]
+                                if pre_think:
+                                    self.new_chat_token.emit(pre_think)
+                                    EventBroker.get_instance().publish("tokens:chat", {"token": pre_think})
+                                    parsed_response += pre_think
+                                buffer = buffer.split("<think>", 1)[1]
+
+                            if in_thought and "</think>" in buffer:
+                                in_thought = False
+                                parts = buffer.split("</think>", 1)
+                                if parts[0]:
+                                    self.new_thought_token.emit(parts[0])
+                                    EventBroker.get_instance().publish("tokens:thought", {"token": parts[0]})
+                                    parsed_thought += parts[0]
+                                buffer = parts[1]
+                                
+                                if self.hyperparams.get("enable_dynamic_scheduling", True):
+                                    logger.info("Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
+                                    state_transitioned = True
+                                    break
+
+                            if in_thought:
+                                if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
+                                    self.new_thought_token.emit(buffer)
+                                    EventBroker.get_instance().publish("tokens:thought", {"token": buffer})
+                                    parsed_thought += buffer
+                                    buffer = ""
+                            else:
+                                if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
+                                    self.new_chat_token.emit(buffer)
+                                    EventBroker.get_instance().publish("tokens:chat", {"token": buffer})
+                                    parsed_response += buffer
+                                    buffer = ""
+                    finally:
+                        self._stop_watchdog(watchdog_thread)
+                        close_fn = getattr(response_generator, "close", None)
+                        if callable(close_fn):
+                            close_fn()
+                        self._active_response_generator = None
+
+                    if self._watchdog_timed_out:
+                        return
 
                     if state_transitioned:
                         continue
@@ -429,9 +593,11 @@ class LLMThread(QThread):
             if buffer:
                 if in_thought:
                     self.new_thought_token.emit(buffer)
+                    EventBroker.get_instance().publish("tokens:thought", {"token": buffer})
                     parsed_thought += buffer
                 else:
                     self.new_chat_token.emit(buffer)
+                    EventBroker.get_instance().publish("tokens:chat", {"token": buffer})
                     parsed_response += buffer
 
             # MCP Tool loop — if enabled and model emitted tool calls, execute and continue
@@ -488,6 +654,18 @@ class LLMThread(QThread):
             total_tokens = prompt_tokens + generation_tokens
             total_tps = total_tokens / total_time if total_time > 0 else 0.0
 
+            _vram_after_mb = _free_vram_mb()
+            _vram_delta: float | None = (
+                round(_vram_before_mb - _vram_after_mb, 1)
+                if _vram_before_mb is not None and _vram_after_mb is not None
+                else None
+            )
+
+            _cache_diag = {**_init_cache_stats, "ttft_ms": round(prefill_time * 1000, 2)}
+            log_cache_stats(_cache_diag, ts)
+
+            _kv_hits = int(_init_cache_stats.get("tokens_from_cache") or 0)
+
             diagnostics = {
                 "prompt_tokens": prompt_tokens,
                 "prefill_time": prefill_time,
@@ -497,7 +675,20 @@ class LLMThread(QThread):
                 "generation_tps": generation_tps,
                 "total_time": total_time,
                 "total_tps": total_tps,
+                "kv_cache": _cache_diag,
             }
+
+            _write_performance_telemetry({
+                "ts":                      ts,
+                "model":                   ModelLoader.model_name(),
+                "prefill_tokens_count":    prompt_tokens,
+                "prefill_duration_sec":    round(prefill_time, 4),
+                "generation_tokens_count": generation_tokens,
+                "generation_duration_sec": round(generation_time, 4),
+                "tokens_per_second":       round(generation_tps, 2),
+                "kv_cache_hits":           _kv_hits,
+                "vram_usage_mb_delta":     _vram_delta,
+            })
 
             truncated = (finish_reason == "length")
             # Pass whether we ended inside a thought block so continuation knows where to resume
@@ -564,9 +755,21 @@ class LLMThread(QThread):
             )
 
             self.generation_finished.emit(parsed_thought, parsed_response, truncated, ended_in_thought, diagnostics)
+            EventBroker.get_instance().publish("generation:finished", {
+                "thought": parsed_thought,
+                "response": parsed_response,
+                "truncated": truncated,
+                "ended_in_thought": ended_in_thought,
+                "diagnostics": diagnostics
+            })
+            supervisor.finish(self.task_id)
 
+        except CircuitBreakerOpenException as e:
+            self.error_occurred.emit(str(e))
+            supervisor.fail(self.task_id, str(e))
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")
+            supervisor.fail(self.task_id, str(e))
         finally:
             ModelLoader.unlock_instance()
             # Restore original CPU affinity

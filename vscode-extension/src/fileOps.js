@@ -1,7 +1,7 @@
 // @ts-check
-const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const vscode = require('vscode');
 
 const MAX_CONTEXT_CHARS = 70000;
@@ -42,7 +42,12 @@ function packageContext(raw, label, summaryOnly = false) {
  * @returns {Promise<boolean>}
  */
 async function checkFileExists(filepath) {
-    return fs.promises.access(filepath).then(() => true).catch(() => false);
+    try {
+        await vscode.workspace.fs.stat(vscode.Uri.file(filepath));
+        return true;
+    } catch (e) {
+        return false;
+    }
 }
 
 /**
@@ -54,13 +59,19 @@ async function checkFileExists(filepath) {
  * @returns {Promise<string>}
  */
 async function writeTempFileAndDiff(filename, targetPath, content, title) {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'karl-proposed-'));
-    const proposedPath = path.join(tempDir, filename);
-    await fs.promises.writeFile(proposedPath, content, 'utf8');
+    const randomHex = crypto.randomBytes(8).toString('hex');
+    const tempProposedDir = path.join(os.tmpdir(), `karl-proposed-${randomHex}`);
+    const proposedPath = path.join(tempProposedDir, filename);
+    const proposedUri = vscode.Uri.file(proposedPath);
+
+    await vscode.workspace.fs.createDirectory(vscode.Uri.file(tempProposedDir));
+    const encoder = new TextEncoder();
+    await vscode.workspace.fs.writeFile(proposedUri, encoder.encode(content));
+
     await vscode.commands.executeCommand(
         'vscode.diff',
         vscode.Uri.file(targetPath),
-        vscode.Uri.file(proposedPath),
+        proposedUri,
         title
     );
     return proposedPath;

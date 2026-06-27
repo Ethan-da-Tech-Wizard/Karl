@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tests.qt_test_helper  # noqa: F401
 from PyQt6.QtCore import QCoreApplication
 import websockets
+import pytest
 
 from auto_train import generate_fallback_tasks, verify_solution
 from app.ui.workspaces.training_studio import AutoTrainThread
@@ -91,6 +92,8 @@ class TestAutoTrain(unittest.TestCase):
         self.assertEqual(thread.adapter_name, adapter_name)
         self.assertEqual(thread.config, config)
 
+    @pytest.mark.integration
+    @pytest.mark.websocket
     def test_websocket_start_auto_train_rpc(self):
         if _running_under_bwrap():
             self.skipTest("Codex sandbox blocks reliable localhost WebSocket tests")

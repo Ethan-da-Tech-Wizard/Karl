@@ -12,9 +12,13 @@
 │    │    ├── [0] WorkbenchWorkspace                                  │
 │    │    ├── [1] PromptLabWorkspace                                  │
 │    │    ├── [2] KnowledgeBaseWorkspace                              │
-│    │    ├── [3] TrainingStudioWorkspace                             │
-│    │    ├── [4] EvalSuiteWorkspace                                  │
-│    │    └── [5] SystemConfigWorkspace                               │
+│    │    ├── [3] VisionWorkbench                                     │
+│    │    ├── [4] TrainingStudioWorkspace                             │
+│    │    ├── [5] EvalSuiteWorkspace                                  │
+│    │    ├── [6] SwarmStudioWorkspace                                │
+│    │    ├── [7] SystemConfigWorkspace                               │
+│    │    ├── [8] DocsWorkspace                                       │
+│    │    └── [9] FlywheelStudioWorkspace                             │
 │    └── StatusBar (24px fixed)   app/ui/widgets/status_bar.py       │
 │                                                                     │
 │  AppState (shared, passed to all workspaces)   app/state.py        │
@@ -44,22 +48,28 @@
 
 Each workspace is a `QWidget` subclass in `app/ui/workspaces/`.
 All workspaces receive a single `AppState` instance at construction.
-Workspaces communicate exclusively through `AppState` — they never import
-each other and never reference `MainWindow`.
+Workspaces communicate primarily through `AppState` and never reference
+`MainWindow`. A few UI integration points receive an explicit Workbench
+reference from `MainWindow` after construction.
 
 | Workspace | File | Owns |
 |-----------|------|------|
-| Workbench | `workbench.py` | `chat_history` (SessionTree), LLMThread, AgenticThread |
-| Prompt Lab | `prompt_lab.py` | A/B run threads, prompt pairs |
-| Knowledge Base | `knowledge_base.py` | ingest controls, chunk inspector |
-| Training Studio | `training_studio.py` | dataset browser, export, TrainingThread |
-| Eval Suite | `eval_suite.py` | EvalThread, results display |
-| System Config | `system_config.py` | model load/unload, generation defaults |
+| Workbench | `workbench/workspace.py` | `chat_history` (SessionTree), LLMThread, AgenticThread |
+| Prompt Lab | `prompt_lab.py` | A/B run threads, prompt pairs, tokenizer view |
+| Knowledge Base | `knowledge_base.py` | ingest controls, chunk inspector, RAG search testing |
+| Vision Workbench | `vision_workbench.py` | screenshot/image reasoning, OCR, saved images |
+| Training Studio | `training_studio/__init__.py` | dataset browser, export, TrainingThread, flywheel controls |
+| Eval Suite | `eval_suite.py` | EvalThread, results display, grader controls |
+| Swarm Studio | `swarm_studio.py` | task graph, file proposals, verification traces |
+| System Config | `system_config/workspace.py` | model registry, generation defaults, theme, hardware |
+| Docs | `docs.py` | local Codex reference browser |
+| Flywheel Studio | `flywheel_studio.py` | telemetry and fine-tuning loop metrics |
 
-`SystemConfigWorkspace` additionally holds a reference to `WorkbenchWorkspace`
-so it can push generation defaults and system prompt changes directly.
-This is the only cross-workspace reference and is set explicitly via
-`system_config.set_workbench(wb)` after construction.
+`VisionWorkbench`, `SystemConfigWorkspace`, and `DocsWorkspace` additionally
+hold a reference to `WorkbenchWorkspace` for tightly scoped UI actions such as
+image-to-prompt handoff, generation default updates, and documentation prompt
+insertion. These references are set explicitly by `MainWindow`; shared state
+still flows through `AppState`.
 
 ---
 
@@ -116,17 +126,25 @@ core/
 
 ```python
 # app/engine/model_loader.py
-ModelLoader.get_instance(model_path=None) -> Llama   # thread-safe
-ModelLoader.reset_instance()                          # forces reload
+ModelLoader.get_instance(model_path=None, adapter_name=None, draft_model_path=None) -> Llama
+ModelLoader.reset_instance()                          # unloads model and draft handles
 ModelLoader.model_name() -> str                       # active GGUF basename
 ModelLoader.is_loaded() -> bool
-ModelLoader.n_ctx() -> int                            # Phase 1.3: reads from registry
+ModelLoader.n_ctx() -> int                            # loaded context or registry fallback
+ModelLoader.reset_circuit_breaker() -> None           # manual breaker reset
 ```
 
-- Protected by `threading.Lock()`
-- Reads `data/active_model.json` on first call for GGUF filename
-- Falls back to `deepseek-r1-1.5b.gguf` if specified file missing
-- After Phase 1.3: reads `n_ctx` from `data/model_registry.json` based on loaded model tier
+- Protected by `threading.RLock()`.
+- Reads `data/active_model.json` on first call for GGUF filename and adapter.
+- Falls back to `data/models/deepseek-r1-1.5b.gguf` if the specified file is missing and the fallback exists.
+- Reads `n_ctx`, `n_batch`, quantization, RAM, and VRAM metadata from `data/model_registry.json`.
+- Loads with `n_gpu_layers=-1`, `flash_attn=True`, `use_mmap=True`, and `use_mlock=True`.
+- If host `mlock` limits reject locked memory, retries the same load with `use_mlock=False` and logs Linux ulimit guidance.
+- If VRAM allocation fails, halves `n_ctx` down to a minimum of 2048 before surfacing a terminal load error.
+- When multiple GPUs are visible, computes a proportional `tensor_split` from free VRAM and tries that before falling back to single-GPU loading.
+- Optional speculative decoding loads a draft GGUF from `data/draft_model.json` or the supplied `draft_model_path`; if the installed `llama-cpp-python` lacks `draft_model`, Karl disables speculative decoding and keeps normal inference.
+- The model-load circuit breaker trips OPEN after three terminal load failures, blocks repeated constructor attempts for 30 seconds, then permits one HALF_OPEN recovery attempt.
+- Optional 8-bit KV cache uses `type_k` and `type_v` set to `GGML_TYPE_Q8_0` when `quantized_kv_cache` is enabled.
 
 ---
 
@@ -171,6 +189,40 @@ Open guard suffixes:  `["<", "<t", "<th", "<thi", "<thin", "<think"]`
 
 Auto-continuation: if `finish_reason == "length"`, appends `raw_output` to prompt
 and re-queries (up to 5 passes). `ended_in_thought` flag preserves parse state.
+
+Both generation threads start a watchdog timer while streaming. If no token arrives
+within `watchdog_timeout_seconds` (default 30s), the active generator is closed,
+the model is reset best-effort, and `error_occurred` receives a timeout message.
+Circuit-breaker-open failures are emitted as the plain operator-facing breaker
+message rather than wrapped in a generic thread error prefix.
+
+---
+
+## 6.1 Event Broker
+
+`app/engine/event_broker.py` is a thread-safe in-process pub/sub singleton used
+for live telemetry fan-out without coupling UI widgets directly to engine loops.
+
+```python
+EventBroker.get_instance() -> EventBroker
+EventBroker.subscribe(topic, callback) -> None
+EventBroker.unsubscribe(topic, callback) -> None
+EventBroker.publish(topic, data) -> None
+```
+
+Current engine topics include:
+
+| Topic | Payload |
+|-------|---------|
+| `tokens:raw` | `{"token": str}` before parser routing. |
+| `tokens:thought` | `{"token": str}` for `<think>` stream output. |
+| `tokens:chat` | `{"token": str}` for final-answer stream output. |
+| `generation:finished` | Parsed thought, response, truncation flags, and diagnostics. |
+| `iteration:finished` | Agentic iteration index, thought, response, and diagnostics. |
+| `loop:finished` | Agentic loop iteration count. |
+
+Subscriber callbacks receive a dict payload. Exceptions raised by one subscriber
+are suppressed so telemetry cannot break inference.
 
 ---
 
@@ -292,33 +344,22 @@ On each generation (RAG enabled):
 
 ## 11. Design System
 
-Single dark theme. No theme switcher.
+The current UI theme contract is documented in `docs/06_ui_architecture.md`.
+`app/ui/themes.py` owns named palettes and compiles QSS dynamically from the
+active `AppState` theme preset, custom accent, theme mode, and layout preset.
 
 ```python
 # app/ui/themes.py
-PALETTE = {
-    "bg_deep":    "#07070D",    # window background
-    "bg_base":    "#0D0D16",    # workspace background
-    "bg_surface": "#14141F",    # panels, cards
-    "bg_raised":  "#1C1C2A",    # buttons, hover states
-    "bg_input":   "#111119",    # text inputs
-    "border":     "#252535",    # default borders
-    "border_hi":  "#383850",    # focused borders
-    "accent":     "#00C2FF",    # primary action color
-    "text_hi":    "#E4E4F0",    # primary text
-    "text_mid":   "#9090A8",    # secondary text
-    "text_lo":    "#505068",    # muted text / labels
-    "think_bg":   "#0A0A14",    # reasoning panel background
-    "think_text": "#505080",    # reasoning panel text
-    ...
-}
-
+THEMES = {...}                  # named palettes
+PALETTE = THEMES["Karl Obsidian Core"]
 MONO = "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace"
-
-stylesheet(accent="#00C2FF") -> str   # returns complete QSS
+get_theme_colors(state) -> dict
+get_theme_stylesheet(state) -> str
 ```
 
-Styling hooks: object names (`#sidebar`, `#panel-header`, `#btn-primary`, etc.)
+Default `Focused Workbench` layout uses 12 px outer workspace padding and 10 px
+standard spacing. Styling hooks are object names such as `#workspace-root`,
+`#sidebar`, `#panel`, `#section-header`, `#btn-primary`, and `#reasoning-view`.
 
 ---
 
@@ -400,6 +441,24 @@ class WebSocketServerManager:
     get_instance(port=8080) -> WebSocketServerManager
     reset_instance() -> None
 ```
+
+The bridge runs as WSS using Karl-managed localhost certificates from
+`data/ssl/localhost.crt` and `data/ssl/localhost.key`. Startup tries the preferred
+port and then the next nine ports to survive local conflicts. Service discovery is
+written to `~/.karl/service_discovery.json`.
+
+Connections must present a valid token in the WebSocket URL query string. Tokens
+live in `data/bridge_token.json`, may be supplied by `KARL_BRIDGE_TOKEN`, and carry
+RBAC scopes such as `read:telemetry`, `read:kb`, `write:kb`, and `admin:execute`.
+Each incoming frame is validated as JSON-RPC 2.0 before dispatch:
+
+| Error | Condition |
+|-------|-----------|
+| `-32700` Parse error | Invalid JSON frame. |
+| `-32600` Invalid Request | Non-object request, missing `jsonrpc: "2.0"`, or missing method. |
+| `-32601` Method not found | Method not in the bridge registry. |
+| `-32602` Invalid params | Required method parameters missing or malformed. |
+| `-32603` Internal error | Handler exception; details are returned in `error.data`. |
 
 Current JSON-RPC methods:
 

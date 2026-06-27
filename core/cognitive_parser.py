@@ -1,4 +1,8 @@
 # THE HACKABLE LAYER — modify to change how thoughts are parsed from raw LLM output.
+#
+# This module is used for BATCH POST-PROCESSING only (e.g. engine_test.py).
+# The live streaming threads (LLMThread, AgenticThread) contain their own
+# inline state machines that route tokens in real time without calling this function.
 
 _OPEN  = "<think>"
 _CLOSE = "</think>"
@@ -6,11 +10,28 @@ _CLOSE = "</think>"
 
 def parse_thought_stream(raw_text: str) -> tuple[str, str]:
     """
-    State-machine parser: handles any capitalisation variant of <think> tags,
-    multiple think blocks, and unclosed tags (model stopped mid-thought).
+    State-machine parser for DeepSeek-R1 style ``<think>…</think>`` blocks.
+
+    Handles:
+    - Any capitalisation variant of the open/close tags (case-insensitive search).
+    - Multiple ``<think>`` blocks in a single output (all thought segments merged).
+    - Unclosed tags — if generation was cut off mid-thought, the remaining text
+      is classified as thought content rather than response.
+    - Pre-seeded think blocks — when the prompt ends with ``<think>\\n``, the raw
+      model output begins *inside* a thought block (no opening tag present). The
+      parser detects this by checking whether a ``</think>`` appears before any
+      ``<think>`` and initialises ``in_thought = True`` accordingly.
+    - Quantization/hallucination artifact removal — the token sequence
+      ``"overposting"`` is a known artefact of some quantised DeepSeek weights
+      that leaks through reasoning and response text. It is stripped from both
+      sections before returning.
+
+    Args:
+        raw_text: The complete raw string returned by ``llm()["choices"][0]["text"]``.
 
     Returns:
-        (thought_text, response_text)
+        A ``(thought_text, response_text)`` tuple. Both parts are stripped of
+        leading/trailing whitespace. Either may be an empty string.
     """
     thought_parts: list[str] = []
     response_parts: list[str] = []

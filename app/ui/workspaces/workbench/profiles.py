@@ -1,6 +1,9 @@
 """Agent profile definitions injected into the active system prompt."""
 
-AGENT_PROFILES = {
+import json
+import os
+
+_BUILTIN_PROFILES = {
     "karl": {
         "label": "Karl",
         "description": "Balanced analytical assistant for general work.",
@@ -47,3 +50,47 @@ AGENT_PROFILES = {
         ),
     },
 }
+
+# Immutable snapshot of the built-in profiles. Tests and external code can
+# compare against DEFAULT_PROFILES to detect user-added custom profiles.
+DEFAULT_PROFILES: dict = dict(_BUILTIN_PROFILES)
+
+# Live mutable registry. Starts as a copy of defaults and is extended by
+# reload_profiles() when custom agents are found in data/custom_agents.json.
+AGENT_PROFILES: dict = dict(_BUILTIN_PROFILES)
+
+_CUSTOM_AGENTS_PATH = os.path.join("data", "custom_agents.json")
+
+
+def reload_profiles() -> None:
+    """Reload AGENT_PROFILES from disk, merging built-ins with any custom agents.
+
+    Custom agents are stored in ``data/custom_agents.json`` as a dict mapping
+    profile name to profile dict (same schema as AGENT_PROFILES).  Missing or
+    corrupt files are silently ignored and the registry resets to defaults.
+
+    Built-in profile names cannot be overridden by custom entries; any custom
+    entry whose name collides with a built-in is silently dropped.
+    """
+    AGENT_PROFILES.clear()
+    AGENT_PROFILES.update(_BUILTIN_PROFILES)
+
+    if not os.path.exists(_CUSTOM_AGENTS_PATH):
+        return
+
+    try:
+        with open(_CUSTOM_AGENTS_PATH, "r", encoding="utf-8") as f:
+            custom = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return
+
+    if not isinstance(custom, dict):
+        return
+
+    for name, profile in custom.items():
+        if not isinstance(name, str) or not isinstance(profile, dict):
+            continue
+        if name in _BUILTIN_PROFILES:
+            continue  # never let custom profiles shadow built-ins
+        AGENT_PROFILES[name] = profile
+

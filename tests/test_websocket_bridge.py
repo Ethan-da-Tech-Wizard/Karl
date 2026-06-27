@@ -17,8 +17,11 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 import websockets
+import pytest
 from PyQt6.QtCore import QCoreApplication
 from app.engine.websocket_server import WebSocketServerManager
+
+pytestmark = [pytest.mark.integration, pytest.mark.websocket]
 
 
 def _running_under_bwrap() -> bool:

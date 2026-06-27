@@ -241,7 +241,9 @@ class GearIcon(BaseSymbol):
 
 class IconBtn(QPushButton):
     """A QPushButton that hosts a theme-aware custom symbolic icon."""
+
     def __init__(self, icon_widget_class, state, color_role="accent", tooltip="", size=28, parent=None):
+        """Create a fixed-size icon button from a BaseSymbol subclass."""
         super().__init__(parent)
         self.setObjectName("btn-ghost")
         self.setFixedSize(size, size)
@@ -256,4 +258,5 @@ class IconBtn(QPushButton):
         layout.addWidget(self.icon_widget)
         
     def update_style(self):
+        """Repaint the hosted icon after a theme/state change."""
         self.icon_widget.update()

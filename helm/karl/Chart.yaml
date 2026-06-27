@@ -1,0 +1,13 @@
+apiVersion: v2
+name: karl
+description: CUDA-backed Karl headless WebSocket backend for enterprise prompt engineering
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - llm
+  - cuda
+  - websocket
+  - prompt-engineering
+maintainers:
+  - name: Karl Maintainers

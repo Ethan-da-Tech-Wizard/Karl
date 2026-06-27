@@ -18,6 +18,14 @@ def _escape(text: str) -> str:
     )
 
 
+def _escape_pre(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+    )
+
+
 class ChatView(QTextBrowser):
     """Scrollable conversation display with streaming support."""
 

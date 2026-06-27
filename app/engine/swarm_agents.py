@@ -8,12 +8,38 @@ orchestrating local LLM calls and system prompts to perform codebase tasks.
 import os
 import re
 import json
+import logging
 import subprocess
 import glob
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional, Callable
 from app.engine.model_loader import ModelLoader
+from app.engine.agent_memory import CodebaseMemory, keywords_from_task
 from core.interaction_loop import build_prompt
+
+logger = logging.getLogger("karl.swarm_agents")
+
+
+_SECURITY_BLOCK_MSG = "ERROR: Security Block: Path traversal outside workspace boundary is prohibited."
+
+
+def _safe_workspace_path(workspace_path: str, rel: str) -> str | None:
+    """
+    Returns the fully-resolved absolute path for *rel* inside *workspace_path*,
+    or None if the path escapes the workspace via any mechanism (parent traversal,
+    absolute injection, or symlink escape).
+
+    Symlink escape example:
+        workspace/evil -> /etc/passwd
+        os.path.realpath(workspace/evil) == /etc/passwd  → blocked
+    """
+    if not rel:
+        return None
+    ws_real = os.path.realpath(workspace_path)
+    target = os.path.realpath(os.path.join(ws_real, rel))
+    if target == ws_real or target.startswith(ws_real + os.sep):
+        return target
+    return None
 
 
 # ── Tool Registry ─────────────────────────────────────────────────────────────
@@ -40,23 +66,27 @@ def get_tool_schema_block() -> str:
 
 @register_tool("write_file", "write_file(path, content) — overwrite a workspace file. path is relative to workspace root.")
 def _tool_write_file(workspace_path: str, args: dict) -> str:
-    import os, pathlib
+    import pathlib
     rel = args.get("path", "")
     content = args.get("content", "")
-    if not rel or ".." in rel or os.path.isabs(rel):
-        return "ERROR: invalid path"
-    full = pathlib.Path(workspace_path) / rel
+    target = _safe_workspace_path(workspace_path, rel)
+    if target is None:
+        logger.warning("SECURITY ALERT: path traversal blocked in write_file. rel=%r workspace=%r", rel, workspace_path)
+        return _SECURITY_BLOCK_MSG
+    full = pathlib.Path(target)
     full.parent.mkdir(parents=True, exist_ok=True)
     full.write_text(content, encoding="utf-8")
     return f"OK: wrote {len(content.splitlines())} lines to {rel}"
 
 @register_tool("read_file", "read_file(path) — read current contents of a workspace file.")
 def _tool_read_file(workspace_path: str, args: dict) -> str:
-    import os, pathlib
+    import pathlib
     rel = args.get("path", "")
-    if not rel or ".." in rel or os.path.isabs(rel):
-        return "ERROR: invalid path"
-    full = pathlib.Path(workspace_path) / rel
+    target = _safe_workspace_path(workspace_path, rel)
+    if target is None:
+        logger.warning("SECURITY ALERT: path traversal blocked in read_file. rel=%r workspace=%r", rel, workspace_path)
+        return _SECURITY_BLOCK_MSG
+    full = pathlib.Path(target)
     if not full.exists():
         return f"ERROR: file not found: {rel}"
     try:
@@ -109,9 +139,11 @@ def _tool_shell_run(workspace_path: str, args: dict) -> str:
 def _tool_lint_python(workspace_path: str, args: dict) -> str:
     import pathlib
     rel = args.get("path", "")
-    if not rel:
-        return "ERROR: path required"
-    full = pathlib.Path(workspace_path) / rel
+    target = _safe_workspace_path(workspace_path, rel)
+    if target is None:
+        logger.warning("SECURITY ALERT: path traversal blocked in lint_python. rel=%r workspace=%r", rel, workspace_path)
+        return _SECURITY_BLOCK_MSG
+    full = pathlib.Path(target)
     if not full.exists():
         return f"ERROR: file not found: {rel}"
     try:
@@ -272,11 +304,25 @@ class CoderAgent(BaseSwarmAgent):
         """
         llm = ModelLoader.get_instance()
         tool_schema = get_tool_schema_block()
+        memory_reference = ""
+        try:
+            memory = CodebaseMemory(workspace_path)
+            memory.build_index()
+            memory_reference = memory.query_memory(keywords_from_task(task))
+        except Exception as exc:
+            logger.debug("CodebaseMemory lookup failed: %s", exc)
     
         # Build initial prompt
         context_snippet = "\n".join(
             f"--- {k} ---\n{v[:800]}" for k, v in list(workspace_context.items())[:8]
         )
+        memory_block = ""
+        if memory_reference:
+            memory_block = (
+                "\n\nCodebase Interfaces & Signatures Reference:\n"
+                "Use the following existing codebase signatures to ensure integration:\n"
+                f"{memory_reference}"
+            )
         system = (
             "You are an expert software engineer. You MUST reason before acting.\n"
             "Use the tools below to read existing code, then write correct, tested changes.\n"
@@ -289,6 +335,7 @@ class CoderAgent(BaseSwarmAgent):
             "  param_name: value\n"
             "</tool_call>\n\n"
             "To finish: <tool_call_call name='done'></tool_call_call>"
+            f"{memory_block}"
         )
         messages = [
             {"role": "system", "content": system},

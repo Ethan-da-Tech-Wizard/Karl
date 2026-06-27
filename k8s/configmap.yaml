@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: karl-config
+  labels:
+    app.kubernetes.io/name: karl
+    app.kubernetes.io/component: backend
+data:
+  karl-defaults.json: |
+    {
+      "active_model": {
+        "filename": "deepseek-r1-1.5b.gguf",
+        "adapter": null
+      },
+      "headless": true,
+      "websocket_port": 8080
+    }
+  model_registry.json: |
+    [
+      {
+        "tier": 1,
+        "name": "DeepSeek-R1-Distill-Qwen-1.5B Q4_K_M",
+        "filename": "deepseek-r1-1.5b.gguf",
+        "min_ram_gb": 3.0,
+        "min_vram_gb": 0.0,
+        "min_storage_gb": 1.5,
+        "url": "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
+        "n_ctx": 4096
+      },
+      {
+        "tier": 2,
+        "name": "DeepSeek-R1-Distill-Qwen-7B Q4_K_M",
+        "filename": "deepseek-r1-7b.gguf",
+        "min_ram_gb": 8.0,
+        "min_vram_gb": 0.0,
+        "min_storage_gb": 5.0,
+        "url": "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+        "n_ctx": 8192
+      },
+      {
+        "tier": 3,
+        "name": "DeepSeek-R1-Distill-Qwen-14B Q4_K_M",
+        "filename": "deepseek-r1-14b.gguf",
+        "min_ram_gb": 16.0,
+        "min_vram_gb": 0.0,
+        "min_storage_gb": 10.0,
+        "url": "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
+        "n_ctx": 16384
+      }
+    ]

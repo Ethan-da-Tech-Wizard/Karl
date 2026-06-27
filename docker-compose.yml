@@ -1,0 +1,35 @@
+services:
+  karl-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CUDA_VERSION: "12.2.2"
+        UBUNTU_VERSION: "22.04"
+        PYTHON_VERSION: "3.11"
+        KARL_UID: "${KARL_UID:-1000}"
+        KARL_GID: "${KARL_GID:-1000}"
+    image: karl/backend:cuda
+    container_name: karl-backend
+    command: ["python", "main.py", "--headless"]
+    environment:
+      KARL_HEADLESS: "1"
+      KARL_WS_HOST: "0.0.0.0"
+      KARL_WS_PORT: "8080"
+      QT_QPA_PLATFORM: "offscreen"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

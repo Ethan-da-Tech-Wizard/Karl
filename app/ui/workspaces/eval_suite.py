@@ -98,7 +98,10 @@ class _EvalThread(QThread):
 # ── workspace ─────────────────────────────────────────────────────────────────
 
 class EvalSuiteWorkspace(QWidget):
+    """Evaluation workspace for dataset editing, execution, and report review."""
+
     def __init__(self, state, parent=None):
+        """Initialize loaded-case state and build the split evaluation UI."""
         super().__init__(parent)
         self.state = state
         self.setObjectName("workspace-root")
@@ -107,6 +110,7 @@ class EvalSuiteWorkspace(QWidget):
         self._build_ui()
 
     def _build_ui(self):
+        """Build dataset controls on the left and reports/details on the right."""
         root = QHBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
@@ -1033,4 +1037,3 @@ class EvalSuiteWorkspace(QWidget):
             QMessageBox.information(self, "Export Complete", f"Report saved successfully to:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export report: {e}")
-

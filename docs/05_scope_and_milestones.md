@@ -152,8 +152,8 @@ Persistent FAISS index with file-level metadata. Optional contextual chunk heade
 ### ✅ M16 — Multi-Workspace UI Rebuild
 **Files:** `app/ui/`, `app/state.py`
 
-Replaced two-page layout with sidebar + 6-workspace architecture.
-Sidebar: Workbench, Prompt Lab, Knowledge Base, Training Studio, Eval Suite, System.
+Replaced two-page layout with sidebar + multi-workspace architecture.
+Sidebar: Workbench, Prompt Lab, Knowledge Base, Vision, Training Studio, Eval Suite, Swarm, System, Codex, Flywheel.
 `AppState` shared state container. Single dark design system (`themes.py`).
 `StatusBar`: always shows model name, generation state, RAM usage.
 

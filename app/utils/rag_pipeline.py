@@ -3,7 +3,7 @@ RAG Pipeline — Karl Workbench (Hardened)
 =========================================
 Changes from original:
   - Persistent FAISS index: saved/loaded from data/vector_db/
-  - File-level metadata attached to every chunk
+  - SQLite metadata store with WAL and transactional ingestion
   - Optional contextual chunk headers (source + chunk ID prefix)
   - source_filter param on retrieve() to restrict by file
   - Retrieval eval metrics: hit@k and reciprocal rank
@@ -12,7 +12,12 @@ Changes from original:
 import logging
 import json
 import os
+import sqlite3
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from typing import Callable
 
 import faiss
 import numpy as np
@@ -20,13 +25,30 @@ from sentence_transformers import SentenceTransformer
 import fitz   # PyMuPDF
 import docx
 
+from app.utils.db_pool import SQLiteConnectionPool
+
 
 logger = logging.getLogger("karl.rag")
+
+# Sentinel distinguishing "not yet attempted" (None) from "attempted and failed".
+# Stored in self._reranker after a failed load so we don't retry on every call.
+_RERANKER_UNAVAILABLE = object()
+
+_SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".py", ".csv"}
+
+
+@dataclass
+class _ParsedFile:
+    index: int
+    path: str
+    source_file: str
+    chunks: list[str]
+    error: str | None = None
 
 
 class RAGPipeline:
     INDEX_FILE = "data/vector_db/index.faiss"
-    META_FILE  = "data/vector_db/metadata.json"
+    META_DB = "data/vector_db/meta.db"
 
     def __init__(
         self,
@@ -45,26 +67,152 @@ class RAGPipeline:
         """
         self.model_name = model_name
         self._encoder = None
+        self._reranker = None     # None = not yet attempted; _RERANKER_UNAVAILABLE = load failed
         self.index_path = index_path
         self.namespace = namespace
         if namespace == "codex":
             self.INDEX_FILE = os.path.join(index_path, "codex_index.faiss")
-            self.META_FILE  = os.path.join(index_path, "codex_metadata.json")
+            self.META_DB = os.path.join(index_path, "codex_meta.db")
         else:
             self.INDEX_FILE = os.path.join(index_path, "index.faiss")
-            self.META_FILE  = os.path.join(index_path, "metadata.json")
+            self.META_DB = os.path.join(index_path, "meta.db")
         self.contextual_headers = contextual_headers
 
         os.makedirs(self.index_path, exist_ok=True)
 
         self.dimension = 384
-        self.index = faiss.IndexFlatL2(self.dimension)
+        self.index = self._new_index()
 
-        # Each entry: {"text": str, "source_file": str, "chunk_id": int, "ingested_at": str}
+        # Each entry mirrors the SQLite row shape and remains for UI compatibility.
         self.documents: list[dict] = []
+        self._write_lock = threading.Lock()
+
+        # Bootstrap: single direct connection to create the schema, then hand off
+        # all subsequent concurrent writes to the pool.
+        self._conn = self._connect_db()
+        self._init_db()
+        self._pool = SQLiteConnectionPool(self.META_DB)
 
         # Load persisted index if it exists
         self._load_index()
+
+    def _new_index(self):
+        return faiss.IndexIDMap2(faiss.IndexFlatL2(self.dimension))
+
+    def _connect_db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.META_DB, timeout=30.0, isolation_level=None, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        return conn
+
+    def _init_db(self):
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY,
+                vector_id INTEGER UNIQUE,
+                text TEXT,
+                source_file TEXT,
+                chunk_id INTEGER,
+                ingested_at TEXT
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_source_file ON documents(source_file)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_vector_id ON documents(vector_id)"
+        )
+
+    def _legacy_metadata_file(self) -> str:
+        if self.namespace == "codex":
+            return os.path.join(self.index_path, "codex_metadata.json")
+        return os.path.join(self.index_path, "metadata.json")
+
+    def _fetch_documents(self, conn: sqlite3.Connection | None = None) -> list[dict]:
+        active_conn = conn or self._conn
+        rows = active_conn.execute(
+            """
+            SELECT id, vector_id, text, source_file, chunk_id, ingested_at
+            FROM documents
+            ORDER BY vector_id
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _next_vector_id(self, conn: sqlite3.Connection | None = None) -> int:
+        active_conn = conn or self._conn
+        db_max = int(
+            active_conn.execute(
+                "SELECT COALESCE(MAX(vector_id), -1) FROM documents"
+            ).fetchone()[0]
+        )
+        # Also check in-memory docs added via save=False (ingest_text path) so
+        # that multiple ingest_text calls don't all land at vector_id 0.
+        mem_max = max(
+            (int(d.get("vector_id", -1)) for d in self.documents),
+            default=-1,
+        )
+        return max(db_max, mem_max) + 1
+
+    def _add_embeddings_to_index(self, embeddings: np.ndarray, vector_ids: list[int]):
+        ids = np.asarray(vector_ids, dtype="int64")
+        self.index.add_with_ids(np.asarray(embeddings, dtype="float32"), ids)
+
+    def _write_index_atomic(self, index=None):
+        active_index = index or self.index
+        tmp_path = f"{self.INDEX_FILE}.tmp"
+        faiss.write_index(active_index, tmp_path)
+        os.replace(tmp_path, self.INDEX_FILE)
+
+    def _migrate_legacy_metadata(self):
+        legacy_file = self._legacy_metadata_file()
+        if not os.path.exists(legacy_file):
+            return
+        existing = self._conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        if existing:
+            return
+        try:
+            with open(legacy_file, "r", encoding="utf-8") as f:
+                legacy_docs = json.load(f)
+            self._conn.execute("BEGIN IMMEDIATE")
+            for idx, doc in enumerate(legacy_docs):
+                vector_id = int(doc.get("vector_id", doc.get("chunk_id", idx)))
+                self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO documents(vector_id, text, source_file, chunk_id, ingested_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        vector_id,
+                        doc.get("text", ""),
+                        doc.get("source_file", "unknown"),
+                        int(doc.get("chunk_id", vector_id)),
+                        doc.get("ingested_at", ""),
+                    ),
+                )
+            self._conn.commit()
+        except Exception as exc:
+            self._conn.rollback()
+            logger.warning("WARNING: Could not migrate legacy RAG metadata: %s", exc)
+
+    def _ensure_id_index(self, loaded_index):
+        if hasattr(loaded_index, "add_with_ids"):
+            return loaded_index
+        wrapped = self._new_index()
+        if loaded_index.ntotal:
+            try:
+                vectors = np.vstack(
+                    [loaded_index.reconstruct(i) for i in range(loaded_index.ntotal)]
+                ).astype("float32")
+                ids = np.arange(loaded_index.ntotal, dtype="int64")
+                wrapped.add_with_ids(vectors, ids)
+            except Exception as exc:
+                logger.warning("WARNING: Could not migrate legacy FAISS index: %s", exc)
+        return wrapped
 
     @property
     def encoder(self):
@@ -80,38 +228,76 @@ class RAGPipeline:
     def is_encoder_loaded(self) -> bool:
         return self._encoder is not None
 
+    @property
+    def reranker(self):
+        """Lazy-load the local CrossEncoder model on first access.
+
+        Returns the CrossEncoder instance on success, or None if the model
+        weights are not cached locally.  After a failed load the sentinel is
+        stored so subsequent calls return None immediately without retrying.
+        """
+        if self._reranker is None:
+            import io, contextlib
+            try:
+                from sentence_transformers import CrossEncoder
+                _sink = io.StringIO()
+                with contextlib.redirect_stdout(_sink), contextlib.redirect_stderr(_sink):
+                    self._reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+                logger.info("CrossEncoder reranker loaded.")
+            except Exception as exc:
+                logger.warning(
+                    "CrossEncoder 'ms-marco-MiniLM-L-6-v2' unavailable — "
+                    "hybrid search will fall back to RRF ordering. (%s: %s)",
+                    type(exc).__name__, exc,
+                )
+                self._reranker = _RERANKER_UNAVAILABLE
+        if self._reranker is _RERANKER_UNAVAILABLE:
+            return None
+        return self._reranker
+
     def preload_encoder(self):
         _ = self.encoder
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_index(self):
-        """Load FAISS index and metadata from disk if they exist."""
-        if os.path.exists(self.INDEX_FILE) and os.path.exists(self.META_FILE):
-            try:
-                self.index = faiss.read_index(self.INDEX_FILE)
-                with open(self.META_FILE, "r", encoding="utf-8") as f:
-                    self.documents = json.load(f)
-                logger.info(f"Loaded {self.index.ntotal} vectors from {self.INDEX_FILE}")
-            except Exception as e:
-                logger.warning(f"WARNING: Could not load persisted index: {e}. Starting fresh.")
-                self.index = faiss.IndexFlatL2(self.dimension)
-                self.documents = []
+        """Load FAISS index and SQLite metadata from disk if they exist."""
+        self._migrate_legacy_metadata()
+        try:
+            self.documents = self._fetch_documents()
+            if os.path.exists(self.INDEX_FILE):
+                self.index = self._ensure_id_index(faiss.read_index(self.INDEX_FILE))
+            else:
+                self.index = self._new_index()
+            if self.index.ntotal != len(self.documents):
+                logger.warning(
+                    "RAG index/metadata count mismatch: index=%d metadata=%d",
+                    self.index.ntotal,
+                    len(self.documents),
+                )
+            logger.info(f"Loaded {self.index.ntotal} vectors from {self.INDEX_FILE}")
+        except Exception as e:
+            logger.warning(f"WARNING: Could not load persisted index: {e}. Starting fresh.")
+            self.index = self._new_index()
+            self.documents = []
 
     def save_index(self):
-        """Write FAISS index and metadata to disk."""
+        """Write the FAISS index to disk. Metadata is persisted in SQLite."""
         try:
-            faiss.write_index(self.index, self.INDEX_FILE)
-            with open(self.META_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.documents, f, ensure_ascii=False, indent=2)
+            self._write_index_atomic()
         except Exception as e:
             logger.warning(f"WARNING: Could not persist index: {e}")
 
     def clear_index(self):
         """Wipe the in-memory index and delete persisted files."""
-        self.index = faiss.IndexFlatL2(self.dimension)
-        self.documents = []
-        for path in (self.INDEX_FILE, self.META_FILE):
+        with self._write_lock:
+            with self._pool.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM documents")
+                conn.commit()
+            self.index = self._new_index()
+            self.documents = []
+        for path in (self.INDEX_FILE, f"{self.INDEX_FILE}.tmp"):
             if os.path.exists(path):
                 os.remove(path)
         logger.info("Index cleared.")
@@ -150,6 +336,271 @@ class RAGPipeline:
 
     # ── Ingestion ─────────────────────────────────────────────────────────────
 
+    def _default_worker_count(self) -> int:
+        try:
+            import psutil
+            physical = psutil.cpu_count(logical=False)
+        except Exception:
+            physical = None
+        return max(1, min(32, int(physical or os.cpu_count() or 4)))
+
+    def _iter_supported_files(self, path: str, recursive: bool = True) -> list[str]:
+        expanded = os.path.realpath(os.path.expanduser(path))
+        if os.path.isfile(expanded):
+            ext = os.path.splitext(expanded)[1].lower()
+            return [expanded] if ext in _SUPPORTED_EXTENSIONS else []
+        if not os.path.isdir(expanded):
+            return []
+
+        files: list[str] = []
+        if recursive:
+            for root, dirs, names in os.walk(expanded, followlinks=False):
+                dirs[:] = [
+                    d for d in dirs
+                    if d not in {".git", "venv", ".venv", "__pycache__", "node_modules"}
+                ]
+                for name in names:
+                    ext = os.path.splitext(name)[1].lower()
+                    if ext in _SUPPORTED_EXTENSIONS:
+                        files.append(os.path.realpath(os.path.join(root, name)))
+        else:
+            for name in os.listdir(expanded):
+                candidate = os.path.realpath(os.path.join(expanded, name))
+                ext = os.path.splitext(name)[1].lower()
+                if os.path.isfile(candidate) and ext in _SUPPORTED_EXTENSIONS:
+                    files.append(candidate)
+        return sorted(files)
+
+    def _chunks_from_file(self, filepath: str, chunk_size: int, overlap: int) -> list[str]:
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext == ".csv":
+            import csv
+            chunks = []
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                for row in reader:
+                    if not row:
+                        continue
+                    if header and "Description" in header:
+                        desc_idx = header.index("Description")
+                        val = row[desc_idx] if desc_idx < len(row) else ", ".join(row)
+                        chunks.append(val)
+                    else:
+                        chunks.append(
+                            ", ".join(f"{h}: {v}" for h, v in zip(header, row) if v)
+                            if header else ", ".join(row)
+                        )
+            return [c for c in chunks if c.strip()]
+
+        text = self.extract_text(filepath)
+        if not text.strip():
+            return []
+        return self.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+
+    def _parse_file_for_ingest(
+        self,
+        index: int,
+        filepath: str,
+        chunk_size: int,
+        overlap: int,
+    ) -> _ParsedFile:
+        source_file = os.path.basename(filepath)
+        try:
+            chunks = self._chunks_from_file(filepath, chunk_size, overlap)
+            return _ParsedFile(index=index, path=filepath, source_file=source_file, chunks=chunks)
+        except Exception as exc:
+            logger.warning("Error parsing %s: %s", filepath, exc)
+            return _ParsedFile(
+                index=index,
+                path=filepath,
+                source_file=source_file,
+                chunks=[],
+                error=str(exc),
+            )
+
+    def _embed_texts_batched(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
+        if not texts:
+            return np.empty((0, self.dimension), dtype="float32")
+
+        vectors = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            try:
+                encoded = self.encoder.encode(
+                    batch,
+                    batch_size=batch_size,
+                    show_progress_bar=False,
+                )
+            except TypeError:
+                encoded = self.encoder.encode(batch)
+            vectors.append(np.asarray(encoded, dtype="float32"))
+        return np.vstack(vectors).astype("float32") if vectors else np.empty((0, self.dimension), dtype="float32")
+
+    def _add_chunks_to_index(
+        self,
+        chunk_records: list[tuple[str, str]],
+        embeddings: np.ndarray,
+        ingested_at: str | None = None,
+        save: bool = True,
+    ) -> int:
+        if not chunk_records:
+            return 0
+        ingested_at = ingested_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with self._write_lock:
+            start_id = self._next_vector_id()
+            vector_ids = list(range(start_id, start_id + len(chunk_records)))
+            if not save:
+                self._add_embeddings_to_index(embeddings, vector_ids)
+                for vector_id, (chunk_text, source_file) in zip(vector_ids, chunk_records):
+                    self.documents.append({
+                        "id": None,
+                        "vector_id": vector_id,
+                        "text": chunk_text,
+                        "source_file": source_file,
+                        "chunk_id": vector_id,
+                        "ingested_at": ingested_at,
+                    })
+                return len(chunk_records)
+
+            # Compile all row tuples for an atomic batch insert.
+            rows = [
+                (vid, chunk_text, source_file, vid, ingested_at)
+                for vid, (chunk_text, source_file) in zip(vector_ids, chunk_records)
+            ]
+            prior_index = faiss.clone_index(self.index)
+            prior_documents = list(self.documents)
+            index_replaced = False
+            with self._pool.get_connection() as conn:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.executemany(
+                        "INSERT INTO documents(vector_id, text, source_file, chunk_id, ingested_at)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        rows,
+                    )
+                    self._add_embeddings_to_index(embeddings, vector_ids)
+                    self._write_index_atomic()
+                    index_replaced = True
+                    conn.commit()
+                    self.documents = self._fetch_documents(conn)
+                except Exception:
+                    conn.rollback()
+                    self.index = prior_index
+                    self.documents = prior_documents
+                    if index_replaced:
+                        self._write_index_atomic(prior_index)
+                    raise
+        return len(chunk_records)
+
+    def ingest_files(
+        self,
+        filepaths: list[str],
+        chunk_size: int = 200,
+        overlap: int = 50,
+        batch_size: int = 32,
+        max_workers: int | None = None,
+        progress_cb: Callable[[int, int, dict], None] | None = None,
+    ) -> dict:
+        """
+        Parse files concurrently, embed chunks in batches, and append to FAISS.
+
+        progress_cb receives (files_parsed, total_files, event_dict).
+        Returns {files, errors, chunks_added, file_count, error_count}.
+        """
+        files = [os.path.realpath(os.path.expanduser(p)) for p in filepaths]
+        files = [p for p in files if os.path.splitext(p)[1].lower() in _SUPPORTED_EXTENSIONS]
+        total = len(files)
+        if total == 0:
+            return {"files": [], "errors": [], "chunks_added": 0, "file_count": 0, "error_count": 0}
+
+        max_workers = max_workers or self._default_worker_count()
+        parsed_results: list[_ParsedFile] = []
+        errors: list[dict] = []
+        parsed_lock = threading.Lock()
+        files_parsed = 0
+
+        if progress_cb:
+            progress_cb(0, total, {"status": "queued", "filename": "", "queued": total})
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="karl-rag-parse") as pool:
+            futures = [
+                pool.submit(self._parse_file_for_ingest, idx, filepath, chunk_size, overlap)
+                for idx, filepath in enumerate(files)
+            ]
+            for future in as_completed(futures):
+                parsed = future.result()
+                with parsed_lock:
+                    parsed_results.append(parsed)
+                    files_parsed += 1
+                    current = files_parsed
+                if parsed.error:
+                    errors.append({
+                        "path": parsed.path,
+                        "filename": parsed.source_file,
+                        "error": parsed.error,
+                    })
+                if progress_cb:
+                    progress_cb(current, total, {
+                        "status": "parsed",
+                        "filename": parsed.source_file,
+                        "chunks": len(parsed.chunks),
+                        "error": parsed.error,
+                    })
+
+        parsed_results.sort(key=lambda item: item.index)
+        chunk_records: list[tuple[str, str]] = []
+        per_file: list[dict] = []
+        for parsed in parsed_results:
+            if parsed.error:
+                continue
+            per_file.append({
+                "path": parsed.path,
+                "filename": parsed.source_file,
+                "chunks": len(parsed.chunks),
+            })
+            for chunk in parsed.chunks:
+                chunk_records.append((chunk, parsed.source_file))
+
+        texts = [text for text, _source in chunk_records]
+        embeddings = self._embed_texts_batched(texts, batch_size=batch_size)
+        added = self._add_chunks_to_index(chunk_records, embeddings, save=True)
+        logger.info(
+            "Batch-ingested %d chunks from %d/%d files (%d errors)",
+            added,
+            len(per_file),
+            total,
+            len(errors),
+        )
+        return {
+            "files": per_file,
+            "errors": errors,
+            "chunks_added": added,
+            "file_count": len(per_file),
+            "error_count": len(errors),
+            "queued_file_count": total,
+        }
+
+    def ingest_directory(
+        self,
+        path: str,
+        recursive: bool = True,
+        chunk_size: int = 200,
+        overlap: int = 50,
+        batch_size: int = 32,
+        max_workers: int | None = None,
+        progress_cb: Callable[[int, int, dict], None] | None = None,
+    ) -> dict:
+        files = self._iter_supported_files(path, recursive=recursive)
+        return self.ingest_files(
+            files,
+            chunk_size=chunk_size,
+            overlap=overlap,
+            batch_size=batch_size,
+            max_workers=max_workers,
+            progress_cb=progress_cb,
+        )
+
     def ingest_file(self, filepath: str, chunk_size: int = 200, overlap: int = 50) -> int:
         """
         Extract, chunk, embed, and add a file to the index.
@@ -158,54 +609,14 @@ class RAGPipeline:
         Returns:
             Number of chunks added.
         """
-        ext = os.path.splitext(filepath)[1].lower()
-        if ext == ".csv":
-            import csv
-            chunks = []
-            try:
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                    reader = csv.reader(f)
-                    header = next(reader, None)
-                    for row in reader:
-                        if not row:
-                            continue
-                        if header and "Description" in header:
-                            desc_idx = header.index("Description")
-                            # Safely handle shorter rows
-                            val = row[desc_idx] if desc_idx < len(row) else ", ".join(row)
-                            chunks.append(val)
-                        else:
-                            chunks.append(", ".join(f"{h}: {v}" for h, v in zip(header, row) if v) if header else ", ".join(row))
-            except Exception as e:
-                logger.warning(f"Error reading CSV {filepath}: {e}")
-                return 0
-        else:
-            text = self.extract_text(filepath)
-            if not text.strip():
-                return 0
-            chunks = self.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
-
-        if not chunks:
-            return 0
-
-        embeddings = self.encoder.encode(chunks)
-        self.index.add(np.array(embeddings).astype("float32"))
-
-        source_file = os.path.basename(filepath)
-        ingested_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        start_id = len(self.documents)
-
-        for i, chunk_text in enumerate(chunks):
-            self.documents.append({
-                "text": chunk_text,
-                "source_file": source_file,
-                "chunk_id": start_id + i,
-                "ingested_at": ingested_at,
-            })
-
-        self.save_index()
-        logger.info(f"Added {len(chunks)} chunks from {source_file}")
-        return len(chunks)
+        result = self.ingest_files(
+            [filepath],
+            chunk_size=chunk_size,
+            overlap=overlap,
+            batch_size=32,
+            max_workers=1,
+        )
+        return int(result["chunks_added"])
 
     def ingest_text(self, text: str, source_name: str = "inline", chunk_size: int = 200, overlap: int = 50) -> int:
         """Ingest raw text string directly (no file needed). Useful for eval harness."""
@@ -213,19 +624,12 @@ class RAGPipeline:
         if not chunks:
             return 0
 
-        embeddings = self.encoder.encode(chunks)
-        self.index.add(np.array(embeddings).astype("float32"))
-
-        ingested_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        start_id = len(self.documents)
-
-        for i, chunk_text in enumerate(chunks):
-            self.documents.append({
-                "text": chunk_text,
-                "source_file": source_name,
-                "chunk_id": start_id + i,
-                "ingested_at": ingested_at,
-            })
+        embeddings = self._embed_texts_batched(chunks, batch_size=32)
+        self._add_chunks_to_index(
+            [(chunk_text, source_name) for chunk_text in chunks],
+            embeddings,
+            save=False,
+        )
         # No save_index() here — transient ingest for eval use
         return len(chunks)
 
@@ -345,54 +749,86 @@ class RAGPipeline:
         top_k: int = 3,
         source_filter: str | None = None,
         rrf_constant: int = 60,
+        use_reranker: bool = False,
+        rerank_candidates: int = 15,
     ) -> list[dict]:
+        """Combine Dense (FAISS) and Sparse (TF-IDF) results via Reciprocal Rank Fusion.
+
+        Args:
+            query:             Search query string.
+            top_k:             Number of results to return.
+            source_filter:     Restrict results to a specific source file.
+            rrf_constant:      RRF smoothing constant (default 60).
+            use_reranker:      If True, re-score the RRF candidate pool with a local
+                               CrossEncoder before slicing to top_k.
+            rerank_candidates: How many RRF candidates to pass to the CrossEncoder.
+                               Ignored when use_reranker=False.
         """
-        Combine Dense (FAISS) and Sparse (TF-IDF) results using Reciprocal Rank Fusion (RRF).
-        """
-        # Get dense results (fetch more than top_k to allow RRF to select best overlaps)
+        # When reranking, gather a larger initial pool; otherwise fetch just enough.
+        n_pool  = rerank_candidates if use_reranker else top_k
+        fetch_k = n_pool * 2   # over-fetch so RRF can surface the best overlaps
+
         dense_results = self.retrieve_with_metadata(
-            query, top_k=top_k * 2, source_filter=source_filter, mode="dense"
+            query, top_k=fetch_k, source_filter=source_filter, mode="dense"
         )
-        # Get sparse results
         sparse_results = self.retrieve_sparse(
-            query, top_k=top_k * 2, source_filter=source_filter
+            query, top_k=fetch_k, source_filter=source_filter
         )
 
-        # Compute RRF scores
-        rrf_scores = {}  # key: chunk_id -> float score
-        docs_map = {}    # key: chunk_id -> doc dict
+        # ── Reciprocal Rank Fusion ────────────────────────────────────────────
+        rrf_scores: dict[int, float] = {}
+        docs_map:   dict[int, dict]  = {}
 
-        # Process dense
         for rank, doc in enumerate(dense_results, 1):
             cid = doc["chunk_id"]
             docs_map[cid] = doc
             rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rrf_constant + rank)
 
-        # Process sparse
         for rank, doc in enumerate(sparse_results, 1):
             cid = doc["chunk_id"]
             if cid not in docs_map:
                 docs_map[cid] = doc
             rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rrf_constant + rank)
 
-        # Sort documents by RRF score descending
-        sorted_cids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
+        sorted_cids = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)
+        max_score   = 2.0 / (rrf_constant + 1)
 
-        results = []
-        for rank, cid in enumerate(sorted_cids[:top_k], 1):
-            doc = docs_map[cid]
-            # Synthesize distance: use rrf_score mapped back to a distance-like range [0, 1]
-            max_score = 2.0 / (rrf_constant + 1)
+        # Build the candidate pool sized for reranking (or top_k for the plain path).
+        pool: list[dict] = []
+        for rank, cid in enumerate(sorted_cids[:n_pool], 1):
             rrf_score_val = rrf_scores[cid]
-            distance = float(max(0.0, 1.0 - (rrf_score_val / max_score)))
-            results.append({
-                **doc,
-                "rank": rank,
-                "distance": distance,
-                "rrf_score": rrf_score_val
+            pool.append({
+                **docs_map[cid],
+                "rank":      rank,
+                "distance":  float(max(0.0, 1.0 - (rrf_score_val / max_score))),
+                "rrf_score": rrf_score_val,
             })
 
-        return results
+        if not use_reranker or not pool:
+            return pool[:top_k]
+
+        # ── Cross-Encoder reranking ───────────────────────────────────────────
+        reranker = self.reranker
+        if reranker is None:
+            logger.debug("CrossEncoder unavailable; returning RRF-ordered results.")
+            return pool[:top_k]
+
+        inputs = [(query, c["text"]) for c in pool]
+        try:
+            scores = reranker.predict(inputs)
+        except Exception as exc:
+            logger.warning("Reranker predict() failed (%s); falling back to RRF.", exc)
+            return pool[:top_k]
+
+        for candidate, score in zip(pool, scores):
+            candidate["rerank_score"] = float(score)
+
+        pool.sort(key=lambda c: c["rerank_score"], reverse=True)
+        pool = pool[:top_k]
+        for i, c in enumerate(pool, 1):
+            c["rank"] = i
+
+        return pool
 
     def retrieve_with_metadata(
         self,
@@ -525,12 +961,15 @@ class RAGPipeline:
         query_vector = self.encoder.encode([query]).astype("float32")
         fetch_k = min(top_k * 5 if source_filter else top_k, self.index.ntotal)
         distances, indices = self.index.search(query_vector, fetch_k)
+        docs_by_vector_id = {int(doc.get("vector_id", doc.get("chunk_id", -1))): doc for doc in self.documents}
 
         results = list(exact_matches)
         for rank, (dist, idx) in enumerate(zip(distances[0], indices[0])):
-            if idx == -1 or idx >= len(self.documents):
+            if idx == -1:
                 continue
-            doc = self.documents[idx]
+            doc = docs_by_vector_id.get(int(idx))
+            if not doc:
+                continue
             if source_filter and doc.get("source_file") != source_filter:
                 continue
             # Avoid duplicates of exact matches
@@ -610,38 +1049,54 @@ class RAGPipeline:
         return len(self.documents)
 
     def remove_source(self, source_name: str):
-        """Remove all chunks belonging to source_name and rebuild the FAISS index."""
-        # 1. Filter out documents matching source_name
-        remaining_docs = [d for d in self.documents if d.get("source_file") != source_name]
-        
-        # 2. Reset the index
-        self.index = faiss.IndexFlatL2(self.dimension)
-        self.documents = []
-        
-        # If there are remaining documents, rebuild the index
-        if remaining_docs:
-            texts = [d["text"] for d in remaining_docs]
-            embeddings = self.encoder.encode(texts)
-            self.index.add(np.array(embeddings).astype("float32"))
-            
-            # Re-index the remaining documents and update their chunk_id
-            for i, doc in enumerate(remaining_docs):
-                doc["chunk_id"] = i
-                self.documents.append(doc)
-                
-        self.save_index()
-        logger.info(f"Source '{source_name}' removed. Rebuilt index with {len(self.documents)} remaining chunks.")
+        """Remove all chunks belonging to source_name from SQLite and FAISS atomically."""
+        with self._write_lock:
+            prior_index = faiss.clone_index(self.index)
+            prior_documents = list(self.documents)
+            index_replaced = False
+            with self._pool.get_connection() as conn:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    rows = conn.execute(
+                        "SELECT vector_id FROM documents WHERE source_file = ? ORDER BY vector_id",
+                        (source_name,),
+                    ).fetchall()
+                    vector_ids = [int(row["vector_id"]) for row in rows]
+                    if not vector_ids:
+                        conn.commit()
+                        return
+
+                    ids_array = np.asarray(vector_ids, dtype="int64")
+                    selector = faiss.IDSelectorArray(
+                        len(vector_ids),
+                        faiss.swig_ptr(ids_array),
+                    )
+                    self.index.remove_ids(selector)
+                    conn.execute("DELETE FROM documents WHERE source_file = ?", (source_name,))
+                    self._write_index_atomic()
+                    index_replaced = True
+                    conn.commit()
+                    self.documents = self._fetch_documents(conn)
+                except Exception:
+                    conn.rollback()
+                    self.index = prior_index
+                    self.documents = prior_documents
+                    if index_replaced:
+                        self._write_index_atomic(prior_index)
+                    raise
+        logger.info(f"Source '{source_name}' removed. Index now has {len(self.documents)} chunks.")
 
     def rebuild_index(self):
         """Re-encode all chunks currently in metadata and rebuild the FAISS index."""
         if not self.documents:
-            self.index = faiss.IndexFlatL2(self.dimension)
+            self.index = self._new_index()
             self.save_index()
             return
         
         texts = [d["text"] for d in self.documents]
-        self.index = faiss.IndexFlatL2(self.dimension)
-        embeddings = self.encoder.encode(texts)
-        self.index.add(np.array(embeddings).astype("float32"))
+        self.index = self._new_index()
+        embeddings = self._embed_texts_batched(texts, batch_size=32)
+        vector_ids = [int(d.get("vector_id", d.get("chunk_id", i))) for i, d in enumerate(self.documents)]
+        self._add_embeddings_to_index(np.array(embeddings).astype("float32"), vector_ids)
         self.save_index()
         logger.info(f"Rebuilt index by re-encoding all {len(self.documents)} current chunks.")

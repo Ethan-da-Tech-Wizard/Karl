@@ -4,7 +4,7 @@ import os
 import threading
 import multiprocessing
 import time
-from llama_cpp import Llama
+from llama_cpp import Llama, LlamaRAMCache
 
 from app.engine import config_store
 from core.hardware_scout import get_hardware_profile
@@ -17,25 +17,130 @@ class ModelMemoryError(RuntimeError):
     """Raised when a requested GGUF load exceeds Karl's local memory guard."""
 
     def __init__(self, message: str, details: dict):
+        """Store a user-facing message plus structured memory-plan details."""
         super().__init__(message)
         self.details = details
 
 
+class CircuitBreakerOpenException(RuntimeError):
+    """Raised when model loading is temporarily blocked after repeated failures."""
+
+    MESSAGE = (
+        "Inference engine is temporarily locked (Circuit Breaker Tripped). "
+        "VRAM or system memory is exhausted. Wait 30 seconds for the system "
+        "to cool down before trying again."
+    )
+
+    def __init__(self, message: str | None = None):
+        """Create a circuit-open error with Karl's standard recovery message."""
+        super().__init__(message or self.MESSAGE)
+
+
+class ModelCircuitBreaker:
+    """Stateful guard that blocks repeated expensive model-load failures.
+
+    The breaker starts CLOSED, trips OPEN after failure_threshold terminal
+    failures, then allows one HALF_OPEN recovery attempt after cooldown_duration
+    seconds. OPEN calls raise CircuitBreakerOpenException before the Llama
+    constructor is invoked.
+    """
+
+    CLOSED = "CLOSED"
+    OPEN = "OPEN"
+    HALF_OPEN = "HALF_OPEN"
+
+    def __init__(
+        self,
+        failure_threshold: int = 3,
+        cooldown_duration: float = 30.0,
+        clock=None,
+    ):
+        """Initialize breaker thresholds and optional monotonic clock."""
+        self.failure_threshold = failure_threshold
+        self.cooldown_duration = cooldown_duration
+        self._clock = clock or time.monotonic
+        self.state = self.CLOSED
+        self.consecutive_failures = 0
+        self.cooldown_expiration: float | None = None
+
+    def before_call(self) -> None:
+        """Validate that a new load attempt may proceed.
+
+        Raises CircuitBreakerOpenException while the breaker is OPEN and the
+        cooldown has not expired. Transitions OPEN to HALF_OPEN after cooldown.
+        """
+        if self.state != self.OPEN:
+            return
+
+        now = self._clock()
+        if self.cooldown_expiration is not None and now >= self.cooldown_expiration:
+            self.state = self.HALF_OPEN
+            return
+
+        raise CircuitBreakerOpenException()
+
+    def record_success(self) -> None:
+        """Reset the breaker to CLOSED after a successful load."""
+        self.state = self.CLOSED
+        self.consecutive_failures = 0
+        self.cooldown_expiration = None
+
+    def record_failure(self, exc: BaseException | None = None) -> None:
+        """Record a terminal load failure and trip OPEN when threshold is met."""
+        if self.state == self.HALF_OPEN:
+            self._trip()
+            return
+
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= self.failure_threshold:
+            self._trip()
+
+    def reset(self) -> None:
+        """Manually reset breaker state and failure counters."""
+        self.state = self.CLOSED
+        self.consecutive_failures = 0
+        self.cooldown_expiration = None
+
+    def _trip(self) -> None:
+        self.state = self.OPEN
+        self.cooldown_expiration = self._clock() + self.cooldown_duration
+
+
+class _LlamaDraftModelAdapter:
+    """Compatibility marker for speculative draft-model integration."""
+
+    def __init__(self, draft_model):
+        self.draft_model = draft_model
+
+
 class ModelLoader:
+    """Thread-safe singleton manager for llama-cpp model instances."""
+
     _instance = None
-    _lock = threading.Lock()
+    _lock = threading.RLock()
+    _circuit_breaker = ModelCircuitBreaker()
     _draft_model_path: str | None = None
     _draft_instance = None
+    _remote_instance = None
+    _remote_fallback_reason: str | None = None
     _MEMORY_SAFETY_MARGIN = 0.92
     _instance_locked = False
-    _vocab_leak_report: dict = {}    # populated by _inspect_adapter_vocab after each load
-    _load_latency_s: float | None = None   # wall-clock seconds for the last successful load
-    _vram_bandwidth_gbs: float | None = None  # measured PCIe H2D bandwidth (GB/s)
-    _backend_freed: bool = False  # True after llama_backend_free(); cleared on next load
-    _last_activity_time: float = 0.0        # epoch seconds; updated on each get_instance() call
-    _adapter_offloaded: bool = False         # True when idle watcher detached the LoRA
-    _offloaded_adapter_name: str | None = None  # adapter name to restore on next inference
-    _idle_watcher_started: bool = False      # ensures only one daemon watcher thread spawns
+    _active_generation_count: int = 0   # incremented by lock_instance, decremented by unlock_instance
+    _vocab_leak_report: dict = {}
+    _load_latency_s: float | None = None
+    _vram_bandwidth_gbs: float | None = None
+    _backend_freed: bool = False
+    _last_activity_time: float = 0.0
+    _adapter_offloaded: bool = False
+    _offloaded_adapter_name: str | None = None
+    _idle_watcher_started: bool = False
+    # Set inside get_instance() on first load
+    _model_path: str | None = None
+    _active_adapter: str | None = None
+    _model_name: str | None = None
+    _n_ctx: int = 4096
+    # KV prompt cache (LlamaRAMCache); set to False to permanently disable.
+    _cache_enabled: bool = True
 
 
     @classmethod
@@ -49,6 +154,37 @@ class ModelLoader:
             if entry.get("filename") == filename:
                 return entry
         return {}
+
+    @staticmethod
+    def _truthy(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @classmethod
+    def _quantized_kv_cache_enabled(cls) -> bool:
+        env_value = os.environ.get("KARL_QUANTIZED_KV_CACHE")
+        if env_value is not None:
+            return cls._truthy(env_value)
+
+        ui_config = config_store.get_ui_config()
+        if cls._truthy(ui_config.get("quantized_kv_cache", False)):
+            return True
+
+        active_config = config_store.read_json(config_store.ACTIVE_MODEL_PATH, default={})
+        if isinstance(active_config, dict):
+            return cls._truthy(active_config.get("quantized_kv_cache", False))
+        return False
+
+    @staticmethod
+    def _ggml_type_q8_0() -> int:
+        try:
+            from llama_cpp import GGML_TYPE_Q8_0
+            return GGML_TYPE_Q8_0
+        except Exception:
+            return 8
 
     @classmethod
     def _adapter_path(cls, adapter_name: str | None) -> str | None:
@@ -507,6 +643,12 @@ class ModelLoader:
         *,
         show_dialog: bool = True,
     ) -> dict:
+        """Estimate memory pressure and block unsafe model reloads.
+
+        Returns a load plan dict. Raises ModelMemoryError when estimated RAM or
+        VRAM exceeds the configured safety margin unless
+        KARL_ALLOW_OVERSIZED_MODEL=1 is set.
+        """
         plan = cls.estimate_load_memory(model_path, adapter_name)
         if os.environ.get("KARL_ALLOW_OVERSIZED_MODEL") == "1":
             plan["allowed_by_override"] = True
@@ -593,6 +735,20 @@ class ModelLoader:
     @classmethod
     def get_instance(cls, model_path: str | None = None, adapter_name: str | None = None,
                      draft_model_path: str | None = None) -> Llama:
+        """Return the active Llama instance, loading or reloading if needed.
+
+        Args:
+            model_path: Optional GGUF path. When omitted, data/active_model.json
+                selects the model filename.
+            adapter_name: Optional LoRA adapter name under data/adapters/.
+            draft_model_path: Optional GGUF draft model for speculative decoding.
+
+        Raises:
+            CircuitBreakerOpenException: repeated fatal load failures are cooling down.
+            FileNotFoundError: requested model and fallback model are unavailable.
+            ModelMemoryError: preflight RAM/VRAM guard blocks the load.
+            RuntimeError/OSError: llama-cpp load or platform checks fail.
+        """
         with cls._lock:
             # Mark this as an active inference call for the idle watcher.
             cls._last_activity_time = time.time()
@@ -602,6 +758,10 @@ class ModelLoader:
                 model_path = os.path.join("data", "models", active["filename"])
                 if adapter_name is None:
                     adapter_name = active["adapter"]
+            if draft_model_path is None:
+                draft_cfg = config_store.get_active_draft_model()
+                if draft_cfg.get("enabled") and draft_cfg.get("filename"):
+                    draft_model_path = os.path.join("data", "models", draft_cfg["filename"])
 
             # If the idle watcher offloaded the adapter, clear _active_adapter so that
             # the needs_reload check below fires and the adapter is lazily reloaded.
@@ -616,6 +776,7 @@ class ModelLoader:
             current_model_path = getattr(cls, "_model_path", None)
             current_adapter = getattr(cls, "_active_adapter", None)
 
+            # change speculative draft model only when requested draft path differs
             needs_draft_reload = (draft_model_path != getattr(cls, '_draft_model_path', None))
 
             needs_reload = (
@@ -625,6 +786,15 @@ class ModelLoader:
             )
 
             if needs_reload:
+                cls._circuit_breaker.before_call()
+
+                if cls._instance_locked or cls._active_generation_count > 0:
+                    raise RuntimeError(
+                        "Cannot reload model or change adapter while inference is active "
+                        f"({cls._active_generation_count} generation"
+                        f"{'s' if cls._active_generation_count != 1 else ''} in flight). "
+                        "Request cancellation before reloading."
+                    )
                 model_path = cls._resolve_model_path(model_path)
                 model_name = os.path.basename(model_path)
                 
@@ -657,13 +827,18 @@ class ModelLoader:
                             "Please re-install/recompile using: CMAKE_ARGS='-DGGML_AVX=OFF' pip install llama-cpp-python --force-reinstall"
                         )
                         logger.error(msg)
+                        cls._circuit_breaker.record_failure(RuntimeError(msg))
                         raise RuntimeError(msg)
                 except subprocess.TimeoutExpired:
                     pass # Ignore timeouts for pre-flight check
                 # ─────────────────────────────────────────────────────────
 
                 n_ctx = cls._read_registry_n_ctx(model_name)
-                cls.preflight_model_load(model_path, adapter_name)
+                try:
+                    cls.preflight_model_load(model_path, adapter_name)
+                except (ModelMemoryError, MemoryError, OSError, RuntimeError) as exc:
+                    cls._circuit_breaker.record_failure(exc)
+                    raise
 
                 if cls._instance is not None:
                     try:
@@ -704,6 +879,11 @@ class ModelLoader:
                         )
                 # ─────────────────────────────────────────────────────────────
 
+                # n_batch from registry (default 512 = llama.cpp default; making it
+                # explicit lets per-model overrides land in model_registry.json).
+                _reg_entry = cls._registry_entry(model_name)
+                n_batch = int(_reg_entry.get("n_batch", 512))
+
                 def _attempt_load(ctx_size, ts=None):
                     threads = max(1, multiprocessing.cpu_count() - 2)
                     gpu_tag = f", {len(ts)}-GPU split" if ts else ""
@@ -711,6 +891,9 @@ class ModelLoader:
                         model_path=model_path,
                         n_ctx=ctx_size,
                         n_gpu_layers=-1,
+                        n_batch=n_batch,
+                        n_ubatch=n_batch,
+                        flash_attn=True,
                         logits_all=False,
                         n_threads=threads,
                         verbose=False,
@@ -730,9 +913,28 @@ class ModelLoader:
                         )
                     if ts is not None:
                         kwargs["tensor_split"] = ts
+
+                    quantized_kv_cache = cls._quantized_kv_cache_enabled()
+                    if quantized_kv_cache:
+                        q8_type = cls._ggml_type_q8_0()
+                        kwargs["type_k"] = q8_type
+                        kwargs["type_v"] = q8_type
+                        logger.info(
+                            "Enabling 8-bit quantized KV cache (Q8_0) for long-context execution."
+                        )
                     
                     try:
                         return Llama(**kwargs)
+                    except TypeError as e:
+                        if quantized_kv_cache and ("type_k" in kwargs or "type_v" in kwargs):
+                            logger.warning(
+                                "Installed llama-cpp-python does not support type_k/type_v "
+                                "KV cache overrides. Falling back to standard F16 KV cache."
+                            )
+                            kwargs.pop("type_k", None)
+                            kwargs.pop("type_v", None)
+                            return Llama(**kwargs)
+                        raise
                     except (OSError, RuntimeError) as e:
                         # Detect mlock privilege/limit failures
                         err_msg = str(e).lower()
@@ -808,7 +1010,9 @@ class ModelLoader:
                         if current_n_ctx <= min_ctx:
                             msg = "VRAM Allocation Limit Exceeded even at minimum context budget (2048). Please free system GPU memory."
                             logger.error(f"{msg} Final failure: {e}")
-                            raise RuntimeError(msg) from e
+                            failure = RuntimeError(msg)
+                            cls._circuit_breaker.record_failure(failure)
+                            raise failure from e
 
                         old_ctx = current_n_ctx
                         current_n_ctx = max(min_ctx, current_n_ctx // 2)
@@ -838,6 +1042,10 @@ class ModelLoader:
                     _bw_str,
                 )
 
+                # ── KV Prompt Cache ───────────────────────────────────────────
+                cls._attach_kv_cache()
+                # ─────────────────────────────────────────────────────────────
+
                 # ── Tokenizer Vocabulary Leak Inspection ──────────────────────
                 # Run after the instance is live so llm.tokenize() and
                 # llm.n_vocab() use the GGUF's own embedded vocabulary table.
@@ -847,7 +1055,7 @@ class ModelLoader:
                     cls._vocab_leak_report = {}
                 # ─────────────────────────────────────────────────────────────
 
-                if needs_draft_reload or needs_reload:
+                if needs_reload or needs_draft_reload:
                     # Tear down existing draft
                     if cls._draft_instance is not None:
                         try:
@@ -927,17 +1135,28 @@ class ModelLoader:
                             cls._draft_instance = None
 
                     cls._draft_model_path = draft_model_path
+                cls._circuit_breaker.record_success()
             cls._start_idle_watcher()
             return cls._instance
 
     @classmethod
     def reset_instance(cls):
+        """Unload active model and draft handles, clearing runtime loader state.
+
+        Raises RuntimeError if any generation currently holds the inference lock.
+        """
         with cls._lock:
-            if cls._instance_locked:
-                logger.warning("Resetting ModelLoader instance while VRAM lock is active.")
+            cls._raise_if_inference_active("reset ModelLoader")
             cls._instance_locked = False
 
-            # 1. Close and explicitly delete Llama handles to drop all C-level refs
+            # 1. Release KV-cache memory before closing the Llama handle.
+            if cls._instance is not None:
+                try:
+                    cls._instance.set_cache(None)
+                except Exception:
+                    pass
+
+            # 2. Close and explicitly delete Llama handles to drop all C-level refs
             if cls._instance is not None:
                 try:
                     cls._instance.close()
@@ -981,20 +1200,121 @@ class ModelLoader:
             except Exception as exc:
                 logger.debug("llama_backend_free unavailable or failed: %s", exc)
 
-    @classmethod
-    def lock_instance(cls):
-        with cls._lock:
-            cls._instance_locked = True
-            logger.info("ModelLoader instance VRAM lock acquired.")
+    # ── KV Prompt Cache Management ────────────────────────────────────────────
+
+    @staticmethod
+    def _free_vram_mb() -> float | None:
+        """Return the minimum free VRAM (MB) across all GPUs, or None."""
+        try:
+            gpus = get_hardware_profile().get("gpu_list", [])
+            if not gpus:
+                return None
+            return min(g.get("memory_free_mb", float("inf")) for g in gpus)
+        except Exception:
+            return None
 
     @classmethod
-    def unlock_instance(cls):
+    def _attach_kv_cache(cls) -> None:
+        """
+        Attach a LlamaRAMCache to the loaded instance.
+
+        Capacity is 25 % of free VRAM (clamped to 256 MB–2 GB).
+        Skipped entirely when free VRAM < 500 MB to avoid OOM.
+        """
+        if cls._instance is None or not cls._cache_enabled:
+            return
+
+        free_mb = cls._free_vram_mb()
+        if free_mb is not None and free_mb < 500:
+            logger.warning(
+                "Free VRAM %.0f MB < 500 MB — KV prompt cache disabled to prevent OOM.",
+                free_mb,
+            )
+            return
+
+        _256_mb = 256 * (1 << 20)
+        _2_gb   =   2 * (1 << 30)
+        if free_mb is not None:
+            capacity = min(_2_gb, max(_256_mb, int(free_mb * 0.25 * 1024 * 1024)))
+        else:
+            capacity = 1 << 30   # 1 GB fallback when VRAM info is unavailable
+
+        try:
+            cache = LlamaRAMCache(capacity_bytes=capacity)
+            cls._instance.set_cache(cache)
+            logger.info("KV prompt cache attached (%.2f GB).", capacity / (1 << 30))
+        except Exception as exc:
+            logger.warning("Failed to attach KV prompt cache: %s", exc)
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def _raise_if_inference_active(cls, operation: str = "reset ModelLoader") -> None:
+        """Raise RuntimeError if any generation is in flight."""
+        count = cls._active_generation_count
+        if count > 0 or cls._instance_locked:
+            raise RuntimeError(
+                f"Cannot {operation} while inference is active "
+                f"({count} active generation{'s' if count != 1 else ''} in flight). "
+                "Request cancellation before reloading."
+            )
+
+    @classmethod
+    def lock_instance(cls) -> None:
+        """Mark the singleton as in-use by an active generation."""
         with cls._lock:
-            cls._instance_locked = False
-            logger.info("ModelLoader instance VRAM lock released.")
+            cls._active_generation_count += 1
+            cls._instance_locked = True
+            logger.info(
+                "ModelLoader inference lock acquired (active=%d).",
+                cls._active_generation_count,
+            )
+
+    @classmethod
+    def unlock_instance(cls) -> None:
+        """Release one active generation lock from the singleton."""
+        with cls._lock:
+            cls._active_generation_count = max(0, cls._active_generation_count - 1)
+            if cls._active_generation_count == 0:
+                cls._instance_locked = False
+            logger.info(
+                "ModelLoader inference lock released (active=%d).",
+                cls._active_generation_count,
+            )
+
+    @classmethod
+    def acquire_instance(cls, **kwargs):
+        """Like get_instance but asserts the lock is clear before a reload."""
+        llm = cls.get_instance(**kwargs)
+        cls.lock_instance()
+        return llm
+
+    @classmethod
+    def _remote_fallback(cls, reason: str) -> None:
+        """Disable remote inference after a failure and remember the reason."""
+        cls._remote_fallback_reason = reason
+        cls._remote_instance = None
+        try:
+            cfg = config_store.get_engine_config()
+            url = cfg.get("remote_engine_url") or cfg.get("remote_server_url")
+            token = cfg.get("remote_engine_token") or cfg.get("remote_auth_token")
+            config_store.set_remote_engine_config(False, url, token)
+        except Exception:
+            logger.debug("Failed to persist remote fallback disable.", exc_info=True)
+
+    @classmethod
+    def last_remote_fallback_reason(cls) -> str | None:
+        return cls._remote_fallback_reason
+
+    @classmethod
+    def reset_circuit_breaker(cls) -> None:
+        """Reset the model-load circuit breaker to CLOSED."""
+        with cls._lock:
+            cls._circuit_breaker.reset()
 
     @classmethod
     def is_instance_locked(cls) -> bool:
+        """Return True when a generation is actively using the model."""
         with cls._lock:
             return cls._instance_locked
 
@@ -1005,7 +1325,9 @@ class ModelLoader:
 
     @classmethod
     def model_name(cls) -> str:
-        return getattr(cls, "_model_name", "none")
+        """Return the basename of the active GGUF model, or 'none'."""
+        name = getattr(cls, "_model_name", "none")
+        return name if name is not None else "none"
 
     @classmethod
     def n_ctx(cls) -> int:
@@ -1033,6 +1355,7 @@ class ModelLoader:
 
     @classmethod
     def is_loaded(cls) -> bool:
+        """Return True when a primary Llama instance is loaded."""
         with cls._lock:
             return cls._instance is not None
 

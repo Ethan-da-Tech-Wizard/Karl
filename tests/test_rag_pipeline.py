@@ -4,10 +4,40 @@ import shutil
 import tempfile
 import sys
 import numpy as np
+import time
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.utils.rag_pipeline import RAGPipeline
+
+
+class _DeterministicEncoder:
+    def encode(self, texts, batch_size=32, show_progress_bar=False):
+        if isinstance(texts, str):
+            texts = [texts]
+        vectors = []
+        for text in texts:
+            vec = np.zeros(384, dtype="float32")
+            for token in text.lower().split():
+                vec[hash(token) % 384] += 1.0
+            norm = np.linalg.norm(vec)
+            if norm:
+                vec = vec / norm
+            vectors.append(vec)
+        return np.vstack(vectors)
+
+
+class _SlowParseRAG(RAGPipeline):
+    def __init__(self, *args, delay=0.01, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._encoder = _DeterministicEncoder()
+        self.delay = delay
+
+    def _chunks_from_file(self, filepath: str, chunk_size: int, overlap: int):
+        time.sleep(self.delay)
+        with open(filepath, "r", encoding="utf-8") as f:
+            return self.chunk_text(f.read(), chunk_size=chunk_size, overlap=overlap)
 
 
 def test_rag_pipeline_chunking():
@@ -36,6 +66,8 @@ def test_rag_pipeline_chunking():
         shutil.rmtree(pipeline.index_path)
 
 
+@pytest.mark.integration
+@pytest.mark.model
 def test_rag_pipeline_ingestion_and_retrieval():
     """Test full file ingestion, vector index save/load, metadata filters, and thresholding."""
     import pytest
@@ -65,17 +97,17 @@ def test_rag_pipeline_ingestion_and_retrieval():
         
         # Save index to temp directory
         pipeline.INDEX_FILE = os.path.join(temp_dir, "index.faiss")
-        pipeline.META_FILE = os.path.join(temp_dir, "metadata.json")
+        pipeline.META_DB = os.path.join(temp_dir, "meta.db")
         pipeline.save_index()
         
         # Verify persistence files are created
         assert os.path.exists(pipeline.INDEX_FILE)
-        assert os.path.exists(pipeline.META_FILE)
+        assert os.path.exists(pipeline.META_DB)
         
         # Reload index in a fresh pipeline instance
         new_pipeline = RAGPipeline(index_path=temp_dir)
         new_pipeline.INDEX_FILE = pipeline.INDEX_FILE
-        new_pipeline.META_FILE = pipeline.META_FILE
+        new_pipeline.META_DB = pipeline.META_DB
         new_pipeline._load_index()
         
         assert new_pipeline.index.ntotal == pipeline.index.ntotal
@@ -114,6 +146,8 @@ def test_rag_pipeline_ingestion_and_retrieval():
         shutil.rmtree(temp_dir)
 
 
+@pytest.mark.integration
+@pytest.mark.model
 def test_rag_pipeline_retrieve_with_metadata_threshold():
     """Test retrieve_with_metadata threshold filtering."""
     import pytest
@@ -137,6 +171,8 @@ def test_rag_pipeline_retrieve_with_metadata_threshold():
         shutil.rmtree(temp_dir)
 
 
+@pytest.mark.integration
+@pytest.mark.model
 def test_rag_pipeline_attribution():
     """Test retrieve with attribution parameter and retrieve_with_attribution wrapper."""
     import pytest
@@ -168,9 +204,83 @@ def test_rag_pipeline_attribution():
         shutil.rmtree(temp_dir)
 
 
+def test_parallel_batch_ingestion_benchmark_100_mock_python_files():
+    temp_dir = tempfile.mkdtemp()
+    seq_dir = tempfile.mkdtemp()
+    par_dir = tempfile.mkdtemp()
+    try:
+        files = []
+        body = "\n".join(
+            f"def function_{i}(): return 'parallel rag ingestion benchmark {i}'"
+            for i in range(50)
+        )
+        for i in range(100):
+            path = os.path.join(temp_dir, f"mock_{i:03d}.py")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(body)
+            files.append(path)
+
+        sequential = _SlowParseRAG(index_path=seq_dir, delay=0.01)
+        parallel = _SlowParseRAG(index_path=par_dir, delay=0.01)
+
+        t0 = time.perf_counter()
+        sequential.ingest_files(files, chunk_size=80, overlap=10, max_workers=1, batch_size=32)
+        sequential_time = time.perf_counter() - t0
+
+        t1 = time.perf_counter()
+        parallel.ingest_files(files, chunk_size=80, overlap=10, max_workers=8, batch_size=32)
+        parallel_time = time.perf_counter() - t1
+
+        assert parallel.index.ntotal == sequential.index.ntotal
+        assert len(parallel.documents) == len(sequential.documents)
+        assert sequential_time / max(parallel_time, 0.001) >= 4.0
+    finally:
+        shutil.rmtree(temp_dir)
+        shutil.rmtree(seq_dir)
+        shutil.rmtree(par_dir)
+
+
+def test_parallel_batch_ingestion_matches_sequential_index_results():
+    temp_dir = tempfile.mkdtemp()
+    seq_dir = tempfile.mkdtemp()
+    par_dir = tempfile.mkdtemp()
+    try:
+        files = []
+        for i in range(20):
+            topic = "neural vector search" if i % 2 == 0 else "processor instruction cache"
+            path = os.path.join(temp_dir, f"doc_{i:02d}.py")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write((f"# {topic}\nprint('{topic} {i}')\n") * 25)
+            files.append(path)
+
+        sequential = _SlowParseRAG(index_path=seq_dir, delay=0.0)
+        parallel = _SlowParseRAG(index_path=par_dir, delay=0.0)
+
+        sequential.ingest_files(files, chunk_size=40, overlap=5, max_workers=1, batch_size=32)
+        parallel.ingest_files(files, chunk_size=40, overlap=5, max_workers=8, batch_size=32)
+
+        assert [d["text"] for d in parallel.documents] == [d["text"] for d in sequential.documents]
+        assert [d["source_file"] for d in parallel.documents] == [d["source_file"] for d in sequential.documents]
+
+        seq_results = sequential.retrieve_with_metadata("neural vector search", top_k=5, threshold=2.0)
+        par_results = parallel.retrieve_with_metadata("neural vector search", top_k=5, threshold=2.0)
+
+        assert [r["chunk_id"] for r in par_results] == [r["chunk_id"] for r in seq_results]
+        assert [r["source_file"] for r in par_results] == [r["source_file"] for r in seq_results]
+        assert [round(r["distance"], 6) for r in par_results] == [
+            round(r["distance"], 6) for r in seq_results
+        ]
+    finally:
+        shutil.rmtree(temp_dir)
+        shutil.rmtree(seq_dir)
+        shutil.rmtree(par_dir)
+
+
 if __name__ == "__main__":
     test_rag_pipeline_chunking()
     test_rag_pipeline_ingestion_and_retrieval()
     test_rag_pipeline_retrieve_with_metadata_threshold()
     test_rag_pipeline_attribution()
+    test_parallel_batch_ingestion_benchmark_100_mock_python_files()
+    test_parallel_batch_ingestion_matches_sequential_index_results()
     print("All RAG pipeline unit tests PASSED!")

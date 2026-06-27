@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: karl-backend
+  labels:
+    app.kubernetes.io/name: karl
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: karl
+      app.kubernetes.io/component: backend
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: karl
+        app.kubernetes.io/component: backend
+    spec:
+      serviceAccountName: default
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: k8s.amazonaws.com/accelerator
+                    operator: In
+                    values: ["nvidia-gpu"]
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: karl
+          image: karl/backend:cuda
+          imagePullPolicy: IfNotPresent
+          command: ["python", "main.py", "--headless"]
+          ports:
+            - name: wss
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: KARL_HEADLESS
+              value: "1"
+            - name: KARL_WS_HOST
+              value: "0.0.0.0"
+            - name: KARL_WS_PORT
+              value: "8080"
+            - name: QT_QPA_PLATFORM
+              value: "offscreen"
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "compute,utility"
+            - name: KARL_BRIDGE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: karl-bridge-secret
+                  key: bridge-token
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: "1"
+          readinessProbe:
+            tcpSocket:
+              port: wss
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: wss
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: config
+              mountPath: /app/data/model_registry.json
+              subPath: model_registry.json
+              readOnly: true
+            - name: config
+              mountPath: /app/data/karl-defaults.json
+              subPath: karl-defaults.json
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: karl-data
+        - name: config
+          configMap:
+            name: karl-config

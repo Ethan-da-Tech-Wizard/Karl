@@ -9,7 +9,7 @@ import logging
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QStackedWidget,
+    QStackedWidget, QMessageBox,
 )
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -52,7 +52,10 @@ class _ModelInitThread(QThread):
 
 
 class MainWindow(QMainWindow):
+    """Top-level PyQt shell that routes the sidebar to workspace widgets."""
+
     def __init__(self):
+        """Create AppState, build the workspace stack, and defer heavy startup work."""
         super().__init__()
         self.setWindowTitle("Karl")
         self.setMinimumSize(1200, 760)
@@ -64,11 +67,13 @@ class MainWindow(QMainWindow):
 
         # Keyboard Navigation Shortcuts
         self._setup_shortcuts()
+        self._setup_autosave_checkpoint_timer()
 
         # Heavy startup work is deferred so the window paints first: the
         # model loads on a worker thread (multi-second under VRAM/disk
         # pressure) and the WebSocket bridge starts after the first paint.
         self._model_init_thread = None
+        QTimer.singleShot(0, self._check_autosave_recovery)
         QTimer.singleShot(0, self._init_model)
         QTimer.singleShot(0, self._init_websocket_server)
 
@@ -139,6 +144,7 @@ class MainWindow(QMainWindow):
 
 
     def _build_ui(self):
+        """Instantiate sidebar, status bar, and the ordered workspace stack."""
         # Sidebar + stack row
         content = QWidget()
         content_layout = QHBoxLayout(content)
@@ -204,6 +210,107 @@ class MainWindow(QMainWindow):
         self._system.adapter_changed.connect(self._on_adapter_changed)
         self._system.appearance_changed.connect(self._apply_theme_from_state)
         self._state.state_changed.connect(self._on_state_changed)
+
+    def _setup_autosave_checkpoint_timer(self):
+        self._autosave_checkpoint_timer = QTimer(self)
+        self._autosave_checkpoint_timer.setInterval(60_000)
+        self._autosave_checkpoint_timer.timeout.connect(self._autosave_active_checkpoint)
+        self._autosave_checkpoint_timer.start()
+
+    def _autosave_active_checkpoint(self):
+        thread = getattr(self._workbench, "_thread", None)
+        chat_running = bool(thread and thread.isRunning())
+        if not (self._state.generating or self._state.swarm_running or chat_running):
+            return
+        try:
+            self._state.memory.save_autosave_checkpoint(
+                self._workbench.chat_history,
+                self._stack.currentIndex(),
+                model_settings={
+                    "model_name": self._state.model_name,
+                    "adapter_name": self._state.adapter_name,
+                    "hyperparams": getattr(self._workbench, "_hyperparams", {}),
+                },
+                active_tab_state={
+                    "workspace_index": self._stack.currentIndex(),
+                    "swarm_running": self._state.swarm_running,
+                    "generating": self._state.generating or chat_running,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Autosave checkpoint failed: %s", exc)
+
+    def _check_autosave_recovery(self):
+        try:
+            checkpoint = self._state.memory.load_autosave_checkpoint()
+        except Exception as exc:
+            logger.warning("Could not read autosave checkpoint: %s", exc)
+            self._state.memory.clear_autosave_checkpoint()
+            return
+        if not checkpoint:
+            return
+
+        timestamp = checkpoint.get("timestamp") or checkpoint.get("updated_time", "unknown time")
+        answer = QMessageBox.question(
+            self,
+            "Recover Unsaved Session",
+            f"Karl recovered an unsaved session from {timestamp}. Would you like to restore it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        try:
+            if answer == QMessageBox.StandardButton.Yes:
+                self._restore_autosave_checkpoint(checkpoint)
+        finally:
+            self._state.memory.clear_autosave_checkpoint()
+
+    def _restore_autosave_checkpoint(self, checkpoint: dict):
+        from app.utils.session_tree import SessionTree
+
+        raw_tree = checkpoint.get("session_tree") or checkpoint.get("chat_history")
+        if isinstance(raw_tree, dict) and "root" in raw_tree:
+            tree = SessionTree.from_dict(raw_tree)
+        else:
+            tree = SessionTree()
+            for msg in raw_tree or []:
+                tree.add_message(
+                    msg.get("role", "user"),
+                    msg.get("content", ""),
+                    attachments=msg.get("attachments"),
+                )
+
+        self._workbench.chat_history = tree
+        self._workbench._session_id = None
+        self._workbench._current_session_file = None
+
+        model_settings = checkpoint.get("model_settings") or {}
+        hyperparams = model_settings.get("hyperparams")
+        if isinstance(hyperparams, dict) and hasattr(self._workbench, "_hyperparams"):
+            self._workbench._hyperparams.update(hyperparams)
+
+        if model_settings.get("model_name"):
+            self._state.model_name = model_settings["model_name"]
+            self._status_bar.set_model(model_settings["model_name"])
+        if "adapter_name" in model_settings:
+            self._state.adapter_name = model_settings.get("adapter_name")
+            self._status_bar.set_adapter(model_settings.get("adapter_name"))
+
+        active_path = tree.get_active_path()
+        if hasattr(self._workbench, "_chat_view"):
+            self._workbench._chat_view.clear_display()
+            self._workbench._chat_view._messages = [
+                (n.role, n.content, n.id, getattr(n, "attachments", []))
+                for n in active_path
+            ]
+            self._workbench._chat_view._render_all()
+        if hasattr(self._workbench, "_populate_branches_tree"):
+            self._workbench._populate_branches_tree()
+        if hasattr(self._workbench, "_refresh_sessions"):
+            self._workbench._refresh_sessions()
+
+        active_workspace = checkpoint.get("active_workspace")
+        if isinstance(active_workspace, int) and 0 <= active_workspace < self._stack.count():
+            self._sidebar.select(active_workspace)
 
     def _init_model(self):
         if self._model_init_thread is not None and self._model_init_thread.isRunning():
@@ -287,6 +394,7 @@ class MainWindow(QMainWindow):
         self._state.glow_strength = config["glow_strength"]
         self._state.log_rotation_size_mb = config.get("log_rotation_size_mb", 10)
         self._state.log_retention_days = config.get("log_retention_days", 30)
+        self._state.max_log_disk_size_mb = config.get("max_log_disk_size_mb", 1024)
         self._state.single_session_auth = config.get("single_session_auth", False)
         self._state.thermal_protection_enabled = config.get("thermal_protection_enabled", True)
         self._state.thermal_protection_threshold = config.get("thermal_protection_threshold", 95)
@@ -350,13 +458,17 @@ class MainWindow(QMainWindow):
     def _init_websocket_server(self):
         from app.engine.websocket_server import WebSocketServerManager
         try:
-            self._ws_server = WebSocketServerManager.get_instance(port=8080)
+            self._ws_server = WebSocketServerManager.get_instance(port=8080, state=self.state)
         except Exception as e:
             logger.warning(f"Failed to start WebSocket server on boot: {e}")
 
     def showEvent(self, event):
         super().showEvent(event)
         if not hasattr(self, "_bridge_poll_timer"):
+            # Window rendered successfully — release the boot crash-detection lock.
+            from app.engine.feature_flags import release_boot_lock
+            release_boot_lock()
+
             self._bridge_poll_timer = QTimer(self)
             self._bridge_poll_timer.timeout.connect(self._poll_bridge_status)
             self._bridge_poll_timer.start(5000)

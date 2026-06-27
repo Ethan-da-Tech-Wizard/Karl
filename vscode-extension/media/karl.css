@@ -166,7 +166,8 @@ h2 {
 }
 
 .status-dot.connecting,
-.status-dot.running {
+.status-dot.running,
+.status-dot.busy {
     background: var(--karl-warn);
     box-shadow: 0 0 14px var(--karl-warn);
 }

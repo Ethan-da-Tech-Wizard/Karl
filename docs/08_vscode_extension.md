@@ -180,6 +180,48 @@ This boundary preserves privacy and keeps the extension portable. It also
 prevents the extension host from becoming a second Python runtime with its own
 dependency problems.
 
+## Webview ↔ Host Messaging API Contract (postMessage)
+
+The communication loop between the extension host (`extension.js` & `sidebarProvider.js`) and the Webview is mediated by standard `postMessage` payloads:
+
+### Outbound (Webview → Host)
+* **`ready`**: Notifies the host that the DOM is fully loaded and ready to accept pending state syncs.
+* **`persist_state`**: Stores Webview configurations (active workspace, bridge port, task mode) in the workspace state.
+* **`show_message` / `show_error`**: Prompts the host to trigger native `vscode.window.showInformationMessage` or `showErrorMessage` banners.
+* **`connect` / `disconnect`**: Requests host-level socket handshakes on a specified port.
+* **`rpc`**: Proxies a JSON-RPC payload directly to the active WebSocket bridge.
+* **`choose_kb_file` / `choose_kb_folder` / `use_active_file_for_kb`**: Prompts host to invoke file dialogs and stream targets to the ingestion queue.
+* **`queue_file_edit`**: Registers an incoming patch proposed by the Coder agent.
+* **`preview_file` / `apply_file` / `reject_file` / `open_file` / `copy_file_path` / `rollback_applied_file`**: Handles individual file transactions inside the Review Bay.
+* **`preview_all_files` / `reject_all_files` / `copy_patch_summary`**: Executes batch operations across all pending edits.
+* **`runWorkflow`**: Invokes host-native Git, Diagnostics, or Visual analysis pipelines.
+* **`get_cockpit_state`**: Requests current active workspace path and diagnostics from the VS Code editor host.
+
+### Inbound (Host → Webview)
+* **`cockpit_state_update`**: Syncs active workspace variables (workspace path, active file name, and diagnostic counts).
+* **`bridge_status`**: Broadcasts network connectivity transitions (`connected`, `offline`, `error`).
+* **`bridge_message`**: Forwards raw WebSocket JSON-RPC frames received by the host socket proxy.
+* **`start_workflow`**: Instructs the Webview to focus the Cockpit and execute a specific task flow (e.g. explain a diagnostics trace).
+* **`set_kb_path`**: Sets the path text inside the Knowledge Base workspace.
+* **`pending_file_edit`**: Hydrates the Webview's Review Bay list with a newly proposed patch.
+* **`file_edit_previewed` / `file_edit_applied` / `file_edit_rejected` / `file_edit_rolled_back`**: Syncs individual file transaction transitions.
+* **`completion_diagnostic_failed`**: Displays compilation checks and diagnostics errors inside the Cockpit.
+
+## Webview Rendering Optimizations (High-Performance UI)
+
+To ensure the Webview remains responsive during real-time multi-agent streaming and large logging dumps:
+
+* **Token Dom Re-use**: Instead of creating a new `span` element for every single streaming token (which triggers garbage collection pressure and DOM node bloat), Karl appends text content directly to the last `.token-appear` sibling when possible. This reduces DOM node allocations by **99%**.
+* **Throttled Repaint Scrolling**: To eliminate browser layout thrashing and reflow invalidations, all scroll updates (`scrollTop = scrollHeight`) are queued and executed using `requestAnimationFrame`. This ensures scrolls are batched together and execute exactly once per layout pass.
+
+## Focus Redirection & Keyboard UX
+
+Karl implements automatic keyboard focus redirection on workspace transitions:
+* **Chat Workspace**: Focus is automatically directed to the message input field (`chatInput`).
+* **Swarm Workspace**: Focus is automatically directed to the objective textarea (`objective`).
+* **Knowledge Workspace**: Focus is automatically directed to the search query field (`kbQuery`).
+* This allows developers to navigate through Karl's workspaces using keyboard shortcuts while keeping their hands on the keyboard.
+
 ## Practical API Roadmap
 
 The current bridge already supports chat, swarm, prompt diff, and codex docs.

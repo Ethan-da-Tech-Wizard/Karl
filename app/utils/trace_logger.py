@@ -39,7 +39,27 @@ class TraceLogger:
         self._log_file: str | None = None
         self._lock = threading.Lock()
         self._refresh_path()
-        self.prune_logs()
+        threading.Thread(target=self.enforce_retention_policy, daemon=True).start()
+
+    @staticmethod
+    def read_jsonl(path: str) -> list[dict]:
+        """Read a JSONL file, skipping empty or malformed lines."""
+        records: list[dict] = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(record, dict):
+                        records.append(record)
+        except OSError:
+            return []
+        return records
 
     @contextmanager
     def _secure_mem_lock(self):
@@ -106,35 +126,79 @@ class TraceLogger:
             ba[i] = 0
 
     def prune_logs(self):
-        """Delete trace log files and archives older than log_retention_days."""
+        """Deprecated: use enforce_retention_policy."""
+        self.enforce_retention_policy(self.log_dir)
+
+    def enforce_retention_policy(self, logs_dir="data/logs"):
+        """
+        Deletes trace logs and token streams whose age exceeds retention limits,
+        and enforces maximum folder size on disk by deleting the oldest files.
+        """
         try:
             from app.engine import config_store
             config = config_store.get_ui_config()
             retention_days = config.get("log_retention_days", 30)
+            max_size_mb = config.get("max_log_disk_size_mb", 1024)
         except Exception:
             retention_days = 30
+            max_size_mb = 1024
 
-        if not retention_days or retention_days <= 0:
-            return
+        reclaimed_bytes = 0
 
-        now = datetime.now(timezone.utc)
-        
-        # Prune live traces, compressed archives, and encrypted archives
-        for directory in [self.log_dir, self.archive_dir]:
-            if not os.path.exists(directory):
-                continue
-            for f in os.listdir(directory):
-                if (f.startswith("trace_") and (f.endswith(".jsonl") or f.endswith(".jsonl.gz") or f.endswith(".jsonl.enc"))):
-                    path = os.path.join(directory, f)
+        # Step 1: Remove aged logs
+        if retention_days and retention_days > 0:
+            now = datetime.now(timezone.utc)
+            for root, _, files in os.walk(logs_dir):
+                for f in files:
+                    if f.endswith((".jsonl", ".gz", ".enc", ".tokens")):
+                        filepath = os.path.join(root, f)
+                        try:
+                            mtime = os.path.getmtime(filepath)
+                            mtime_dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+                            age_days = (now - mtime_dt).days
+                            if age_days > retention_days:
+                                size = os.path.getsize(filepath)
+                                os.remove(filepath)
+                                reclaimed_bytes += size
+                                logger.info(f"Retention policy: deleted aged file {f} ({size} bytes)")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete {f} during age sweep: {e}")
+
+        # Step 2: Enforce folder disk size cap
+        if max_size_mb and max_size_mb > 0:
+            max_bytes = max_size_mb * 1024 * 1024
+            
+            # Collect all log files with their mtimes and sizes
+            log_files = []
+            total_size = 0
+            for root, _, files in os.walk(logs_dir):
+                for f in files:
+                    if f.endswith((".jsonl", ".gz", ".enc", ".tokens")):
+                        filepath = os.path.join(root, f)
+                        try:
+                            mtime = os.path.getmtime(filepath)
+                            size = os.path.getsize(filepath)
+                            log_files.append((filepath, mtime, size))
+                            total_size += size
+                        except Exception:
+                            pass
+
+            if total_size > max_bytes:
+                # Sort by mtime ascending (oldest first)
+                log_files.sort(key=lambda x: x[1])
+                for filepath, _, size in log_files:
+                    if total_size <= max_bytes:
+                        break
                     try:
-                        mtime = os.path.getmtime(path)
-                        mtime_dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
-                        age_days = (now - mtime_dt).days
-                        if age_days > retention_days:
-                            os.remove(path)
-                            logger.info(f"Pruned old log file: {f}")
+                        os.remove(filepath)
+                        total_size -= size
+                        reclaimed_bytes += size
+                        logger.info(f"Disk quota: deleted old file {os.path.basename(filepath)} ({size} bytes)")
                     except Exception as e:
-                        logger.warning(f"Failed to prune log file {f}: {e}")
+                        logger.warning(f"Failed to delete {filepath} during quota sweep: {e}")
+
+        if reclaimed_bytes > 0:
+            logger.info(f"Log governance: reclaimed {reclaimed_bytes / (1024 * 1024):.2f} MB")
 
     def _archive_log(self, file_path: str):
         """Compresses and ENCRYPTS a rotated log file."""
@@ -438,4 +502,3 @@ class TraceLogger:
                     f.writelines(lines)
             except Exception as e:
                 logger.warning(f"Error updating feedback: {e}")
-

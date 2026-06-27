@@ -138,6 +138,10 @@
     "renderContextMeta": "readonly",
     "markCurrentKbQueueDone": "readonly",
     "renderPromptPairs": "readonly",
-    "applyPromptPair": "readonly"
+    "applyPromptPair": "readonly",
+    "resetThoughtsPanel": "readonly",
+    "removeStreamingCursor": "readonly",
+    "finalizeThoughts": "readonly",
+    "appendThoughtToken": "readonly"
   }
 }

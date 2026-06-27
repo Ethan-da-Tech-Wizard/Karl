@@ -10,11 +10,16 @@ import time
 import ast
 import json
 import threading
+import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
 from concurrent.futures import ThreadPoolExecutor
 from app.engine.swarm_agents import ArchitectAgent, CoderAgent, TesterAgent
+from app.utils.tracing import Span
+
+
+logger = logging.getLogger("karl.swarm_orchestrator")
 
 
 def get_python_imports(content: str) -> List[str]:
@@ -361,7 +366,14 @@ class SwarmOrchestratorThread(QThread):
         if cmd:
             self.verification_started.emit(layer_index, cmd)
             self._process_events_if_main_thread()
-            passed, trace = self.tester.run(cmd, self.state.workspace_path)
+            with Span("Test Execution", {
+                "layer_index": layer_index,
+                "command": cmd,
+                "task_count": len(layer_tasks),
+            }) as test_span:
+                passed, trace = self.tester.run(cmd, self.state.workspace_path)
+                test_span.set_attribute("success", passed)
+                test_span.set_attribute("trace_length", len(trace or ""))
             self.test_result.emit(passed, trace)
             self._process_events_if_main_thread()
             if not passed:
@@ -392,89 +404,133 @@ class SwarmOrchestratorThread(QThread):
             return True
 
     def run(self):
-        try:
-            self.status_update.emit("[Swarm] Starting codebase analysis and file scanning...")
-            context = self.scan_workspace()
-            
-            if self._stop_requested:
-                self.finished_swarm.emit(False, "Execution stopped by user.")
-                return
-
-            # Phase 1: Architect Plan Generation
-            self.status_update.emit("[Architect] Analyzing files and formulating implementation plan...")
-            plan = self.architect.create_plan(self.state.objective, context)
-            self.state.plan = plan
-            self.task_plan_created.emit(plan)
-            self._process_events_if_main_thread()
-
+        with Span("Swarm Run", {
+            "workspace_path": self.state.workspace_path,
+            "objective": self.state.objective,
+            "test_command": self.state.test_command,
+        }) as swarm_span:
             try:
-                tasks = self._validate_tasks(plan.get("tasks", []))
-            except ValueError as exc:
-                self.status_update.emit(f"[Architect] Rejected unsafe task plan: {exc}")
-                self.finished_swarm.emit(False, f"Unsafe task plan: {exc}")
-                self._process_events_if_main_thread()
-                return
-
-            if not tasks:
-                self.status_update.emit("[Swarm] No coding tasks identified by the Architect.")
-                self.finished_swarm.emit(True, "No actions needed.")
-                self._process_events_if_main_thread()
-                return
-
-            self.status_update.emit(f"[Swarm] Architect identified {len(tasks)} files to modify.")
-            self._process_events_if_main_thread()
-            
-            # Initialize tasks status
-            for t in tasks:
-                self.state.tasks_status[t["filepath"]] = "pending"
-                self.task_status_changed.emit(t["filepath"], "pending", "Architect queued task")
-            self._process_events_if_main_thread()
-            
-            all_successful = True
-            changed_files = []
-
-            # 1. Group tasks into layers
-            layers = self.build_dependency_layers(tasks)
-            self.dependency_layers_built.emit(layers)
-            self._process_events_if_main_thread()
-            self.status_update.emit(f"[Swarm] Divided {len(tasks)} tasks into {len(layers)} dependency layers.")
-
-            for layer_idx, layer in enumerate(layers, 1):
+                self.status_update.emit("[Swarm] Starting codebase analysis and file scanning...")
+                with Span("Retrieve Context", {"query": self.state.objective}) as retrieve_span:
+                    context = self.scan_workspace()
+                    retrieve_span.set_attribute("chunks", len(context))
+                    retrieve_span.set_attribute("bytes", sum(len(v) for v in context.values()))
+                
                 if self._stop_requested:
+                    swarm_span.set_attribute("stopped", True)
                     self.finished_swarm.emit(False, "Execution stopped by user.")
                     return
 
-                self.status_update.emit(f"[Swarm] Starting execution of Layer {layer_idx}/{len(layers)} ({len(layer)} tasks)...")
+                # Phase 1: Architect Plan Generation
+                self.status_update.emit("[Architect] Analyzing files and formulating implementation plan...")
+                prompt_size = len(self.state.objective) + sum(len(v) for v in context.values())
+                token_count = len(self.state.objective.split()) + sum(len(v.split()) for v in context.values())
+                with Span("Agent Reasoning", {
+                    "agent": "architect",
+                    "prompt_size": prompt_size,
+                    "token_count": token_count,
+                }) as reasoning_span:
+                    plan = self.architect.create_plan(self.state.objective, context)
+                    reasoning_span.set_attribute(
+                        "task_count",
+                        len(plan.get("tasks", [])) if isinstance(plan, dict) else 0,
+                    )
+                self.state.plan = plan
+                self.task_plan_created.emit(plan)
+                self._process_events_if_main_thread()
+
+                try:
+                    tasks = self._validate_tasks(plan.get("tasks", []))
+                except ValueError as exc:
+                    swarm_span.set_attribute("success", False)
+                    self.status_update.emit(f"[Architect] Rejected unsafe task plan: {exc}")
+                    self.finished_swarm.emit(False, f"Unsafe task plan: {exc}")
+                    self._process_events_if_main_thread()
+                    return
+
+                if not tasks:
+                    swarm_span.set_attribute("success", True)
+                    swarm_span.set_attribute("task_count", 0)
+                    self.status_update.emit("[Swarm] No coding tasks identified by the Architect.")
+                    self.finished_swarm.emit(True, "No actions needed.")
+                    self._process_events_if_main_thread()
+                    return
+
+                self.status_update.emit(f"[Swarm] Architect identified {len(tasks)} files to modify.")
+                self._process_events_if_main_thread()
                 
-                layer_success = False
-                layer_retries = 0
-                max_layer_retries = 3
-                layer_failure_traces = {t["filepath"]: None for t in layer}
+                # Initialize tasks status
+                for t in tasks:
+                    self.state.tasks_status[t["filepath"]] = "pending"
+                    self.task_status_changed.emit(t["filepath"], "pending", "Architect queued task")
+                self._process_events_if_main_thread()
                 
-                while not layer_success and layer_retries < max_layer_retries:
+                all_successful = True
+                changed_files = []
+
+                # 1. Group tasks into layers
+                layers = self.build_dependency_layers(tasks)
+                self.dependency_layers_built.emit(layers)
+                self._process_events_if_main_thread()
+                self.status_update.emit(f"[Swarm] Divided {len(tasks)} tasks into {len(layers)} dependency layers.")
+
+                for layer_idx, layer in enumerate(layers, 1):
                     if self._stop_requested:
+                        swarm_span.set_attribute("stopped", True)
                         self.finished_swarm.emit(False, "Execution stopped by user.")
                         return
+
+                    self.status_update.emit(f"[Swarm] Starting execution of Layer {layer_idx}/{len(layers)} ({len(layer)} tasks)...")
                     
-                    layer_success = self._run_layer(layer, layer_idx, len(layers), layer_failure_traces)
-                    if not layer_success:
-                        layer_retries += 1
-                        if layer_retries < max_layer_retries:
-                            self.status_update.emit(f"[Swarm] Layer {layer_idx} had failures. Retrying layer (Attempt {layer_retries + 1}/{max_layer_retries})...")
-                
-                if layer_success:
-                    for task in layer:
-                        if task["filepath"] not in changed_files:
-                            changed_files.append(task["filepath"])
-                else:
-                    all_successful = False
-                    self.status_update.emit(f"[Error] Failed to verify Layer {layer_idx} tasks after {max_layer_retries} attempts.")
+                    layer_success = False
+                    layer_retries = 0
+                    max_layer_retries = 3
+                    layer_failure_traces = {t["filepath"]: None for t in layer}
+                    
+                    while not layer_success and layer_retries < max_layer_retries:
+                        if self._stop_requested:
+                            swarm_span.set_attribute("stopped", True)
+                            self.finished_swarm.emit(False, "Execution stopped by user.")
+                            return
+                        
+                        layer_success = self._run_layer(layer, layer_idx, len(layers), layer_failure_traces)
+                        if not layer_success:
+                            layer_retries += 1
+                            if layer_retries < max_layer_retries:
+                                with Span("Self Reflection", {
+                                    "layer_index": layer_idx,
+                                    "correction_loop": layer_retries,
+                                    "max_correction_loops": max_layer_retries - 1,
+                                    "failed_files": [
+                                        fp for fp, trace in layer_failure_traces.items() if trace
+                                    ],
+                                }):
+                                    self.status_update.emit(f"[Swarm] Layer {layer_idx} had failures. Retrying layer (Attempt {layer_retries + 1}/{max_layer_retries})...")
+                    
+                    if layer_success:
+                        for task in layer:
+                            if task["filepath"] not in changed_files:
+                                changed_files.append(task["filepath"])
+                    else:
+                        all_successful = False
+                        self.status_update.emit(f"[Error] Failed to verify Layer {layer_idx} tasks after {max_layer_retries} attempts.")
 
-            summary = f"Modified files: {', '.join(changed_files)}" if changed_files else "No files modified successfully."
-            self.finished_swarm.emit(all_successful, summary)
-            self._process_events_if_main_thread()
+                summary = f"Modified files: {', '.join(changed_files)}" if changed_files else "No files modified successfully."
+                swarm_span.set_attribute("success", all_successful)
+                swarm_span.set_attribute("changed_files", changed_files)
+                swarm_span.set_attribute("task_count", len(tasks))
+                swarm_span.set_attribute("layer_count", len(layers))
+                self.finished_swarm.emit(all_successful, summary)
+                self._process_events_if_main_thread()
 
-        except Exception as e:
-            self.status_update.emit(f"[Error] Swarm runtime exception: {e}")
-            self.finished_swarm.emit(False, f"Exception: {e}")
-            self._process_events_if_main_thread()
+            except Exception as e:
+                logger.exception("Swarm runtime exception")
+                swarm_span.status = "ERROR"
+                swarm_span.error = {
+                    "type": type(e).__name__,
+                    "message": str(e),
+                }
+                swarm_span.set_attribute("success", False)
+                self.status_update.emit(f"[Error] Swarm runtime exception: {e}")
+                self.finished_swarm.emit(False, f"Exception: {e}")
+                self._process_events_if_main_thread()

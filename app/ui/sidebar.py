@@ -17,7 +17,10 @@ _ITEMS = [
 
 
 class _SidebarButton(QPushButton):
+    """Fixed-size accessible workspace navigation button."""
+
     def __init__(self, icon: str, label: str, index: int, parent=None):
+        """Create a sidebar button for one workspace index."""
         super().__init__(parent)
         self.index = index
         self.setObjectName("sidebar-btn")
@@ -25,17 +28,23 @@ class _SidebarButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setText(f"{icon}\n{label}")
         self.setFont(QFont("JetBrains Mono, Consolas, monospace", 7))
+        self.setAccessibleName(f"Workspace Navigator: {label}")
+        self.setAccessibleDescription(f"Switch active view to the {label} workspace")
 
     def set_active(self, active: bool):
+        """Set the active dynamic QSS property and force a style refresh."""
         self.setProperty("active", "true" if active else "false")
         self.style().unpolish(self)
         self.style().polish(self)
 
 
 class Sidebar(QWidget):
+    """Vertical workspace navigator that emits selected stack indexes."""
+
     workspace_changed = pyqtSignal(int)
 
     def __init__(self, parent=None):
+        """Build the ten-workspace navigator and select Workbench."""
         super().__init__(parent)
         self.setObjectName("sidebar")
         self.setFixedWidth(56)
@@ -80,4 +89,5 @@ class Sidebar(QWidget):
         self.workspace_changed.emit(index)
 
     def select(self, index: int):
+        """Programmatically select a workspace index."""
         self._select(index)

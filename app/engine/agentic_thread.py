@@ -3,10 +3,13 @@ import os
 import time
 import psutil
 import re
+import threading
 from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.hot_reload import compile_and_reload
-from app.engine.model_loader import ModelLoader
+from app.engine.model_loader import CircuitBreakerOpenException, ModelLoader
+from app.engine.kv_cache import kv_cache_stats, log_cache_stats
+from app.engine.event_broker import EventBroker
 from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
 import core.agentic_loop
@@ -16,6 +19,11 @@ RAW_LOG_DIR = "data/logs/raw"
 # Reserve this many tokens for the next generation's output.
 # The rest of the budget is used for history.
 _RESPONSE_RESERVE = 1024  # max_tokens headroom
+_WATCHDOG_TIMEOUT_SECONDS = 30.0
+_WATCHDOG_ERROR = (
+    "Inference Watchdog Timeout: Token generation froze for more than 30s. "
+    "Inference terminated safely."
+)
 
 logger = logging.getLogger("karl.agentic_thread")
 
@@ -58,6 +66,18 @@ class AgenticThread(QThread):
     def __init__(self, system_prompt, initial_history, hyperparams,
                  retrieved_chunks=None, workflow="general_chat",
                  template="reasoning_minimal", adapter_name=None, model_name=None):
+        """Create an autonomous generation loop worker.
+
+        Args:
+            system_prompt: Base system prompt for each iteration.
+            initial_history: Starting role/content messages copied into the loop.
+            hyperparams: Inference parameters and optional watchdog timeout.
+            retrieved_chunks: Optional RAG chunks injected into prompts.
+            workflow: Trace workflow name.
+            template: Trace prompt template name.
+            adapter_name: Optional LoRA adapter for ModelLoader.
+            model_name: Optional display/trace model name override.
+        """
         super().__init__()
         self.system_prompt = system_prompt
         self.chat_history = list(initial_history)   # copy so we can mutate safely
@@ -69,9 +89,69 @@ class AgenticThread(QThread):
         self.model_name = model_name
         self.logger = TraceLogger()
         self._stop_requested = False
+        self.watchdog_timeout_seconds = float(
+            self.hyperparams.get("watchdog_timeout_seconds", _WATCHDOG_TIMEOUT_SECONDS)
+        )
+        self.last_token_timestamp = time.time()
+        self._watchdog_timed_out = False
+        self._watchdog_error_emitted = False
+        self._watchdog_stop = threading.Event()
+        self._active_response_generator = None
 
     def request_stop(self):
+        """Request cooperative cancellation and stop the watchdog."""
         self._stop_requested = True
+        self._watchdog_stop.set()
+
+    def _mark_token_activity(self):
+        self.last_token_timestamp = time.time()
+
+    def _emit_watchdog_timeout(self):
+        if self._watchdog_error_emitted:
+            return
+        self._watchdog_error_emitted = True
+        self.error_occurred.emit(_WATCHDOG_ERROR)
+
+    def _cleanup_after_watchdog_timeout(self, llm=None):
+        self._stop_requested = True
+        self._watchdog_timed_out = True
+        self._emit_watchdog_timeout()
+        generator = self._active_response_generator
+        close_fn = getattr(generator, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
+        reset_fn = getattr(llm, "reset", None)
+        if callable(reset_fn):
+            try:
+                reset_fn()
+            except Exception:
+                pass
+
+    def _start_watchdog(self, llm=None) -> threading.Thread:
+        self._watchdog_stop.clear()
+        self._watchdog_timed_out = False
+        self._watchdog_error_emitted = False
+        self._mark_token_activity()
+
+        def _monitor():
+            while not self._watchdog_stop.wait(0.25):
+                if self._stop_requested:
+                    return
+                if time.time() - self.last_token_timestamp > self.watchdog_timeout_seconds:
+                    self._cleanup_after_watchdog_timeout(llm)
+                    return
+
+        thread = threading.Thread(target=_monitor, name="karl-agentic-watchdog", daemon=True)
+        thread.start()
+        return thread
+
+    def _stop_watchdog(self, thread: threading.Thread | None):
+        self._watchdog_stop.set()
+        if thread and thread.is_alive():
+            thread.join(timeout=1.0)
 
     def _token_count(self, llm, text: str) -> int:
         if not text:
@@ -179,6 +259,10 @@ class AgenticThread(QThread):
         max_compression_resets = 2
         state_transitioned = False
 
+        # Snapshot cache state and wall-clock start before the first generation.
+        _init_cache_stats = kv_cache_stats(llm, prompt)
+        _gen_start = time.perf_counter()
+
         while continuation_count <= max_continuations:
             # Stage 3 emergency check at each continuation boundary
             if thermal_enabled:
@@ -210,79 +294,98 @@ class AgenticThread(QThread):
                 stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"],
                 echo=False
             )
+            self._active_response_generator = response_gen
+            watchdog_thread = self._start_watchdog(llm)
 
             finish_reason = "stop"
             has_tokens = False
             state_transitioned = False
 
-            for chunk in response_gen:
-                if self._stop_requested:
-                    break
-                if 'choices' not in chunk or not chunk['choices']:
-                    continue
-
-                choice = chunk['choices'][0]
-                fr = choice.get('finish_reason')
-                if fr is not None:
-                    finish_reason = fr
-
-                text = choice.get('text', '')
-                if not text:
-                    continue
-
-                if first_token_time is None:
-                    first_token_time = time.perf_counter()
-
-                chunk_tokens = len(llm.tokenize(text.encode('utf-8'), add_bos=False))
-                gen_token_count += chunk_tokens
-                elapsed = time.perf_counter() - first_token_time
-                speed = gen_token_count / elapsed if elapsed > 0 else 0.0
-                self.live_stats.emit(gen_token_count, speed)
-
-                has_tokens = True
-                raw_output += text
-                buffer += text
-
-                # M7: write raw token before parsing
-                micro_ts = f"{time.time():.6f}"
-                raw_file.write(f"{micro_ts}\t{text}\n")
-                raw_file.flush()
-                self.new_raw_token.emit(text)
-
-                if "<think>" in buffer and not in_thought:
-                    in_thought = True
-                    pre_think = buffer.split("<think>")[0]
-                    if pre_think:
-                        self.new_chat_token.emit(pre_think)
-                        parsed_response += pre_think
-                    buffer = buffer.split("<think>", 1)[1]
-
-                if in_thought and "</think>" in buffer:
-                    in_thought = False
-                    parts = buffer.split("</think>", 1)
-                    if parts[0]:
-                        self.new_thought_token.emit(parts[0])
-                        parsed_thought += parts[0]
-                    buffer = parts[1]
-
-                    if self.hyperparams.get("enable_dynamic_scheduling", True):
-                        logger.info("Agentic Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
-                        state_transitioned = True
+            try:
+                for chunk in response_gen:
+                    if self._watchdog_timed_out or self._stop_requested:
                         break
+                    if 'choices' not in chunk or not chunk['choices']:
+                        continue
 
-                _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
-                _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
+                    choice = chunk['choices'][0]
+                    fr = choice.get('finish_reason')
+                    if fr is not None:
+                        finish_reason = fr
 
-                if in_thought:
-                    if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
-                        self.new_thought_token.emit(buffer)
-                        parsed_thought += buffer
-                        buffer = ""
-                else:
-                    if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
-                        self.new_chat_token.emit(buffer)
-                        parsed_response += buffer
-                        buffer = ""
+                    text = choice.get('text', '')
+                    if not text:
+                        continue
+
+                    self._mark_token_activity()
+
+                    if first_token_time is None:
+                        first_token_time = time.perf_counter()
+
+                    chunk_tokens = len(llm.tokenize(text.encode('utf-8'), add_bos=False))
+                    gen_token_count += chunk_tokens
+                    elapsed = time.perf_counter() - first_token_time
+                    speed = gen_token_count / elapsed if elapsed > 0 else 0.0
+                    self.live_stats.emit(gen_token_count, speed)
+
+                    has_tokens = True
+                    raw_output += text
+                    buffer += text
+
+                    # M7: write raw token before parsing
+                    micro_ts = f"{time.time():.6f}"
+                    raw_file.write(f"{micro_ts}\t{text}\n")
+                    raw_file.flush()
+                    self.new_raw_token.emit(text)
+                    EventBroker.get_instance().publish("tokens:raw", {"token": text})
+
+                    if "<think>" in buffer and not in_thought:
+                        in_thought = True
+                        pre_think = buffer.split("<think>")[0]
+                        if pre_think:
+                            self.new_chat_token.emit(pre_think)
+                            EventBroker.get_instance().publish("tokens:chat", {"token": pre_think})
+                            parsed_response += pre_think
+                        buffer = buffer.split("<think>", 1)[1]
+
+                    if in_thought and "</think>" in buffer:
+                        in_thought = False
+                        parts = buffer.split("</think>", 1)
+                        if parts[0]:
+                            self.new_thought_token.emit(parts[0])
+                            EventBroker.get_instance().publish("tokens:thought", {"token": parts[0]})
+                            parsed_thought += parts[0]
+                        buffer = parts[1]
+
+                        if self.hyperparams.get("enable_dynamic_scheduling", True):
+                            logger.info("Agentic Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
+                            state_transitioned = True
+                            break
+
+                    _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
+                    _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
+
+                    if in_thought:
+                        if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
+                            self.new_thought_token.emit(buffer)
+                            EventBroker.get_instance().publish("tokens:thought", {"token": buffer})
+                            parsed_thought += buffer
+                            buffer = ""
+                    else:
+                        if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
+                            self.new_chat_token.emit(buffer)
+                            EventBroker.get_instance().publish("tokens:chat", {"token": buffer})
+                            parsed_response += buffer
+                            buffer = ""
+            finally:
+                self._stop_watchdog(watchdog_thread)
+                _close_fn = getattr(response_gen, "close", None)
+                if callable(_close_fn):
+                    _close_fn()
+                self._active_response_generator = None
+
+            if self._watchdog_timed_out:
+                break
 
             if self._stop_requested:
                 break
@@ -344,14 +447,30 @@ class AgenticThread(QThread):
         if buffer:
             if in_thought:
                 self.new_thought_token.emit(buffer)
+                EventBroker.get_instance().publish("tokens:thought", {"token": buffer})
                 parsed_thought += buffer
             else:
                 self.new_chat_token.emit(buffer)
+                EventBroker.get_instance().publish("tokens:chat", {"token": buffer})
                 parsed_response += buffer
+
+        # Log KV-cache hit statistics now that we have TTFT.
+        _ttft_ms = (
+            round((first_token_time - _gen_start) * 1000, 2)
+            if first_token_time is not None
+            else None
+        )
+        _ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        log_cache_stats({**_init_cache_stats, "ttft_ms": _ttft_ms}, _ts)
 
         return raw_output, parsed_thought, parsed_response, first_token_time
 
     def run(self):
+        """Run iterative generation until stop condition, max iterations, or error.
+
+        CircuitBreakerOpenException is converted into error_occurred with the
+        operator-facing circuit-breaker message.
+        """
         # ── CPU Core Pinning ──────────────────────────────────────────────────
         # Pin inference to physical cores to optimize TPS.
         original_affinity = None
@@ -382,8 +501,7 @@ class AgenticThread(QThread):
             model_path = None
             if self.model_name:
                 model_path = os.path.join("data", "models", self.model_name)
-            llm = ModelLoader.get_instance(model_path=model_path, adapter_name=self.adapter_name)
-            ModelLoader.lock_instance()
+            llm = ModelLoader.acquire_instance(model_path=model_path, adapter_name=self.adapter_name)
             
             # Fetch the actual (potentially fallback-scaled) context limit
             actual_context_budget = ModelLoader.context_limit()
@@ -543,6 +661,12 @@ class AgenticThread(QThread):
                 self.chat_history.append({"role": "assistant", "content": response})
 
                 self.iteration_finished.emit(iteration, thought, response, diagnostics)
+                EventBroker.get_instance().publish("iteration:finished", {
+                    "iteration": iteration,
+                    "thought": thought,
+                    "response": response,
+                    "diagnostics": diagnostics
+                })
 
                 iteration += 1
 
@@ -561,7 +685,12 @@ class AgenticThread(QThread):
                 self.chat_history.append({"role": "user", "content": next_prompt_content})
 
             self.loop_finished.emit(iteration)
+            EventBroker.get_instance().publish("loop:finished", {
+                "total_iterations": iteration
+            })
 
+        except CircuitBreakerOpenException as e:
+            self.error_occurred.emit(str(e))
         except Exception as e:
             self.error_occurred.emit(f"Agentic Error: {str(e)}")
         finally:

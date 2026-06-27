@@ -14,7 +14,7 @@ import math
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QLineEdit, QLabel,
-    QListWidget, QListWidgetItem, QFileDialog,
+    QListWidget, QFileDialog,
     QSpinBox, QDoubleSpinBox, QFrame, QProgressBar,
     QMessageBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QComboBox,
@@ -32,16 +32,16 @@ def _hline() -> QFrame:
 
 
 def _section(text: str) -> QLabel:
-    l = QLabel(text)
-    l.setObjectName("section-header")
-    return l
+    lbl = QLabel(text)
+    lbl.setObjectName("section-header")
+    return lbl
 
 
 def _label(text: str, obj: str = "") -> QLabel:
-    l = QLabel(text)
+    lbl = QLabel(text)
     if obj:
-        l.setObjectName(obj)
-    return l
+        lbl.setObjectName(obj)
+    return lbl
 
 
 # ── background ingest thread ──────────────────────────────────────────────────
@@ -49,25 +49,49 @@ def _label(text: str, obj: str = "") -> QLabel:
 class _IngestThread(QThread):
     done = pyqtSignal(str, int)   # filename, chunk_count
     error = pyqtSignal(str)
+    progress = pyqtSignal(int, int, str, int, str)  # current, total, filename, chunks, status
 
-    def __init__(self, rag, filepath: str, chunk_size: int = 200, overlap: int = 50):
+    def __init__(self, rag, filepaths, chunk_size: int = 200, overlap: int = 50):
         super().__init__()
         self.rag = rag
-        self.filepath = filepath
+        if isinstance(filepaths, (list, tuple)):
+            self.filepaths = list(filepaths)
+        else:
+            self.filepaths = [filepaths]
         self.chunk_size = chunk_size
         self.overlap = overlap
 
     def run(self):
         try:
-            n = self.rag.ingest_file(self.filepath, chunk_size=self.chunk_size, overlap=self.overlap)
-            import os
-            self.done.emit(os.path.basename(self.filepath), n)
+            def _progress(current, total, event):
+                self.progress.emit(
+                    int(current),
+                    int(total),
+                    str(event.get("filename", "")),
+                    int(event.get("chunks", 0) or 0),
+                    str(event.get("status", "")),
+                )
+
+            result = self.rag.ingest_files(
+                self.filepaths,
+                chunk_size=self.chunk_size,
+                overlap=self.overlap,
+                batch_size=32,
+                progress_cb=_progress,
+            )
+            self.done.emit(
+                f"{result.get('file_count', 0)} files",
+                int(result.get("chunks_added", 0)),
+            )
         except Exception as e:
             self.error.emit(str(e))
 
 
 class VectorProjectionWidget(QFrame):
+    """Interactive 2D projection canvas for query/document vector relationships."""
+
     def __init__(self, parent=None):
+        """Create the projection widget and initialize hover/fade state."""
         super().__init__(parent)
         self.setObjectName("vector-projection-widget")
         self.setMinimumHeight(200)  # Reduced minimum height to avoid sizing conflicts on collapse/smaller windows
@@ -416,10 +440,14 @@ class VectorProjectionWidget(QFrame):
 # ── workspace ─────────────────────────────────────────────────────────────────
 
 class KnowledgeBaseWorkspace(QWidget):
+    """RAG source manager with ingest queue, search tester, and vector sandbox."""
+
     def __init__(self, state, parent=None):
+        """Create KB controls, enable file drag-and-drop, and load RAG settings."""
         super().__init__(parent)
         self.state = state
         self.setObjectName("workspace-root")
+        self.setAcceptDrops(True)
         self._load_rag_config()
         self._active_threads = set()
         self._ingest_queue = []
@@ -428,7 +456,41 @@ class KnowledgeBaseWorkspace(QWidget):
         self._refresh_sources()
         self._update_encoder_status()
 
+    def dragEnterEvent(self, event):
+        """Accept drag events that contain local file URLs."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        """Keep accepting supported URL drags while hovering over the workspace."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Queue dropped supported files for ingestion."""
+        urls = event.mimeData().urls()
+        supported_exts = {".pdf", ".docx", ".txt", ".md", ".py", ".csv"}
+        new_paths = []
+        for url in urls:
+            filepath = url.toLocalFile()
+            if os.path.isfile(filepath):
+                ext = os.path.splitext(filepath)[1].lower()
+                if ext in supported_exts:
+                    new_paths.append(filepath)
+        if new_paths:
+            for p in new_paths:
+                if not any(item["path"] == p for item in self._ingest_queue):
+                    self._ingest_queue.append({"path": p, "status": "Pending", "error": ""})
+            self._update_queue_ui()
+            self._process_ingest_queue()
+            self._ingest_status.setText(f"Queued {len(new_paths)} file(s) via Drag & Drop.")
+
     def _build_ui(self):
+        """Build explorer, ingest, search, and vector sandbox tabs."""
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
@@ -720,13 +782,9 @@ class KnowledgeBaseWorkspace(QWidget):
 
     def _update_health_lbl(self):
         index_file = self.state.rag.INDEX_FILE
-        meta_file = self.state.rag.META_FILE
         index_size_kb = 0
-        meta_size_kb = 0
         if os.path.exists(index_file):
             index_size_kb = os.path.getsize(index_file) / 1024
-        if os.path.exists(meta_file):
-            meta_size_kb = os.path.getsize(meta_file) / 1024
         total_chunks = self.state.rag.total_chunks
         status = "Healthy" if total_chunks > 0 and index_size_kb > 0 else "Empty"
         self._health_lbl.setText(f"Health: {status} ({index_size_kb:.1f}KB)")
@@ -773,7 +831,7 @@ class KnowledgeBaseWorkspace(QWidget):
             
         self._ingest_queue = [{"path": p, "status": "Pending", "error": ""} for p in paths]
         self._update_queue_ui()
-        self._process_next_in_queue()
+        self._process_ingest_queue()
 
     def _update_queue_ui(self):
         self._queue_list.clear()
@@ -784,30 +842,30 @@ class KnowledgeBaseWorkspace(QWidget):
             self._queue_list.addItem(f"[{status}] {fname}{err}")
 
     def _process_next_in_queue(self):
-        next_item = None
-        for item in self._ingest_queue:
-            if item["status"] == "Pending":
-                next_item = item
-                break
-                
-        if not next_item:
+        self._process_ingest_queue()
+
+    def _process_ingest_queue(self):
+        pending = [item for item in self._ingest_queue if item["status"] == "Pending"]
+        if not pending:
             self._progress.setVisible(False)
             self._ingest_status.setText("All files processed.")
             self._refresh_sources()
             self._update_encoder_status()
             return
-            
-        next_item["status"] = "Ingesting"
+
+        for item in pending:
+            item["status"] = "Queued"
         self._update_queue_ui()
-        
-        path = next_item["path"]
-        filename = os.path.basename(path)
-        self._ingest_status.setText(f"Ingesting {filename}...")
+
+        paths = [item["path"] for item in pending]
+        self._ingest_status.setText(f"Parsing {len(paths)} file(s)...")
         self._progress.setVisible(True)
+        self._progress.setRange(0, len(paths))
+        self._progress.setValue(0)
         
         self._ingest_thread = _IngestThread(
             self.state.rag,
-            path,
+            paths,
             chunk_size=self._chunk_size_spin.value(),
             overlap=self._overlap_spin.value()
         )
@@ -817,17 +875,39 @@ class KnowledgeBaseWorkspace(QWidget):
         )
         self._ingest_thread.finished.connect(self._ingest_thread.deleteLater)
         
-        def on_done(filename, count):
-            next_item["status"] = "Done"
+        def on_progress(current, total, filename, chunks, status):
+            self._progress.setRange(0, max(1, total))
+            self._progress.setValue(current)
+            if filename:
+                self._ingest_status.setText(
+                    f"Parsed {current}/{total}: {filename} ({chunks} chunks)"
+                )
+                for item in self._ingest_queue:
+                    if os.path.basename(item["path"]) == filename:
+                        item["status"] = "Done" if status == "parsed" else status.title()
+                        break
             self._update_queue_ui()
-            self._process_next_in_queue()
+
+        def on_done(filename, count):
+            for item in self._ingest_queue:
+                if item["status"] in {"Queued", "Parsed"}:
+                    item["status"] = "Done"
+            self._update_queue_ui()
+            self._progress.setVisible(False)
+            self._ingest_status.setText(f"Ingested {count} chunks from {filename}.")
+            self._refresh_sources()
+            self._update_encoder_status()
             
         def on_error(msg):
-            next_item["status"] = "Failed"
-            next_item["error"] = msg
+            for item in self._ingest_queue:
+                if item["status"] in {"Queued", "Parsed"}:
+                    item["status"] = "Failed"
+                    item["error"] = msg
             self._update_queue_ui()
-            self._process_next_in_queue()
+            self._progress.setVisible(False)
+            self._ingest_status.setText(f"Ingest error: {msg}")
             
+        self._ingest_thread.progress.connect(on_progress)
         self._ingest_thread.done.connect(on_done)
         self._ingest_thread.error.connect(on_error)
         self._ingest_thread.start()
@@ -1399,4 +1479,3 @@ class KnowledgeBaseWorkspace(QWidget):
                 "text": doc
             })
         self._sandbox_projection.set_documents(doc_points)
-

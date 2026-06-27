@@ -62,10 +62,63 @@ python main.py
 
 ---
 
+## Docker CUDA Deployment
+
+Karl can also run as a CUDA-backed containerized backend for editor integrations.
+This avoids host Python, CUDA Toolkit, GCC, and CMake drift while still using the
+host NVIDIA driver through NVIDIA Container Toolkit.
+
+### 1. Host prerequisites
+Install Docker with the Compose plugin, an NVIDIA driver, and NVIDIA Container
+Toolkit. Verify GPU passthrough before building Karl:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.2.2-runtime-ubuntu22.04 nvidia-smi
+```
+
+### 2. Build the CUDA image
+The Dockerfile uses a CUDA devel stage to compile `llama-cpp-python` with
+`CMAKE_ARGS="-DLLAMA_CUDA=on"` and copies only built wheels into the runtime
+stage.
+
+```bash
+docker compose build
+```
+
+### 3. Run the headless backend
+Compose starts Karl with `python main.py --headless`, binds the WSS bridge on
+container port `8080`, and persists local state through `./data:/app/data`.
+
+```bash
+mkdir -p data/models data/vector_db data/logs
+docker compose up
+```
+
+The bridge token and localhost certificate are generated under `data/`. Model
+GGUFs should be placed in `data/models/` on the host, not baked into the image.
+
+### 4. Verify CUDA llama-cpp
+After startup, inspect logs for CUDA initialization from `llama-cpp-python`
+when a model is loaded:
+
+```bash
+docker compose logs -f karl-backend
+```
+
+Expected log text varies by llama.cpp version, but look for CUDA or cuBLAS
+initialization lines such as `ggml_cuda_init`, `ggml_init_cublas`, or `CUDA`.
+
+### 5. Stop the backend
+```bash
+docker compose down
+```
+
+---
+
 ## VS Code & Code OSS Extension
 
 Karl contains an integrated editor extension under `vscode-extension/`. It is a
-local WebSocket client for the running Karl app, so the editor can use Karl's
+local WSS client for the running Karl app, so the editor can use Karl's
 chat, reasoning stream, prompt lab, Codex docs, and multi-agent coding swarm
 without moving inference or training out of your machine.
 
@@ -75,6 +128,9 @@ loading, and local code-maintenance agents controlled from the editor.
 
 See [docs/08_vscode_extension.md](docs/08_vscode_extension.md) for the current
 bridge API, safety model, and roadmap.
+
+The bridge token is stored in `data/bridge_token.json` and service discovery is
+written to `~/.karl/service_discovery.json` when the WSS server starts.
 
 ### 1. Compile & Package Extension
 Make sure you have Node.js installed, then compile the extension into a local package:
@@ -112,7 +168,7 @@ Karl is a local-first application, but it has the power to execute code and
 interact with your filesystem. 
 
 - **Privacy:** Karl does not phone home. All inference and RAG are offline.
-- **Bridge Security:** The VS Code bridge now requires a token (found in `data/bridge_token.txt`) for sensitive operations.
+- **Bridge Security:** The VS Code bridge uses localhost WSS, token validation, and scoped JSON-RPC permissions. The token store is `data/bridge_token.json`.
 - **Path Protection:** Critical system paths are blocked from being targeted by agents or RAG.
 - **Sandboxing:** Code verifications in the auto-train pipeline run inside isolated Docker containers.
 
@@ -137,6 +193,11 @@ See [docs/10_security_and_safety.md](docs/10_security_and_safety.md) for the ful
 ├── engine_test.py      # Headless engine validation script
 └── main.py             # Entry point
 ```
+
+The core text model is managed by `app/engine/model_loader.py`. It reads
+`data/model_registry.json` for context limits, retries `mlock` failures without
+memory locking, scales context down on VRAM pressure, supports draft-model
+speculative decoding, and uses a circuit breaker to avoid repeated OOM reloads.
 
 ---
 

@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ default (printf "%s-karl" .Release.Name) .Values.fullnameOverride }}
+  labels:
+    app.kubernetes.io/name: {{ default .Chart.Name .Values.nameOverride }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: backend
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ default .Chart.Name .Values.nameOverride }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: backend
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+{{ toYaml .Values.podAnnotations | indent 8 }}
+      labels:
+        app.kubernetes.io/name: {{ default .Chart.Name .Values.nameOverride }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: backend
+    spec:
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      securityContext:
+{{ toYaml .Values.podSecurityContext | indent 8 }}
+      nodeSelector:
+{{ toYaml .Values.nodeSelector | indent 8 }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: {{ .Values.gpu.nodeSelectorKey | quote }}
+                    operator: In
+                    values:
+{{ toYaml .Values.gpu.nodeSelectorValues | indent 22 }}
+{{- with .Values.affinity }}
+{{ toYaml . | indent 8 }}
+{{- end }}
+      tolerations:
+{{ toYaml .Values.gpu.tolerations | indent 8 }}
+      containers:
+        - name: karl
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+{{ toYaml .Values.runtime.command | indent 12 }}
+          securityContext:
+{{ toYaml .Values.securityContext | indent 12 }}
+          ports:
+            - name: wss
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+{{- range $name, $value := .Values.runtime.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+{{- end }}
+            - name: KARL_BRIDGE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-bridge" (default (printf "%s-karl" .Release.Name) .Values.fullnameOverride)) .Values.bridge.existingSecret }}
+                  key: {{ .Values.bridge.secretKey }}
+          resources:
+            requests:
+{{ toYaml .Values.resources.requests | indent 14 }}
+            limits:
+{{ toYaml .Values.resources.limits | indent 14 }}
+{{- if .Values.gpu.enabled }}
+              {{ .Values.gpu.resourceName }}: {{ .Values.gpu.count | quote }}
+{{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: wss
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: wss
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: config
+              mountPath: /app/data/model_registry.json
+              subPath: model_registry.json
+              readOnly: true
+            - name: config
+              mountPath: /app/data/karl-defaults.json
+              subPath: karl-defaults.json
+              readOnly: true
+      volumes:
+        - name: data
+{{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-data" (default (printf "%s-karl" .Release.Name) .Values.fullnameOverride)) .Values.persistence.existingClaim }}
+{{- else }}
+          emptyDir: {}
+{{- end }}
+        - name: config
+          configMap:
+            name: {{ default (printf "%s-karl" .Release.Name) .Values.fullnameOverride }}-config

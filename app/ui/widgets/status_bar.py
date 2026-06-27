@@ -30,6 +30,7 @@ class StatusBar(QWidget):
         self._adapter_lbl = _lbl("", self)
         self._state_lbl   = _lbl("idle", self)
         self._ctx_lbl     = _lbl("", self)
+        self._speculative_lbl = _lbl("", self)
         self._load_stats_lbl = _lbl("", self)   # Load: Xs | VRAM: Y GB/s
         self._ram_lbl     = _lbl("", self)
 
@@ -49,6 +50,7 @@ class StatusBar(QWidget):
             self._adapter_lbl, _sep(self),
             self._state_lbl, _sep(self),
             self._ctx_lbl,
+            self._speculative_lbl,
             self._load_stats_sep,
             self._load_stats_lbl,
         ):
@@ -146,6 +148,12 @@ class StatusBar(QWidget):
 
     def set_adapter(self, name: str | None):
         self._adapter_lbl.setText(f"⬡ {name}" if name else "")
+
+    def set_speculative_active(self, active: bool):
+        self._speculative_lbl.setText("[Speculative Active]" if active else "")
+        self._speculative_lbl.setObjectName("lbl-accent" if active else "lbl-muted")
+        self._speculative_lbl.style().unpolish(self._speculative_lbl)
+        self._speculative_lbl.style().polish(self._speculative_lbl)
 
     def set_state(self, text: str, active: bool = False):
         self._state_lbl.setText(text)

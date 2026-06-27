@@ -40,6 +40,22 @@ USER_NAME = "BridgeToken"
 TOKEN_PATH = "data/bridge_token.json"
 TOKEN_LIFETIME = 43200  # 12 hours
 
+# Canonical scope set — ordered from least to most privileged.
+FULL_SCOPES: list[str] = [
+    "read:telemetry",
+    "read:kb",
+    "write:kb",
+    "admin:execute",
+]
+
+# Predefined role bundles for --generate-key --scope <role>
+ROLE_SCOPES: dict[str, list[str]] = {
+    "read:telemetry": ["read:telemetry"],
+    "read:kb":        ["read:telemetry", "read:kb"],
+    "write:kb":       ["read:telemetry", "read:kb", "write:kb"],
+    "admin:execute":  list(FULL_SCOPES),
+}
+
 
 def save_cached_token(token: str):
     """Stores the bridge token securely in the Kernel Keyring (Linux) or OS keychain."""
@@ -143,25 +159,61 @@ def revoke_tokens():
     _clear_keyring()
 
 
+def get_token_scopes(token: str, token_path: str = TOKEN_PATH) -> list[str] | None:
+    """Return the scope list for *token* from the on-disk store, or None if invalid/expired."""
+    if not token or not os.path.exists(token_path):
+        return None
+    try:
+        with open(token_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if "tokens" in data:
+            scopes = data["tokens"].get(token)
+            created_at = float(data.get("created_at", 0))
+        else:
+            # Legacy single-token format
+            scopes = FULL_SCOPES if token == data.get("token") else None
+            created_at = float(data.get("created_at", 0))
+        if scopes is None:
+            return None
+        if time.time() - created_at > TOKEN_LIFETIME:
+            logger.info("Cached token expired.")
+            return None
+        return list(scopes)
+    except Exception:
+        return None
+
+
+def add_scoped_token(token: str, scopes: list[str], token_path: str = TOKEN_PATH) -> None:
+    """Register *token* with *scopes* in the on-disk token store.
+
+    Creates the file if it does not exist. Preserves existing tokens.
+    """
+    dir_ = os.path.dirname(token_path)
+    if dir_:
+        os.makedirs(dir_, exist_ok=True)
+    data: dict = {}
+    if os.path.exists(token_path):
+        try:
+            with open(token_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+    # Migrate old single-token format on the fly
+    if "tokens" not in data:
+        old_tok = data.get("token")
+        data = {
+            "tokens": {old_tok: list(FULL_SCOPES)} if old_tok else {},
+            "created_at": data.get("created_at", time.time()),
+        }
+    data["tokens"][token] = list(scopes)
+    with open(token_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    logger.info("Scoped token registered: scopes=%s path=%s", scopes, token_path)
+
+
 def _verify_token(token: str) -> bool:
     """Helper to check token against disk state and time limit."""
-    if not os.path.exists(TOKEN_PATH):
-        return False
-        
-    try:
-        with open(TOKEN_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        
-        if token != data.get("token"):
-            return False
-
-        if time.time() - data.get("created_at", 0) > TOKEN_LIFETIME:
-            logger.info("Cached token expired.")
-            return False
-
-        return True
-    except Exception:
-        return False
+    return get_token_scopes(token) is not None
 
 
 def _clear_keyring():

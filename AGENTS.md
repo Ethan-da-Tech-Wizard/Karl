@@ -31,9 +31,13 @@ MainWindow
 │   ├── [0] WorkbenchWorkspace     app/ui/workspaces/workbench/workspace.py
 │   ├── [1] PromptLabWorkspace     app/ui/workspaces/prompt_lab.py
 │   ├── [2] KnowledgeBaseWorkspace app/ui/workspaces/knowledge_base.py
-│   ├── [3] TrainingStudioWorkspace app/ui/workspaces/training_studio.py
-│   ├── [4] EvalSuiteWorkspace     app/ui/workspaces/eval_suite.py
-│   └── [5] SystemConfigWorkspace  app/ui/workspaces/system_config.py
+│   ├── [3] VisionWorkbench        app/ui/workspaces/vision_workbench.py
+│   ├── [4] TrainingStudioWorkspace app/ui/workspaces/training_studio/__init__.py
+│   ├── [5] EvalSuiteWorkspace     app/ui/workspaces/eval_suite.py
+│   ├── [6] SwarmStudioWorkspace   app/ui/workspaces/swarm_studio.py
+│   ├── [7] SystemConfigWorkspace  app/ui/workspaces/system_config/workspace.py
+│   ├── [8] DocsWorkspace          app/ui/workspaces/docs.py
+│   └── [9] FlywheelStudioWorkspace app/ui/workspaces/flywheel_studio.py
 └── StatusBar (fixed 24px)         app/ui/widgets/status_bar.py
 ```
 
@@ -57,11 +61,13 @@ class AppState:
 ### Design System
 
 All styling is generated from `app/ui/themes.py`:
-- One dark theme (no theme switcher — Karl is a precision tool, not a toy)
-- `PALETTE` dict: 20 named color tokens
+- `THEMES` dict: named palettes with accent, surface, text, semantic, glow, and motion tokens
+- `PALETTE` alias: Karl Obsidian Core defaults
 - `MONO` string: JetBrains Mono → Fira Code → Cascadia Code → Consolas → Courier New
-- `stylesheet(accent="#00C2FF") -> str` — call once, pass to `QApplication.setStyleSheet()`
-- Object names (`#sidebar`, `#panel`, `#btn-primary`, etc.) are the hook points in QSS
+- `get_theme_stylesheet(state)` compiles dynamic QSS from theme, accent, mode, and layout preset
+- Default workspace outer padding is 12px in Focused Workbench layout
+- Object names (`#workspace-root`, `#sidebar`, `#panel`, `#section-header`, `#btn-primary`, etc.) are the hook points in QSS
+- Sidebar and custom icon buttons set accessible names/descriptions for screen readers
 
 ### The Extension Points (Hackable Core)
 
@@ -76,6 +82,15 @@ The user is expected to edit them directly. Do NOT add complex dependencies here
 | `core/cognitive_parser.py` | `parse_thought_stream(raw) -> (thought, response)` — state machine |
 | `core/agentic_loop.py` | `should_continue(iter, response)` and `build_next_prompt(response, iter)` |
 
+### Editor Extension Integration
+
+Karl is equipped with a native VS Code/Code OSS editor extension (`vscode-extension/`) that acts as a client to the running Karl PyQt6 desktop application.
+
+* **Architecture**: The extension is a Webview panel that executes HTML5/JavaScript UI logic, proxying RPC calls to Karl's WebSocket server over local secure ports.
+* **Message Protocol (`postMessage`)**: The Webview and VS Code host communicate via JSON messages. The host forwards connections and editor status telemetry (`cockpit_state_update`) to the Webview and processes workspace file writes (`queue_file_edit`) proposed by the agents.
+* **Performance Rendering**: To prevent DOM fragmentation, tokens are appended directly to existing `.token-appear` nodes. Scroll recalculations are throttled using `requestAnimationFrame` to avoid layout reflow thrashing.
+* **Focus Management**: Switching workspaces within the extension automatically focuses the primary inputs (`chatInput`, `objective`, or `kbQuery`) to keep the user's hands on the keyboard.
+
 ### Threading Model
 
 - `LLMThread(QThread)` — single-shot generation. `app/engine/llm_thread.py`
@@ -84,6 +99,9 @@ The user is expected to edit them directly. Do NOT add complex dependencies here
 - `LLMThread` additionally emits: `generation_finished(thought, response, truncated, ended_in_thought)`
 - `AgenticThread` additionally emits: `iteration_finished(index, thought, response)`, `loop_finished(total)`
 - Both emit: `error_occurred(str)`
+- Both also publish non-UI telemetry through `EventBroker` topics such as
+  `tokens:raw`, `tokens:thought`, `tokens:chat`, `generation:finished`,
+  `iteration:finished`, and `loop:finished`.
 - **Rule:** Never touch UI widgets from inside `run()`. Emit signals only.
 - `WorkbenchWorkspace` owns `chat_history` and creates/destroys threads.
 
@@ -111,28 +129,49 @@ multiple `<think>` blocks, and unclosed tags.
 `app/engine/model_loader.py` — thread-safe singleton.
 
 ```python
-ModelLoader.get_instance(model_path=None) -> Llama
-ModelLoader.reset_instance()              # forces reload on next call
+ModelLoader.get_instance(model_path=None, adapter_name=None, draft_model_path=None) -> Llama
+ModelLoader.reset_instance()              # unloads active model and draft handles
 ModelLoader.model_name() -> str           # basename of loaded GGUF
 ModelLoader.is_loaded()  -> bool
+ModelLoader.n_ctx()      -> int           # loaded context or registry fallback
 ```
 
-- Protected by `threading.Lock()` — safe to call from any thread
+- Protected by `threading.RLock()` — safe to call from engine/UI threads
 - Reads `data/active_model.json` at first call to determine which GGUF to load
 - Falls back to `deepseek-r1-1.5b.gguf` if the specified file is missing
-- Currently hardcodes `n_ctx=4096` — **this is a known gap** (see below)
+- Reads `n_ctx` and `n_batch` from `data/model_registry.json` for the active model
+- Loads with GPU offload (`n_gpu_layers=-1`), memory mapping, and memory locking
+- If host `mlock` limits fail, retries with `use_mlock=False` and logs ulimit guidance
+- If VRAM allocation fails, halves `n_ctx` down to 2048 before surfacing a terminal error
+- On multi-GPU hosts, tries a free-VRAM-proportional `tensor_split` before single-GPU fallback
+- Supports optional draft-model speculative decoding and optional 8-bit KV cache (`type_k`/`type_v`)
+- Circuit breaker trips after 3 terminal load failures and blocks repeated reload attempts for 30 seconds
 
 ### The Trace Logger
 
 `app/utils/trace_logger.py` writes JSONL to `data/logs/traces/trace_YYYY-MM-DD.jsonl`.
-Rotates at 50 MB. Each entry has this schema:
+Rotation threshold is configurable via the `log_rotation_size_mb` config key
+(default **10 MB**; the module constant `_MAX_BYTES` is 50 MB but the config
+default takes precedence). Each entry has this schema:
 
 ```json
 {
   "id": "uuid4",
   "session_id": "uuid4",
   "timestamp": "ISO8601",
-  "timing": { "total_seconds": 0.0 },
+  "timing": {
+    "total_seconds": 0.0,
+    "prefill_seconds": 0.0,
+    "generation_seconds": 0.0,
+    "prefill_tps": 0.0,
+    "generation_tps": 0.0,
+    "total_tps": 0.0,
+    "prompt_tokens": 0,
+    "generation_tokens": 0
+  },
+  "gpu_temp_c": null,
+  "throttle_reasons": [],
+  "cooling_duration_sec": 0.0,
   "model": "model-filename.gguf",
   "adapter": null,
   "workflow": "general_chat",
@@ -145,34 +184,54 @@ Rotates at 50 MB. Each entry has this schema:
   "raw_output": "...",
   "rag_chunks": [],
   "feedback": "none | thumbs_up | thumbs_down | corrected",
-  "corrected_response": null
+  "corrected_response": null,
+  "warning": "(optional — present only when thermal throttle was detected)"
 }
 ```
 
 This schema is the Unsloth SFT/DPO source. `feedback` + `corrected_response` drive the
 training curator export.
 
+**Encryption & archival:** On rotation, `_archive_log()` gzip-compresses the file
+in RAM, then Fernet-encrypts it (PBKDF2-HMAC-SHA256, 100 000 iterations, salt =
+hardware motherboard UUID). The key is zeroed via `_zero_bytes()` on a mutable
+`bytearray`. `mlockall(MCL_CURRENT | MCL_FUTURE)` prevents the key from being
+paged to disk during encryption; `munlockall()` releases the lock immediately after.
+Encrypted archives land in `data/logs/archive/` with a `.jsonl.enc` suffix.
+
+**Retention:** `enforce_retention_policy()` deletes `.jsonl`, `.gz`, `.enc`, and
+`.tokens` files older than `log_retention_days` (default 30), then enforces a
+`max_log_disk_size_mb` quota (default 1024 MB) by deleting oldest-first.
+
 ### The RAG Pipeline
 
-`app/utils/rag_pipeline.py` — persistent FAISS index.
+`app/utils/rag_pipeline.py` — persistent FAISS index + SQLite metadata.
+See `docs/02_rag_pipeline.md` for the full technical reference.
 
 - Embedding model: `all-MiniLM-L6-v2` (sentence-transformers)
-- Index persists to `data/vector_db/index.faiss` + `data/vector_db/metadata.json`
-- `ingest_file(path)` — extract text (PDF/DOCX/TXT/MD/PY/CSV) → chunk → embed → add
-- `retrieve(query, top_k=3, source_filter=None) -> list[str]`
-- `retrieve_with_metadata(query, top_k, ...) -> list[dict]` — includes distance scores
+- Vector index: `data/vector_db/index.faiss` (FAISS `IndexIDMap2`, flat L2)
+- Metadata: `data/vector_db/meta.db` (SQLite WAL) — migrated from legacy `metadata.json`
+- `ingest_file(path, chunk_size=200, overlap=50)` — PDF/DOCX/TXT/MD/PY/CSV → chunk → embed
+- `ingest_text(text, source_name, chunk_size, overlap)` — ingest a raw string
+- `retrieve(query, top_k=3, source_filter=None, distance_threshold=None) -> list[str]`
+- `retrieve_with_metadata(query, top_k, ...) -> list[dict]` — includes `distance`, `rank`
+- `retrieve_sparse(query, top_k=5, ...) -> list[dict]` — TF-IDF cosine similarity
+- `retrieve_hybrid(query, top_k=3, rrf_constant=60, use_reranker=False, rerank_candidates=15) -> list[dict]`
+  — Reciprocal Rank Fusion of dense + sparse; optional CrossEncoder reranking
 - `eval_retrieval(query, expected_ids, top_k) -> dict` — hit@1, hit@3, hit@k, MRR
-- **Gap:** no distance threshold filtering in `retrieve()` — all top-k are returned
-  regardless of relevance score
 
 ### The Training Curator
 
 `app/utils/training_curator.py` — captures training examples.
+See `docs/03_training_curator.md` for the full technical reference.
 
-- Saves to `data/training/curated.jsonl`
-- `save_example(prompt, response, source)` — source = `"thumbs_up"` or `"corrected"`
-- `export_unsloth(output_path) -> (str, int)` — returns (path, count)
-- Unsloth format: `{ "instruction": ..., "input": "", "output": ..., "source": ..., "timestamp": ... }`
+- Saves to `data/training/curated.jsonl` (HuggingFace chat format)
+- `save_example(system_prompt, user_msg, good_response, source)` — source one of:
+  `thumbs_up`, `corrected`, `thumbs_down`, `eval_chosen`, `eval_rejected`
+- `export_unsloth(output_path) -> str` — balanced SFT JSONL, `{"messages": [...]}`
+- `export_dpo(output_path) -> str` — paired `{prompt, chosen, rejected}` JSONL
+- `save_eval_result(report) -> str` — persists eval report; auto-generates DPO pairs
+- `list_eval_results() -> list[dict]` — metadata for all saved eval reports
 
 ---
 
@@ -187,12 +246,16 @@ training curator export.
 | AppState container | `app/state.py` |
 | Status bar (model, state, RAM) | `app/ui/widgets/status_bar.py` |
 | Main window shell | `app/ui/main_window.py` |
-| WorkbenchWorkspace — chat, streaming, RAG toggle, loop toggle, Ctrl+Enter, feedback | `app/ui/workspaces/workbench/workspace.py` |
-| KnowledgeBaseWorkspace — ingest, source list, chunk inspector, search tester | `app/ui/workspaces/knowledge_base.py` |
-| PromptLabWorkspace — A/B side-by-side streaming | `app/ui/workspaces/prompt_lab.py` |
-| TrainingStudioWorkspace — dataset browser, SFT/DPO export UI, LoRA config UI | `app/ui/workspaces/training_studio.py` |
-| EvalSuiteWorkspace — dataset picker, results tree | `app/ui/workspaces/eval_suite.py` |
-| SystemConfigWorkspace — model loader, defaults, identity, hardware | `app/ui/workspaces/system_config.py` |
+| WorkbenchWorkspace — chat, docks, sessions, params drawer, branching, feedback | `app/ui/workspaces/workbench/workspace.py` |
+| KnowledgeBaseWorkspace — drag/drop ingest, source list, chunk inspector, search tester, sandbox | `app/ui/workspaces/knowledge_base.py` |
+| PromptLabWorkspace — A/B streaming, saved pairs, diff view, tokenizer, model compare | `app/ui/workspaces/prompt_lab.py` |
+| VisionWorkbench — saved images, OCR, and screenshot reasoning | `app/ui/workspaces/vision_workbench.py` |
+| TrainingStudioWorkspace — flywheel, dataset, SFT/DPO export, LoRA/QLoRA, auto-train, Mini-GPT | `app/ui/workspaces/training_studio/__init__.py` |
+| EvalSuiteWorkspace — dataset editor, run progress, result tree, grader controls | `app/ui/workspaces/eval_suite.py` |
+| SwarmStudioWorkspace — task graph, file proposals, verification traces | `app/ui/workspaces/swarm_studio.py` |
+| SystemConfigWorkspace — model registry, quantization, defaults, MCP, theme, observability, hardware | `app/ui/workspaces/system_config/workspace.py` |
+| DocsWorkspace — local Codex reference browser | `app/ui/workspaces/docs.py` |
+| FlywheelStudioWorkspace — telemetry and fine-tuning loop metrics | `app/ui/workspaces/flywheel_studio.py` |
 | ModelLoader thread-safety | `app/engine/model_loader.py` |
 | cognitive_parser state machine | `core/cognitive_parser.py` |
 | Trace logger (new schema + rotation) | `app/utils/trace_logger.py` |
@@ -202,50 +265,21 @@ training curator export.
 | Training curator (Unsloth SFT export) | `app/utils/training_curator.py` |
 | Eval harness + 5 graders | `eval/harness.py`, `eval/graders.py` |
 | Hardware scout | `core/hardware_scout.py` |
+| AppState persistence (save_to_disk / load_from_disk) | `app/state.py`, `app/engine/config_store.py` |
+| Agent profile registry with reload + custom agents | `app/ui/workspaces/workbench/profiles.py` |
 
-### ⚠️ Implemented but Broken / Incomplete
+> **All previously noted ⚠️ issues have been resolved.** The two items below are the
+> only remaining functional gaps (by design — they require HF weights and GPU infrastructure
+> that are not included in the repo):
 
-| Issue | File | What's Wrong |
-|-------|------|--------------|
-| Trace logger calls missing fields | `app/engine/llm_thread.py` line 176 | `model_name`, `adapter_name`, `workflow`, `template`, `feedback` not passed — all logs say `"model": "unknown"` |
-| Same issue in agentic loop | `app/engine/agentic_thread.py` line 204 | Same missing fields; also passes synthetic `rag_context=[f"agentic_iteration_{n}"]` |
-| Context budget ignores model registry | `app/engine/llm_thread.py` line 11, `app/engine/agentic_thread.py` line 15, `app/engine/model_loader.py` line 39 | `_CONTEXT_BUDGET = 4096` and `n_ctx=4096` are hardcoded; `data/model_registry.json` defines 4 tiers with contexts 4096→32768 but is never read |
-| `<think>` blocks saved in sessions | `app/utils/memory_manager.py` | `save_session()` dumps raw `chat_history` including think tokens; on reload, model re-reasons already-completed thoughts |
-| RAG threshold not wired to Workbench | `app/ui/workspaces/knowledge_base.py` threshold control, `app/ui/workspaces/workbench/workspace.py` | The threshold spinbox in KB workspace sets nothing on `AppState`; `retrieve()` in Workbench always uses no threshold |
-| Workbench has no params drawer | `app/ui/workspaces/workbench/workspace.py` | temperature / top-p / max-tokens only accessible via System Config; no per-session override in Workbench UI |
-| Session save/load not connected | `app/ui/workspaces/workbench/workspace.py` | `MemoryManager` exists in `AppState` but Workbench never calls `save_session()` or `load_session()` |
-| Eval harness no model guard | `eval/harness.py` | `run()` proceeds unconditionally; `FileNotFoundError` surfaces inside the case loop instead of at entry |
-| Eval progress callback not implemented | `eval/harness.py` | `progress_cb` parameter exists in signature but `harness.run()` doesn't call it |
-| LoRA training stubbed | `app/ui/workspaces/training_studio.py` | Train button logs a message explaining HF model path requirements; no training executes |
-| Prompt Lab no diff view | `app/ui/workspaces/prompt_lab.py` | A/B streaming works; diff render after both complete is not implemented |
-| System Config no model registry browser | `app/ui/workspaces/system_config.py` | Shows files in `data/models/` but doesn't read `data/model_registry.json` for tier info or download |
-| KB workspace chunk controls absent | `app/ui/workspaces/knowledge_base.py` | `ingest_file()` always uses default chunk_size=200, overlap=50 |
-| DPO export needs thumbs-down | `app/ui/workspaces/workbench/workspace.py` | No thumbs-down button; DPO export in Training Studio attempts pairing but has no rejected examples to pair |
-| `training_curator.export_unsloth()` return | `app/utils/training_curator.py` | Returns `(path, count)` tuple; Training Studio only assigns to `out_path`, discards count silently |
+### ⚠️ Implemented but Requires External Assets
 
-### ❌ Not Yet Built
+| Issue | File | What's Required |
+|-------|------|-----------------|
+| LoRA/QLoRA training | `app/ui/workspaces/training_studio/__init__.py` | HuggingFace model weights in `data/hf_models/`; `peft`+`trl` installed |
+| Speculative decoding | `app/engine/model_loader.py` | Compatible draft GGUF in `data/draft_model.json`; `llama-cpp-python` with draft support |
 
-| Feature | Target Location | Phase |
-|---------|----------------|-------|
-| Model-aware context budgeting | `model_loader.py`, both threads | Phase 1 |
-| `<think>` stripping in session save | `memory_manager.py` | Phase 1 |
-| Workbench params drawer | `workbench/workspace.py` | Phase 1 |
-| Session save/load UI | `workbench/workspace.py` | Phase 2 |
-| Thumbs-down + DPO pairing | `workbench/workspace.py`, `training_curator.py` | Phase 2 |
-| RAG threshold wired to AppState | `knowledge_base.py`, `workbench/workspace.py`, `state.py` | Phase 2 |
-| Eval harness model guard + progress | `eval/harness.py` | Phase 2 |
-| KB chunk size/overlap controls | `knowledge_base.py` | Phase 3 |
-| Prompt diff view | `prompt_lab.py` | Phase 3 |
-| Prompt pair save/load | `prompt_lab.py` | Phase 3 |
-| LoRA/QLoRA actual training | `training_studio.py` | Phase 3 |
-| Model registry browser + download | `system_config.py` | Phase 3 |
-| Session branching | `workbench/workspace.py` | Phase 4 |
-| Tokenizer visualization | `prompt_lab.py` or `workbench/workspace.py` | Phase 4 |
-| DPO export complete | `training_studio.py`, `training_curator.py` | Phase 4 |
-| README rewrite for Linux/Arch | `README.md` | Phase 5 |
-| All 7 docs rewritten to match current arch | `docs/` | Phase 5 |
-| Unit tests for parser, logger, curator | `tests/` (new) | Phase 5 |
-| `smoke_test.py`, `engine_test.py` hardcoded paths fixed | root | Phase 5 |
+
 
 ---
 
@@ -473,13 +507,24 @@ Exit criterion: user can fork at any message, explore alternate path, navigate b
 2. Rewrote `docs/01–03` and `docs/06` to match current architecture
 3. `docs/04_architecture.md`, `docs/05_scope_and_milestones.md`,
    `docs/07_risk_register.md` — verified and updated to match completed Phase 4 state
-4. Updated `AGENTS.md` to reflect fully completed project
-5. Created `tests/` directory with:
+4. `docs/05_multi_agent_swarm.md` — full reference for the Architect/Coder/Tester
+   pipeline, dependency layering, cherry-pick review, self-correction loop, security
+   sandbox, codebase memory integration, and Qt signal table
+5. `docs/07_evaluation_suite.md` — complete reference for EvalHarness, all 5 graders,
+   the eval-failure DPO curation pipeline, context resolution priority, and the
+   Flywheel integration
+6. `docs/08_vscode_extension.md` — postMessage API contract, DOM rendering
+   optimisations, and focus-redirection rules documented
+7. Updated `AGENTS.md` to reflect fully completed project
+8. Created `tests/` directory with:
    - `tests/test_cognitive_parser.py` — all 5 state machine cases
+   - `tests/test_cognitive_parser_fuzz.py` — fuzz tests for malformed/partial tags
    - `tests/test_trace_logger.py` — schema fields, rotation trigger
    - `tests/test_training_curator.py` — save, export, DPO pairing
    - `tests/test_session_tree.py` — node/tree ops, branching, serialization, duck-typing
-6. Fixed `engine_test.py`: uses `ModelLoader.get_instance()` and `ModelLoader.model_name()`
+   - `tests/test_eval_harness.py` — harness run loop, case processing, report structure
+   - `tests/test_swarm.py` — orchestrator plan emission and signal flow
+9. Fixed `engine_test.py`: uses `ModelLoader.get_instance()` and `ModelLoader.model_name()`
    instead of a hardcoded `Llama()` constructor with a hardcoded path
 
 
@@ -632,32 +677,35 @@ Karl/
 ├── app/
 │   ├── state.py               ← AppState: shared state passed to all workspaces
 │   ├── engine/
-│   │   ├── model_loader.py    ← thread-safe singleton; _lock; model_name(); is_loaded()
-│   │   ├── llm_thread.py      ← LLMThread(QThread); ⚠️ trace_logger call missing fields
-│   │   └── agentic_thread.py  ← AgenticThread(QThread); ⚠️ same
+│   │   ├── model_loader.py    ← thread-safe singleton; registry n_ctx; GPU fallback; circuit breaker
+│   │   ├── llm_thread.py      ← LLMThread(QThread); streaming parser, watchdog, trace logging
+│   │   ├── agentic_thread.py  ← AgenticThread(QThread); autonomous loop, streaming parser
+│   │   ├── websocket_server.py ← secure JSON-RPC 2.0 WSS bridge; token scopes; /metrics
+│   │   ├── config_store.py    ← atomic data/*.json config I/O and registry cache
+│   │   └── event_broker.py    ← thread-safe in-process pub/sub telemetry bus
 │   ├── ui/
 │   │   ├── main_window.py     ← shell only: sidebar + stack + status bar
-│   │   ├── sidebar.py         ← 6-button nav; workspace_changed(int) signal
-│   │   ├── themes.py          ← stylesheet(accent) -> str; PALETTE dict; MONO font stack
+│   │   ├── sidebar.py         ← 10-button accessible nav; workspace_changed(int) signal
+│   │   ├── themes.py          ← THEMES palettes; get_theme_stylesheet(state); MONO font stack
 │   │   ├── widgets/
 │   │   │   ├── __init__.py
 │   │   │   └── status_bar.py  ← model name, state text, RAM; set_model/set_state/set_adapter
 │   │   └── workspaces/
 │   │       ├── __init__.py
-│   │       ├── workbench.py      ← ⚠️ no params drawer; no session save/load; no thumbs-down
-│   │       ├── prompt_lab.py     ← ⚠️ no diff view; no pair save/load
-│   │       ├── knowledge_base.py ← ⚠️ no chunk controls; threshold not wired to AppState
-│   │       ├── training_studio.py ← ⚠️ training stubbed; DPO has no rejected examples
-│   │       ├── eval_suite.py     ← ⚠️ progress_cb not implemented in harness
-│   │       └── system_config.py  ← ⚠️ no model registry browser
+│   │       ├── workbench/        ← Workbench package; params, sessions, branching, feedback
+│   │       ├── prompt_lab.py     ← Prompt Lab; A/B streams, saved pairs, diff, tokenizer
+│   │       ├── knowledge_base.py ← chunk size/overlap controls; threshold wired to AppState (Phase 3.1 / 2.1)
+│   │       ├── training_studio.py ← training requires HF weights; DPO export wired (Phase 3.3 / 4.2)
+│   │       ├── eval_suite.py     ← progress_cb wired to harness (Phase 3.1)
+│   │       └── system_config/    ← System Config package; model registry, runtime, hardware
 │   └── utils/
-│       ├── rag_pipeline.py    ← persistent FAISS; ⚠️ no distance threshold in retrieve()
-│       ├── memory_manager.py  ← ⚠️ saves <think> blocks in sessions
+│       ├── rag_pipeline.py    ← persistent FAISS; distance threshold wired via AppState.rag_threshold (Phase 2.1)
+│       ├── memory_manager.py  ← <think> blocks stripped before session save (Phase 1)
 │       ├── trace_logger.py    ← new schema (id, session_id, feedback, model, adapter, rotation)
-│       └── training_curator.py ← curated.jsonl; export_unsloth() returns (path, count) tuple
+│       └── training_curator.py ← curated.jsonl; export_unsloth() returns path string (Phase 2.5)
 │
 ├── eval/
-│   ├── harness.py             ← EvalHarness.run(); ⚠️ no model guard; ⚠️ progress_cb not called
+│   ├── harness.py             ← EvalHarness.run(); model guard + progress_cb wired (Phase 1 / 3.1)
 │   ├── graders.py             ← 5 graders: exact_match, json_valid, keyword_hit, groundedness, not_in_context
 │   ├── run_eval.py            ← CLI: --dataset, --dry-run, --output
 │   ├── benchmark_rag.py       ← RAG retrieval benchmarking
@@ -675,9 +723,24 @@ Karl/
     ├── hf_models/             ← gitignored (HuggingFace weights for LoRA training)
     ├── adapters/              ← gitignored (trained LoRA adapters)
     ├── logs/
-    │   ├── traces/            ← gitignored (JSONL trace logs, one per day, rotates at 50 MB)
+    │   ├── traces/            ← gitignored (JSONL trace logs, one per day, configurable rotation)
+    │   ├── archive/           ← gitignored (gzip+Fernet-encrypted .jsonl.enc archives)
     │   └── raw/               ← gitignored (.tokens raw archive per generation)
+    │  
     ├── sessions/              ← gitignored (saved conversation JSON)
     ├── training/              ← gitignored (curated.jsonl, export files)
-    └── vector_db/             ← gitignored (index.faiss, metadata.json)
+    └── vector_db/             ← gitignored (index.faiss, meta.db)
+│
+└── vscode-extension/          ← VS Code/Code OSS editor extension
+    ├── package.json           ← Extension configuration and commands registry
+    ├── extension.js           ← Extension host entry point (commands, workspaces, diffs)
+    ├── src/
+    │   └── sidebarProvider.js ← Webview container (HTML generation, socket lifecycle, postMessage proxy)
+    └── media/
+        ├── karl.js            ← Client event handlers and controller logic
+        ├── karl_render.js     ← Stream renderer (Token DOM re-use, throttled requestAnimationFrame scrolling)
+        ├── karl_socket.js     ← WebSocket manager (Heartbeat timers, direct/host-relay handshakes)
+        ├── karl_state.js      ← State persistence & focus redirection
+        ├── themes.js          ← Custom styling parameters
+        └── karl.css           ← Obsidian-core styling rules
 ```

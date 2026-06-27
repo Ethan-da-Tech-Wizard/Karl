@@ -25,7 +25,7 @@ Resolved risks are kept for history. Open risks have assigned phases.
 | **R14** | Data | **`<think>` blocks accumulate in saved sessions.** | Medium | High | ✅ Resolved | Phase 1.4 |
 | **R15** | Context | **Hardcoded `n_ctx=4096` wastes context on larger models.** | High | High | ✅ Resolved | Phase 1.3 |
 | **R16** | Data | **Trace logs record `"model": "unknown"` for all generations.** | High | Certain | ✅ Resolved | Phase 1.1–1.2 |
-| **R17** | Training | **DPO export has no rejected examples** — thumbs-down button absent. | High | Certain | ✅ Resolved | Phase 2.2 |
+| **R17** | Training | **DPO export requires rejected examples.** | High | Certain | ✅ Resolved | Phase 2.2 |
 | **R18** | Architecture | **Session branching changes `chat_history` data model.** Doing it incrementally risks partial state. | High | Medium | ✅ Resolved | Phase 4.3 |
 | **R19** | Build | **LoRA training requires HF model weights** not present by default. | High | High | ✅ Resolved | Phase 3.3 |
 | **R20** | Architecture | **`AppState` is mutable shared state** with no locking. Concurrent workspace writes could corrupt. | Low | Low | ✅ Monitor | — |

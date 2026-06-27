@@ -13,6 +13,16 @@ function escapeHtml(value) {
         .replaceAll("'", '&#39;');
 }
 
+const _pendingScrolls = new Set();
+function _triggerScroll(el) {
+    if (!el || _pendingScrolls.has(el)) return;
+    _pendingScrolls.add(el);
+    requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+        _pendingScrolls.delete(el);
+    });
+}
+
 // ── streaming cursor ───────────────────────────────────────────────────────────
 
 function _getOrCreateCursor() {
@@ -46,10 +56,17 @@ function _appendChatText(el, text) {
     const cursor = document.getElementById('streaming-cursor');
     const cursorOwned = cursor && cursor.parentElement === el;
     if (cursorOwned) cursor.remove();
-    const span = document.createElement('span');
-    span.className = 'token-appear';
-    span.textContent = text;
-    el.appendChild(span);
+    
+    const lastChild = el.lastElementChild;
+    if (lastChild && lastChild.className === 'token-appear') {
+        lastChild.textContent += text;
+    } else {
+        const span = document.createElement('span');
+        span.className = 'token-appear';
+        span.textContent = text;
+        el.appendChild(span);
+    }
+    
     if (cursorOwned || _streamingTarget === el) {
         _streamingTarget = el;
         el.appendChild(_getOrCreateCursor());
@@ -65,7 +82,7 @@ function appendThoughtToken(token) {
     const thoughtsEl = $('introspectionThoughts');
     if (thoughtsEl) {
         thoughtsEl.textContent += str;
-        thoughtsEl.scrollTop = thoughtsEl.scrollHeight;
+        _triggerScroll(thoughtsEl);
     }
     const countEl = $('thoughtsTokenCount');
     if (countEl) countEl.textContent = `~${_thoughtTokenCount.toLocaleString()} tokens`;
@@ -75,7 +92,7 @@ function appendThoughtToken(token) {
     const fullView = $('reasoningFullView');
     if (fullView) {
         fullView.textContent += str;
-        fullView.scrollTop = fullView.scrollHeight;
+        _triggerScroll(fullView);
     }
 }
 
@@ -385,14 +402,14 @@ function addTimeline(title, detail) {
                 <span>${escapeHtml(detail)}</span>
             </div>`;
         feed.appendChild(entry);
-        feed.scrollTop = feed.scrollHeight;
+        _triggerScroll(feed);
     }
 }
 
 function log(message) {
     const terminal = $('terminal');
     terminal.innerText += `\n${message}`;
-    terminal.scrollTop = terminal.scrollHeight;
+    _triggerScroll(terminal);
 }
 
 // ── diagnostics ────────────────────────────────────────────────────────────────
@@ -455,7 +472,7 @@ function renderRuntimeOffline() {
     $('cockpitSystem').innerText = '--';
 }
 
-function renderRuntimeStatus(status) {
+function renderRuntimeStatus(status, latency = 0) {
     if (!status || typeof status !== 'object') status = {};
     const model = status.model || {};
     const adapter = status.adapter || {};
@@ -495,6 +512,32 @@ function renderRuntimeStatus(status) {
     } else {
         $('visionBridgeWarning').style.display = 'block';
     }
+
+    // Dynamic latency and workload status indication
+    if (connectionState === 'connected' || connectionState === 'busy') {
+        const isBusy = runtime.state === 'running' || runtime.state === 'generating';
+        const isHighLatency = latency > 200;
+        
+        let label = 'Connected';
+        let stateClass = 'connected';
+
+        if (isBusy) {
+            label = 'Connected [Busy]';
+            stateClass = 'busy';
+        } else if (isHighLatency) {
+            label = `Connected (${latency}ms)`;
+            stateClass = 'busy';
+        } else if (latency > 0) {
+            label = `Connected (${latency}ms)`;
+            stateClass = 'connected';
+        }
+        
+        connectionState = stateClass;
+        $('statusDot').className = `status-dot ${stateClass}`;
+        $('statusText').innerText = label;
+        $('cockpitConnection').innerText = label.toLowerCase();
+        $('cockpitConnection').className = `state-chip ${stateClass}`;
+    }
 }
 
 // ── chat bubbles ───────────────────────────────────────────────────────────────
@@ -512,14 +555,14 @@ function appendMessageBubble(role, text) {
         attachStreamingCursor(contentEl);
     }
     $('chatMessages').appendChild(msg);
-    $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+    _triggerScroll($('chatMessages'));
 }
 
 function appendChatToken(token) {
     const target = $('chatMessages').querySelector('.message.assistant:last-child .message-content');
     if (target) {
         routeThinkMarkup(token, target);
-        $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+        _triggerScroll($('chatMessages'));
     }
 }
 

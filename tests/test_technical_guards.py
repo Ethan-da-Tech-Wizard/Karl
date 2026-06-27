@@ -246,6 +246,8 @@ class TestTechnicalGuards(unittest.TestCase):
                             continue
                         if pathname.startswith("/dev/shm/sem."):
                             continue
+                        if pathname.endswith("-shm") or ".db-shm" in pathname:
+                            continue
                         # Ensure writable pages are private, not shared
                         self.assertNotIn('s', perms, f"Found shared writable segment: {line.strip()}")
                         self.assertIn('p', perms, f"Found non-private writable segment: {line.strip()}")

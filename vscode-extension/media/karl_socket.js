@@ -26,6 +26,35 @@ const BridgeRelay = (() => {
     };
 })();
 
+// ── token refresh state ───────────────────────────────────────────────────────
+
+let tokenIssuedAt = null;       // epoch-ms when the current session token was issued
+let tokenRefreshTimer = null;   // setInterval handle for the proactive refresh check
+
+const _TOKEN_LIFETIME_MS = 12 * 60 * 60 * 1000;    // 12 hours in ms
+const _REFRESH_BEFORE_MS = 10 * 60 * 1000;          // trigger 10 min before expiry
+
+function _startTokenRefreshTimer() {
+    _clearTokenRefreshTimer();
+    tokenRefreshTimer = setInterval(_checkTokenRefresh, 60_000); // check every minute
+}
+
+function _clearTokenRefreshTimer() {
+    if (tokenRefreshTimer) {
+        clearInterval(tokenRefreshTimer);
+        tokenRefreshTimer = null;
+    }
+}
+
+function _checkTokenRefresh() {
+    if (!tokenIssuedAt || !isConnected()) return;
+    const elapsed = Date.now() - tokenIssuedAt;
+    if (elapsed >= _TOKEN_LIFETIME_MS - _REFRESH_BEFORE_MS) {
+        const currentToken = (boot && boot.token) ? boot.token : '';
+        rpc(90, 'refresh_token', { token: currentToken });
+    }
+}
+
 // ── connection state ──────────────────────────────────────────────────────────
 
 function setConnectionState(state, label) {
@@ -39,6 +68,8 @@ function setConnectionState(state, label) {
 }
 
 function teardownSocket(isError = false) {
+    _clearTokenRefreshTimer();
+    tokenIssuedAt = null;
     if (runtimeStatusTimer) {
         clearInterval(runtimeStatusTimer);
         runtimeStatusTimer = null;
@@ -100,6 +131,10 @@ function disconnect() {
         clearInterval(reconnectTimer);
         reconnectTimer = null;
     }
+    if (bridgeMetaTimer) {
+        clearInterval(bridgeMetaTimer);
+        bridgeMetaTimer = null;
+    }
     if (window.KARL_USE_HOST_RELAY) {
         vscode.postMessage({ command: 'bridge_disconnect' });
         setConnectionState('offline', 'Offline');
@@ -130,6 +165,7 @@ function _directConnect() {
 
     socket.onopen = () => {
         lastConnectedAt = new Date();
+        tokenIssuedAt = Date.now();
         setConnectionState('connected', 'Connected');
         log('[Bridge] Connected.');
         if (reconnectTimer) {
@@ -138,6 +174,7 @@ function _directConnect() {
         }
         requestRuntimeStatus();
         runtimeStatusTimer = runtimeStatusTimer || setInterval(requestRuntimeStatus, 4000);
+        _startTokenRefreshTimer();
         persist();
     };
 
@@ -157,7 +194,21 @@ function _directConnect() {
         vscode.postMessage({ command: 'show_error', text: 'Karl bridge connection failed. Start Karl and verify the WebSocket port.' });
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+        if (event.code === 4002) {
+            log('[Bridge] Session lease expired (4002). Re-reading token and reconnecting.');
+            // Token was rotated server-side; clear our cached copy so the
+            // next connect() re-reads bridge_token.json from disk.
+            if (boot) boot.token = '';
+            handleDisconnect(false);
+            return;
+        }
+        if (event.code === 4003) {
+            log('[Bridge] Token revoked by server (4003). Manual reconnect required.');
+            manualDisconnect = true;
+            teardownSocket(true);
+            return;
+        }
         handleDisconnect(false);
     };
 }
@@ -264,6 +315,15 @@ function handleSocketMessage(data) {
 
 function handleRpcResult(id, result) {
     if (!result || typeof result !== 'object') result = {};
+    if (id === 90) {
+        // refresh_token response — update cached token and reset the lease timer
+        if (result.token) {
+            if (boot) boot.token = result.token;
+            tokenIssuedAt = Date.now();
+            log('[Bridge] Token refreshed. Next refresh in ~11h50m.');
+        }
+        return;
+    }
     if (id === 12) {
         renderLabDiff(labOutputA, labOutputB);
         labRunning = false;
@@ -271,7 +331,8 @@ function handleRpcResult(id, result) {
         log('[Prompt Lab] Diff complete.');
     } else if (id === 30) {
         lastHeartbeatAt = new Date();
-        renderRuntimeStatus(result);
+        const latency = pingStartTimestamp ? (Date.now() - pingStartTimestamp) : 0;
+        renderRuntimeStatus(result, latency);
         updateBridgeMeta(result);
     } else if (id === 31) {
         renderModels(result.models || []);
@@ -326,7 +387,10 @@ function handleRpcResult(id, result) {
 
 // ── polling ────────────────────────────────────────────────────────────────────
 
+let pingStartTimestamp = null;
+
 function requestRuntimeStatus() {
+    pingStartTimestamp = Date.now();
     rpc(30, 'get_runtime_status');
 }
 

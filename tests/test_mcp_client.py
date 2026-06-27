@@ -16,6 +16,8 @@ import pytest
 
 from app.engine.mcp_client import MCPClientManager
 
+pytestmark = [pytest.mark.integration]
+
 
 def _running_under_bwrap() -> bool:
     try:

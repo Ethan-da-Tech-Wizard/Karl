@@ -228,8 +228,14 @@ function bindEvents() {
     $('codexSearch').addEventListener('input', filterCodex);
     $('workspace').addEventListener('change', persist);
     $('bridgePort').addEventListener('change', () => {
-        $('cockpitPort').innerText = $('bridgePort').value;
+        const port = $('bridgePort').value;
+        $('cockpitPort').innerText = port;
         persist();
+        if (isConnected() || connectionState === 'connecting') {
+            log(`[Bridge] Port changed to ${port}. Reconnecting...`);
+            disconnect();
+            connect();
+        }
     });
     $('taskMode').addEventListener('change', persist);
     

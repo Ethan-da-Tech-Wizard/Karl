@@ -32,13 +32,27 @@ ACTIVE_MODEL_PATH = os.path.join("data", "active_model.json")
 MODEL_REGISTRY_PATH = os.path.join("data", "model_registry.json")
 UI_CONFIG_PATH = os.path.join("data", "ui_config.json")
 LEGACY_THEME_CONFIG_PATH = os.path.join("data", "theme_config.json")
+ENGINE_CONFIG_PATH = os.path.join("data", "engine_config.json")
 
 DEFAULT_MODEL_FILENAME = "deepseek-r1-1.5b.gguf"
 DEFAULT_N_CTX = 4096
 
+# Schema version written to ui_config.json on every save. Increment when adding
+# fields that require migration (e.g. renamed keys, changed defaults).
+CONFIG_VERSION: int = 1
+
 _registry_lock = threading.Lock()
 _registry_cache: list[dict] | None = None
 _registry_cache_mtime: float | None = None
+
+ENGINE_CONFIG_DEFAULTS: dict[str, Any] = {
+    "remote_engine_enabled": False,
+    "remote_engine_url": "",
+    "remote_engine_token": "",
+    "engine_mode": "local",
+    "remote_server_url": "",
+    "remote_auth_token": "",
+}
 
 
 # ── generic JSON I/O ─────────────────────────────────────────────────────────
@@ -112,16 +126,53 @@ DRAFT_MODEL_PATH = os.path.join("data", "draft_model.json")
 
 
 def get_active_draft_model() -> dict:
-    """Return {"filename": str | None} for the speculative draft model, or None if unconfigured."""
+    """Return persisted speculative draft-model settings."""
     data = read_json(DRAFT_MODEL_PATH, default={})
     if not isinstance(data, dict):
         data = {}
-    return {"filename": data.get("filename") or None}
+    filename = data.get("filename") or None
+    if filename is None:
+        filename = registry_draft_model_filename(get_active_model()["filename"])
+    return {
+        "enabled": bool(data.get("enabled", False)),
+        "filename": filename,
+    }
 
 
-def set_active_draft_model(filename: str | None) -> bool:
+def set_active_draft_model(filename: str | None, enabled: bool = False) -> bool:
     """Persist or clear the draft model. Pass None to disable speculative decoding."""
-    return write_json_atomic(DRAFT_MODEL_PATH, {"filename": filename})
+    return write_json_atomic(
+        DRAFT_MODEL_PATH,
+        {"enabled": bool(enabled), "filename": filename},
+    )
+
+
+def get_engine_config() -> dict[str, Any]:
+    """Return persisted engine/offload settings with defaults applied."""
+    data = read_json(ENGINE_CONFIG_PATH, default={})
+    if not isinstance(data, dict):
+        data = {}
+    cfg = dict(ENGINE_CONFIG_DEFAULTS)
+    cfg.update(data)
+    return cfg
+
+
+def set_remote_engine_config(
+    enabled: bool,
+    url: str | None = None,
+    token: str | None = None,
+) -> bool:
+    """Persist remote-engine toggle while preserving existing engine settings."""
+    cfg = get_engine_config()
+    cfg["remote_engine_enabled"] = bool(enabled)
+    cfg["engine_mode"] = "remote" if enabled else "local"
+    if url is not None:
+        cfg["remote_engine_url"] = url
+        cfg["remote_server_url"] = url
+    if token is not None:
+        cfg["remote_engine_token"] = token
+        cfg["remote_auth_token"] = token
+    return write_json_atomic(ENGINE_CONFIG_PATH, cfg)
 
 
 # ── model registry ───────────────────────────────────────────────────────────
@@ -168,6 +219,15 @@ def registry_n_ctx(filename: str) -> int:
     return DEFAULT_N_CTX
 
 
+def registry_draft_model_filename(filename: str) -> str | None:
+    """Look up a model registry companion draft GGUF filename."""
+    entry = registry_entry(filename)
+    if not entry:
+        return None
+    draft = entry.get("draft_model_filename")
+    return str(draft) if draft else None
+
+
 # ── adapter compatibility ────────────────────────────────────────────────────
 
 def is_adapter_compatible(model_filename: str, adapter_name: str) -> bool:
@@ -204,32 +264,144 @@ UI_CONFIG_DEFAULTS: dict[str, Any] = {
     "animation_intensity": 1.0,
     "glow_strength": 1.0,
     "theme_mode": "midnight",
+    "rag_threshold": 0.0,
+    "rag_top_k": 3,
     "log_rotation_size_mb": 10,
     "log_retention_days": 30,
+    "max_log_disk_size_mb": 1024,
     "single_session_auth": False,
     "enable_dynamic_scheduling": True,
     "thinking_temperature": 0.8,
     "answering_temperature": 0.1,
     "thermal_protection_enabled": True,
     "thermal_protection_threshold": 95,
+    "quantized_kv_cache": False,
+}
+
+# Per-field validation rules: (type_or_types, min_value_or_None, max_value_or_None).
+# Fields not listed here receive no range check (type check only via default type).
+_UI_FIELD_RULES: dict[str, tuple] = {
+    "rag_threshold":              (float,  0.0,  1.0),
+    "rag_top_k":                  (int,    1,    100),
+    "animation_intensity":        (float,  0.0,  2.0),
+    "glow_strength":              (float,  0.0,  2.0),
+    "log_rotation_size_mb":       (int,    1,    10240),
+    "log_retention_days":         (int,    1,    3650),
+    "max_log_disk_size_mb":       (int,    64,   102400),
+    "thinking_temperature":       (float,  0.0,  2.0),
+    "answering_temperature":      (float,  0.0,  2.0),
+    "thermal_protection_threshold": (int,  50,   105),
 }
 
 
-def get_ui_config() -> dict:
-    """Return persisted appearance settings merged over defaults.
+def _validate_field(key: str, raw_value: Any, default_value: Any) -> Any:
+    """Validate and coerce a single config field against its rule and default type.
 
-    Falls back to the legacy data/theme_config.json (old field names) when
-    data/ui_config.json does not exist.
+    - If the field is in ``_UI_FIELD_RULES``, checks exact type and clamped range.
+    - Otherwise checks that the value's type matches the default's type.
+    - ``custom_accent`` accepts ``None`` *or* ``str``; any other type falls back.
+    - Returns the coerced/accepted value, or ``default_value`` if validation fails.
+    """
+    # Special case: custom_accent may be None or str
+    if key == "custom_accent":
+        if raw_value is None or isinstance(raw_value, str):
+            return raw_value
+        return default_value
+
+    rule = _UI_FIELD_RULES.get(key)
+    if rule is not None:
+        expected_type, lo, hi = rule
+        # bool is a subclass of int — reject bool for int fields and vice-versa
+        if type(raw_value) is not expected_type:  # noqa: E721
+            # Allow int→float and float→int coercion for numeric fields only
+            if expected_type is float and isinstance(raw_value, int) and not isinstance(raw_value, bool):
+                raw_value = float(raw_value)
+            elif expected_type is int and isinstance(raw_value, float) and not isinstance(raw_value, bool):
+                raw_value = int(raw_value)
+            else:
+                return default_value
+        if lo is not None and raw_value < lo:
+            return default_value
+        if hi is not None and raw_value > hi:
+            return default_value
+        return raw_value
+
+    # Generic type check using default's type
+    expected = type(default_value)
+    if default_value is None:
+        return raw_value  # None-typed defaults accept anything
+    # Strict bool check — prevent int 1/0 masquerading as bool
+    if expected is bool:
+        if not isinstance(raw_value, bool):
+            return default_value
+        return raw_value
+    if not isinstance(raw_value, expected):
+        return default_value
+    return raw_value
+
+
+def _quarantine_config() -> None:
+    """Rename a corrupt ui_config.json to .corrupt_<timestamp> so the bad file
+    is preserved for debugging while Karl can start cleanly with defaults."""
+    import time
+    if not os.path.exists(UI_CONFIG_PATH):
+        return
+    try:
+        ts = int(time.time())
+        corrupt_path = UI_CONFIG_PATH + f".corrupt_{ts}"
+        os.rename(UI_CONFIG_PATH, corrupt_path)
+        logger.warning("Quarantined corrupt config to %s", corrupt_path)
+    except OSError as exc:
+        logger.warning("Failed to quarantine corrupt config: %s", exc)
+
+
+def get_ui_config() -> dict:
+    """Return persisted UI settings merged over defaults.
+
+    Behaviour:
+    - Missing file → return defaults (first-run condition, logged at DEBUG).
+    - Corrupt JSON or non-dict root → quarantine the file, write fresh defaults,
+      and return defaults.
+    - Unknown keys in the file → silently ignored (forward-compatibility).
+    - Known keys → type and range validated; out-of-range values fall back to
+      their hardcoded defaults rather than crashing.
+    - ``version`` key → stored but not validated against known fields; a future
+      version mismatch can trigger migration logic here.
+    - Falls back to legacy ``data/theme_config.json`` when ``ui_config.json``
+      does not exist (old installs).
     """
     merged = dict(UI_CONFIG_DEFAULTS)
 
-    config = read_json(UI_CONFIG_PATH, default=None)
-    if isinstance(config, dict):
-        for key in merged:
-            if key in config:
-                merged[key] = config[key]
+    raw = None
+    if os.path.exists(UI_CONFIG_PATH):
+        try:
+            with open(UI_CONFIG_PATH, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            logger.warning("Corrupt ui_config.json (%s) — quarantining and restoring defaults", exc)
+            _quarantine_config()
+            save_ui_config(merged)  # write fresh defaults
+            return merged
+
+        if not isinstance(raw, dict):
+            logger.warning(
+                "ui_config.json root is %s, not dict — quarantining", type(raw).__name__
+            )
+            _quarantine_config()
+            save_ui_config(merged)
+            return merged
+
+        # Read (and ignore unknown) version key — reserved for migration
+        version = raw.get("version")
+        if not isinstance(version, int):
+            version = 0  # treat missing or non-int as v0
+
+        for key, default in UI_CONFIG_DEFAULTS.items():
+            if key in raw:
+                merged[key] = _validate_field(key, raw[key], default)
         return merged
 
+    # No ui_config.json — try legacy theme_config.json
     legacy = read_json(LEGACY_THEME_CONFIG_PATH, default=None)
     if isinstance(legacy, dict):
         theme_preset = legacy.get("theme_name", merged["theme_preset"])
@@ -242,8 +414,13 @@ def get_ui_config() -> dict:
 
 
 def save_ui_config(config: dict) -> bool:
-    """Persist appearance settings (only known keys). Returns True on success."""
-    payload = {key: config.get(key, default) for key, default in UI_CONFIG_DEFAULTS.items()}
+    """Persist appearance settings (only known keys). Returns True on success.
+
+    Always writes the ``version`` key at ``CONFIG_VERSION`` so load-time
+    migration logic can detect schema age.
+    """
+    payload: dict[str, Any] = {key: config.get(key, default) for key, default in UI_CONFIG_DEFAULTS.items()}
+    payload["version"] = CONFIG_VERSION
     return write_json_atomic(UI_CONFIG_PATH, payload, indent=2)
 
 
@@ -252,6 +429,7 @@ MCP_CONFIG_DEFAULT: dict = {"mcpServers": {}}
 
 
 def get_mcp_config() -> dict:
+    """Return MCP server configuration, falling back to an empty server map."""
     data = read_json(MCP_CONFIG_PATH, default=MCP_CONFIG_DEFAULT)
     if not isinstance(data, dict) or "mcpServers" not in data:
         return dict(MCP_CONFIG_DEFAULT)
@@ -259,6 +437,7 @@ def get_mcp_config() -> dict:
 
 
 def add_mcp_server(name: str, command: str, args: list[str], env: dict | None = None) -> bool:
+    """Persist or replace one MCP server entry. Returns True on write success."""
     cfg = get_mcp_config()
     cfg["mcpServers"][name] = {"command": command, "args": args or []}
     if env:
@@ -267,6 +446,7 @@ def add_mcp_server(name: str, command: str, args: list[str], env: dict | None = 
 
 
 def remove_mcp_server(name: str) -> bool:
+    """Remove an MCP server entry if present. Returns True on write success."""
     cfg = get_mcp_config()
     cfg["mcpServers"].pop(name, None)
     return write_json_atomic(MCP_CONFIG_PATH, cfg, indent=2)

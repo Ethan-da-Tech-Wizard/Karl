@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 import tests.qt_test_helper  # noqa: F401
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,6 +38,8 @@ class TestUIImprovements(unittest.TestCase):
         warm_colors = get_theme_colors("Karl Obsidian", bg_tone="Warm Sepia")
         self.assertNotEqual(warm_colors["bg_deep"], base_colors["bg_deep"])
 
+    @pytest.mark.integration
+    @pytest.mark.model
     def test_codex_library_loading_and_search(self):
         from tests.conftest import embedding_model_available
         if not embedding_model_available():
@@ -180,6 +183,8 @@ class TestUIImprovements(unittest.TestCase):
         self.assertIsNotNone(workspace._cached_models_list)
         self.assertIsNotNone(workspace._cached_adapters_list)
 
+    @pytest.mark.integration
+    @pytest.mark.model
     def test_codex_rag_features(self):
         from tests.conftest import embedding_model_available
         if not embedding_model_available():

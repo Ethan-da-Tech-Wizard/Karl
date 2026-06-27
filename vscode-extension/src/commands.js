@@ -1,6 +1,5 @@
 // @ts-check
 const vscode = require('vscode');
-const fs = require('fs');
 const path = require('path');
 const { packageContext } = require('./fileOps');
 const { execGit } = require('./gitOps');
@@ -302,13 +301,13 @@ async function buildWorkflowContext(workflow, sidebarProvider, customUri = null)
         }
         filepath = editor.document.uri.fsPath;
     } else if (workflow.requiresFile) {
-        const pathFromUri = customUri && customUri.fsPath;
-        if (pathFromUri) {
-            filepath = pathFromUri;
+        if (customUri) {
+            filepath = customUri.fsPath;
             try {
-                const stat = await fs.promises.stat(filepath);
-                if (stat.isFile()) {
-                    code = await fs.promises.readFile(filepath, 'utf8');
+                const stat = await vscode.workspace.fs.stat(customUri);
+                if (stat.type === vscode.FileType.File) {
+                    const bytes = await vscode.workspace.fs.readFile(customUri);
+                    code = new TextDecoder('utf-8').decode(bytes);
                 }
             } catch (err) {
                 vscode.window.showErrorMessage(`Failed to read file: ${err.message}`);

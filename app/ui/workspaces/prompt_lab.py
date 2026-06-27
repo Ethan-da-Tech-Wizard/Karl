@@ -760,7 +760,10 @@ class _ModelCompareThread(QThread):
 # ── workspace ─────────────────────────────────────────────────────────────────
 
 class PromptLabWorkspace(QWidget):
+    """Side-by-side prompt lab with saved pairs, diffing, and token visualization."""
+
     def __init__(self, state, parent=None):
+        """Initialize Prompt Lab state, outputs, and prompt-pair storage."""
         super().__init__(parent)
         self.state = state
         self.setObjectName("workspace-root")
@@ -772,6 +775,7 @@ class PromptLabWorkspace(QWidget):
         self._build_ui()
 
     def _build_ui(self):
+        """Build saved-pair navigation and A/B playground tabs."""
         root = QHBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
@@ -1503,4 +1507,3 @@ class PromptLabWorkspace(QWidget):
         self._cmp_run_btn.setEnabled(True)
         self._cmp_status.setText(f"Error: {msg}")
         logger.error("[MultiModelComparison] %s", msg)
-

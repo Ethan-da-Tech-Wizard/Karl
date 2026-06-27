@@ -68,6 +68,9 @@ function hydrate() {
     } else {
         switchWorkspace('cockpit');
     }
+    if (!bridgeMetaTimer) {
+        bridgeMetaTimer = setInterval(updateBridgeMeta, 1000);
+    }
 }
 
 function persist() {
@@ -175,6 +178,18 @@ function switchWorkspace(wsId) {
     }
     if (wsId === 'lab') loadPromptPairs();
     
+    // Focus Management
+    if (wsId === 'chat') {
+        const chatInput = $('chatInput');
+        if (chatInput) chatInput.focus();
+    } else if (wsId === 'swarm') {
+        const objective = $('objective');
+        if (objective) objective.focus();
+    } else if (wsId === 'knowledge') {
+        const kbQuery = $('kbQuery');
+        if (kbQuery) kbQuery.focus();
+    }
+
     // Request an update to sync cockpit variables
     vscode.postMessage({ command: 'get_cockpit_state' });
     persist();

@@ -1208,6 +1208,7 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
 """
 
 def stylesheet(accent: str = ACCENT_DEFAULT, mode: str = "midnight") -> str:
+    """Backward-compatible helper returning QSS for the default theme."""
     class DummyState:
         theme_preset = "Karl Obsidian Core"
         custom_accent = accent

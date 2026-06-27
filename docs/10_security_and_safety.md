@@ -12,9 +12,9 @@ Karl is designed as a **privacy-first, offline-only** instrument. However, becau
 - **Offline RAG:** Your Knowledge Base (FAISS index) and traces are stored locally in `data/`.
 
 ### The Bridge (WebSocket)
-Karl hosts a WebSocket server on `localhost:8080` (configurable). This is the "control surface" for the VS Code extension.
-- **Risk:** Any local application or a malicious website (via Cross-Site WebSocket Hijacking) could theoretically connect to this port if Karl is running and no authentication is present.
-- **Current Guardrails:** Karl currently restricts connections to `localhost`. We are moving toward a token-based authentication system for the bridge.
+Karl hosts a WSS server on `localhost:8080` (configurable). This is the "control surface" for the VS Code extension.
+- **Risk:** Any local application could attempt to connect to this port if Karl is running.
+- **Current Guardrails:** Karl restricts binding to localhost by default, requires a token in the WebSocket URL, stores tokens in `data/bridge_token.json`, and enforces per-method scopes for sensitive JSON-RPC calls.
 
 ### The Agentic Swarm
 The Swarm Orchestrator can plan, write, and test code.
@@ -33,7 +33,7 @@ Only run Karl (and especially the Agent Swarm) against directories you trust. Av
 Before clicking "Accept" on a swarm-generated change, review the code. Agents are powerful but can be hallucinated into creating security vulnerabilities or bugs.
 
 ### Sensitive Data in Knowledge Base
-Karl's Knowledge Base stores extracted text in a local `metadata.json` and a FAISS index. These files are **unencrypted**. If you ingest sensitive credentials or private documents, ensure your machine's filesystem is encrypted (e.g., LUKS or FileVault).
+Karl's Knowledge Base stores extracted text in `data/vector_db/meta.db` (SQLite) and a FAISS index (`data/vector_db/index.faiss`). These files are **unencrypted**. If you ingest sensitive credentials or private documents, ensure your machine's filesystem is encrypted (e.g., LUKS on Linux).
 
 ### Bridge Management
 If you are not using the VS Code extension, you can disable the WebSocket bridge in the **System Config** workspace to reduce your local attack surface.
@@ -53,13 +53,36 @@ If you use Karl to generate code or content for public projects, follow the lice
 
 ---
 
-## 4. Technical Hardening Checklist
+## 4. Trace Log Encryption
+
+Rotated trace logs are encrypted at rest via `app/utils/trace_logger.py`:
+
+- **Key derivation:** PBKDF2-HMAC-SHA256, 100 000 iterations.
+  Salt = hardware motherboard UUID (read once at startup).
+- **Cipher:** Fernet (AES-128-CBC + HMAC-SHA256), from the `cryptography` package.
+- **Key zeroing:** Key bytes are wiped from RAM via `_zero_bytes()` on a mutable
+  `bytearray` immediately after each encrypt/decrypt operation.
+- **Memory locking:** `mlockall(MCL_CURRENT | MCL_FUTURE)` prevents key material
+  from being swapped to disk; `munlockall()` releases the lock after the operation.
+- **Archive location:** `data/logs/archive/<original_name>.jsonl.enc`
+  (gzip-compressed before encryption).
+
+> **Decryption salt note:** `decrypt_in_memory()` derives its key using a
+> different salt (system RAM + storage + CPU flags + OS name) from the one used
+> during encryption (motherboard UUID).  This is a known inconsistency — decryption
+> will fail unless both sides use the same salt.  Do not rely on `decrypt_in_memory()`
+> for production use until the salt derivation paths are unified.
+
+---
+
+## 5. Technical Hardening Checklist
 
 - [x] **Offline Enforcement:** Set `HF_HUB_OFFLINE=1` to prevent unwanted network calls.
 - [x] **Visible Diffs:** Always show changes before writing to disk.
 - [x] **Docker Sandboxing:** (In Progress) Run unit tests and verifiers inside isolated containers.
-- [ ] **Bridge Authentication:** Implement a shared secret/token for WebSocket connections.
+- [x] **Bridge Authentication:** Require a token and scoped permissions for WebSocket connections.
 - [x] **Path Sanitization:** Prevent directory traversal in model and file loading.
+- [x] **Trace Log Encryption:** Rotated logs encrypted with PBKDF2+Fernet; key zeroed after use.
 
 ---
 

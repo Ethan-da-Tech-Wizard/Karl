@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QTextBrowser, QTextEdit, QComboBox,
     QLabel, QFrame, QCheckBox,
-    QDoubleSpinBox, QSpinBox, QListWidget, QListWidgetItem,
+    QDoubleSpinBox, QSpinBox, QListWidget,
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
     QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox, QColorDialog,
     QApplication, QProgressBar, QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
@@ -28,9 +28,9 @@ from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QRect, QPropertyAnimati
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
 
 
-from app.engine.llm_thread import LLMThread
-from app.engine.agentic_thread import AgenticThread
+from app.engine.inference_service import InferenceService
 from app.engine.image_analysis_thread import ImageAnalysisThread
+from app.engine.model_loader import CircuitBreakerOpenException
 from app.engine import hot_reload
 from core.workflows import list_workflows
 from app.utils.session_tree import SessionTree
@@ -41,6 +41,7 @@ from app.ui.widgets.toast import ToastOverlay
 
 from app.ui.workspaces.workbench.chat_view import ChatView
 from app.ui.workspaces.workbench.profiles import AGENT_PROFILES
+from app.utils.correlation_logger import new_correlation_id, set_correlation_id
 
 
 logger = logging.getLogger("karl.workbench")
@@ -53,10 +54,10 @@ def _hline() -> QFrame:
 
 
 def _label(text: str, obj: str = "") -> QLabel:
-    l = QLabel(text)
+    lbl = QLabel(text)
     if obj:
-        l.setObjectName(obj)
-    return l
+        lbl.setObjectName(obj)
+    return lbl
 
 
 # ── chat display ─────────────────────────────────────────────────────────────
@@ -65,6 +66,8 @@ def _label(text: str, obj: str = "") -> QLabel:
 # ── workbench workspace ───────────────────────────────────────────────────────
 
 class WorkbenchWorkspace(QMainWindow):
+    """Primary chat workspace with dockable sessions, reasoning, and RAG HUDs."""
+
     status_changed = pyqtSignal(str, bool)   # (text, active)
     model_changed = pyqtSignal(str)          # (model_name)
     adapter_changed = pyqtSignal(str)        # (adapter_name)
@@ -72,13 +75,15 @@ class WorkbenchWorkspace(QMainWindow):
     context_stats = pyqtSignal(int, int, int, int) # (total, hist, rag, budget)
 
     def __init__(self, state, parent=None):
+        """Initialize Workbench state, session tree, generation params, and docks."""
         super().__init__(parent)
         self.state = state
         self.setObjectName("workspace-root")
 
+        self._inference_service = InferenceService(state)
         self.chat_history = SessionTree()
-        self._thread: LLMThread | AgenticThread | None = None
-        self._active_threads = set()
+        self._thread = None
+        self._active_threads: set = set()
         self._last_response = ""
         self._last_thought = ""
         self._hyperparams = {
@@ -145,6 +150,7 @@ class WorkbenchWorkspace(QMainWindow):
     # ── build ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
+        """Build chat center panel and dockable sessions/reasoning/RAG/context HUDs."""
         # Set central widget
         self._chat_panel = self._build_chat_panel()
         self.setCentralWidget(self._chat_panel)
@@ -391,14 +397,20 @@ class WorkbenchWorkspace(QMainWindow):
 
         self._params_toggle = IconBtn(GearIcon, self.state, tooltip="Toggle Settings drawer")
         self._params_toggle.clicked.connect(self._toggle_settings_overlay)
+        self._params_toggle.setAccessibleName("Toggle Settings Drawer")
+        self._params_toggle.setAccessibleDescription("Slide open or collapse the settings and feedback panel")
         ctrl_layout.addWidget(self._params_toggle)
 
         self._sessions_toggle = IconBtn(HamburgerIcon, self.state, tooltip="Toggle Sessions panel")
         self._sessions_toggle.clicked.connect(self._toggle_sessions)
+        self._sessions_toggle.setAccessibleName("Toggle Sessions Panel")
+        self._sessions_toggle.setAccessibleDescription("Slide open or collapse the chat session history log")
         ctrl_layout.addWidget(self._sessions_toggle)
 
         self._reasoning_toggle = IconBtn(BrainIcon, self.state, tooltip="Toggle Reasoning panel")
         self._reasoning_toggle.clicked.connect(self._toggle_reasoning)
+        self._reasoning_toggle.setAccessibleName("Toggle Reasoning Panel")
+        self._reasoning_toggle.setAccessibleDescription("Slide open or collapse the introspection thoughts panel")
         ctrl_layout.addWidget(self._reasoning_toggle)
 
         ctrl_layout.addStretch()
@@ -413,12 +425,16 @@ class WorkbenchWorkspace(QMainWindow):
         self._stop_btn.setEnabled(False)
         self._stop_btn.setToolTip("Interrupt the active generation thread")
         self._stop_btn.clicked.connect(self._stop)
+        self._stop_btn.setAccessibleName("Stop Generation")
+        self._stop_btn.setAccessibleDescription("Interrupt the current LLM generation thread immediately")
         ctrl_layout.addWidget(self._stop_btn)
 
         self._send_btn = QPushButton("send ↵")
         self._send_btn.setObjectName("btn-primary")
         self._send_btn.setToolTip("Send prompt to Karl (Ctrl+Enter)")
         self._send_btn.clicked.connect(self._send)
+        self._send_btn.setAccessibleName("Send Prompt")
+        self._send_btn.setAccessibleDescription("Submit the text in the prompt input field to Karl")
         ctrl_layout.addWidget(self._send_btn)
 
         ic_layout.addWidget(ctrl)
@@ -577,6 +593,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._thumb_btn.setEnabled(False)
         self._thumb_btn.setToolTip("Curate this response as a positive training example")
         self._thumb_btn.clicked.connect(self._on_thumb_up)
+        self._thumb_btn.setAccessibleName("Rate Good")
+        self._thumb_btn.setAccessibleDescription("Curate this generation as a correct example for fine-tuning")
         fbl.addWidget(self._thumb_btn)
         
         self._thumb_down_btn = QPushButton("✗ Bad")
@@ -584,6 +602,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._thumb_down_btn.setEnabled(False)
         self._thumb_down_btn.setToolTip("Flag this response as an incorrect training example")
         self._thumb_down_btn.clicked.connect(self._on_thumb_down)
+        self._thumb_down_btn.setAccessibleName("Rate Bad")
+        self._thumb_down_btn.setAccessibleDescription("Flag this generation as incorrect to build a rejected pair")
         fbl.addWidget(self._thumb_down_btn)
         
         self._correct_btn = QPushButton("✎ Correct")
@@ -591,11 +611,15 @@ class WorkbenchWorkspace(QMainWindow):
         self._correct_btn.setEnabled(False)
         self._correct_btn.setToolTip("Manually edit response to create corrected pair")
         self._correct_btn.clicked.connect(self._on_correct)
+        self._correct_btn.setAccessibleName("Correct Response")
+        self._correct_btn.setAccessibleDescription("Open the editor to type a corrected version of the generation")
         fbl.addWidget(self._correct_btn)
         
         self._new_session_btn = QPushButton("+ New Session")
         self._new_session_btn.setObjectName("btn-ghost")
         self._new_session_btn.clicked.connect(self._new_session)
+        self._new_session_btn.setAccessibleName("Start New Session")
+        self._new_session_btn.setAccessibleDescription("Clear history and begin a fresh conversation session")
         fbl.addWidget(self._new_session_btn)
         
         layout.addWidget(fb_grp)
@@ -1163,71 +1187,74 @@ class WorkbenchWorkspace(QMainWindow):
         self._reload_hide_timer.start(3000)
 
     def _start_single(self, chunks: list[str]):
+        set_correlation_id(f"chat:{new_correlation_id()}")
         self._chat_view.begin_stream()
         self._set_busy(True)
         self._reasoning_stats_lbl.setText("")
         history = self._pending_generation_history or list(self.chat_history)
         self._pending_generation_history = None
-        t = LLMThread(
-            system_prompt=self._active_system_prompt(),
-            chat_history=history,
-            hyperparams=self._hyperparams,
-            retrieved_chunks=chunks,
-            workflow=self._current_workflow(),
-            template=self._current_template(),
-            adapter_name=self.state.adapter_name,
-        )
-        t.new_thought_token.connect(self._on_thought)
-        t.new_chat_token.connect(self._on_chat)
-        t.live_stats.connect(self._on_live_stats)
+
+        try:
+            t = self._inference_service.run_generation(
+                prompt="",
+                system_prompt=self._active_system_prompt(),
+                chat_history=history,
+                hyperparams=self._hyperparams,
+                on_thought_token_cb=self._on_thought,
+                on_token_cb=self._on_chat,
+                on_live_stats_cb=self._on_live_stats,
+                on_error_cb=self._on_error,
+                retrieved_chunks=chunks,
+                agentic=False,
+                workflow=self._current_workflow(),
+                template=self._current_template(),
+                adapter_name=self.state.adapter_name,
+            )
+        except CircuitBreakerOpenException as exc:
+            self._on_error(str(exc))
+            return
+        # UI-specific signals not covered by the standard callback set
         t.generation_finished.connect(self._on_done)
-        t.error_occurred.connect(self._on_error)
         t.reload_notice.connect(self._show_reload_notice)
         t.context_stats.connect(self._on_context_stats)
         t.rag_context_used.connect(self._on_rag_context_used)
         t.status_update.connect(self.status_changed)
-
-        # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
-
-        self._active_threads.add(t)
-        t.finished.connect(lambda: self._active_threads.discard(t))
-        t.finished.connect(t.deleteLater)
-        
         self._thread = t
-        t.start()
 
     def _start_agentic(self, chunks: list[str]):
+        set_correlation_id(f"agentic:{new_correlation_id()}")
         self._set_busy(True)
         self._reasoning_stats_lbl.setText("")
         self._chat_view.append_system_note("— agentic loop started —")
         history = self._pending_generation_history or list(self.chat_history)
         self._pending_generation_history = None
-        t = AgenticThread(
-            system_prompt=self._active_system_prompt(),
-            initial_history=history,
-            hyperparams=self._hyperparams,
-            retrieved_chunks=chunks,
-            workflow=self._current_workflow(),
-            template=self._current_template(),
-            adapter_name=self.state.adapter_name,
-        )
-        t.new_thought_token.connect(self._on_thought)
-        t.new_chat_token.connect(self._on_chat)
-        t.live_stats.connect(self._on_live_stats)
+
+        try:
+            t = self._inference_service.run_generation(
+                prompt="",
+                system_prompt=self._active_system_prompt(),
+                chat_history=history,
+                hyperparams=self._hyperparams,
+                on_thought_token_cb=self._on_thought,
+                on_token_cb=self._on_chat,
+                on_live_stats_cb=self._on_live_stats,
+                on_error_cb=self._on_error,
+                retrieved_chunks=chunks,
+                agentic=True,
+                workflow=self._current_workflow(),
+                template=self._current_template(),
+                adapter_name=self.state.adapter_name,
+            )
+        except CircuitBreakerOpenException as exc:
+            self._on_error(str(exc))
+            return
+        # UI-specific signals not covered by the standard callback set
         t.iteration_finished.connect(self._on_iteration)
         t.loop_finished.connect(self._on_loop_done)
-        t.error_occurred.connect(self._on_error)
         t.reload_notice.connect(self._show_reload_notice)
         t.context_stats.connect(self._on_context_stats)
         t.status_update.connect(self.status_changed)
-        
-        # Keep thread alive in active set to prevent early garbage collection (fixes core dumps)
-        self._active_threads.add(t)
-        t.finished.connect(lambda: self._active_threads.discard(t))
-        t.finished.connect(t.deleteLater)
-        
         self._thread = t
-        t.start()
 
     def _stop(self):
         if self._thread:
