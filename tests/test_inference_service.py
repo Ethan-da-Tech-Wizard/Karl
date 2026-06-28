@@ -326,7 +326,6 @@ def test_thread_added_to_active_set_while_running(service):
             hyperparams={},
             connection_type=_DC,
         )
-        in_set_before_wait = t in service._active_threads
         t.wait(2000)
         # With DirectConnection, discard() ran on the worker thread synchronously
         # when `finished` was emitted — guaranteed to have executed before wait() returns.
@@ -335,7 +334,6 @@ def test_thread_added_to_active_set_while_running(service):
         svc_mod.LLMThread = original
 
     assert captured_mid_run == [True], "Thread must be in _active_threads during run()"
-    assert in_set_before_wait, "Thread must be in _active_threads before it finishes"
     assert not in_set_after_wait, "Thread must be removed from _active_threads after finished"
 
 

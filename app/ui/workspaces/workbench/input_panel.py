@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QComboBox,
+    QWidget, QFrame, QVBoxLayout, QHBoxLayout, QTextEdit, QComboBox,
     QCheckBox, QPushButton, QLabel, QProgressBar,
 )
 from PyQt6.QtCore import Qt
@@ -21,14 +21,16 @@ def build_input_area(w) -> QWidget:
     _params_toggle, _sessions_toggle, _reasoning_toggle, _model_pill,
     _stop_btn, _send_btn.
     """
-    input_container = QWidget()
-    input_container.setFixedHeight(140)
+    input_container = QFrame()
+    input_container.setObjectName("chat-composer")
+    input_container.setFixedHeight(124)
     ic_layout = QVBoxLayout(input_container)
-    ic_layout.setContentsMargins(8, 6, 8, 6)
-    ic_layout.setSpacing(6)
+    ic_layout.setContentsMargins(10, 8, 10, 8)
+    ic_layout.setSpacing(5)
 
     # ── token budget HUD ──────────────────────────────────────────────────────
     w._token_row = QWidget()
+    w._token_row.setObjectName("token-row")
     token_layout = QHBoxLayout(w._token_row)
     token_layout.setContentsMargins(0, 0, 0, 0)
     token_layout.setSpacing(8)
@@ -56,7 +58,7 @@ def build_input_area(w) -> QWidget:
     # ── prompt input ──────────────────────────────────────────────────────────
     w._input = QTextEdit()
     w._input.setPlaceholderText("Ask Karl...")
-    w._input.setFixedHeight(72)
+    w._input.setFixedHeight(58)
     w._input.installEventFilter(w)
     w._input.textChanged.connect(w._update_token_budget)
     ic_layout.addWidget(w._input)
@@ -68,7 +70,7 @@ def build_input_area(w) -> QWidget:
     ctrl_layout.setSpacing(8)
 
     w._workflow_combo = QComboBox()
-    w._workflow_combo.setFixedWidth(160)
+    w._workflow_combo.setFixedWidth(150)
     w._workflow_combo.setToolTip("Active prompt generation workflow template")
     for name, label in list_workflows():
         w._workflow_combo.addItem(label, name)
@@ -78,7 +80,7 @@ def build_input_area(w) -> QWidget:
     ctrl_layout.addWidget(w._workflow_combo)
 
     w._agent_combo = QComboBox()
-    w._agent_combo.setFixedWidth(135)
+    w._agent_combo.setFixedWidth(120)
     w._agent_combo.setToolTip("Select Karl's active workbench agent profile")
     for key, data in AGENT_PROFILES.items():
         w._agent_combo.addItem(data["label"], key)
@@ -111,13 +113,15 @@ def build_input_area(w) -> QWidget:
 
     ctrl_layout.addStretch()
 
-    w._model_pill = QLabel("● no model")
+    w._model_pill = QLabel("")
     w._model_pill.setObjectName("model-pill")
+    w._model_pill.setFixedWidth(0)
     w._model_pill.setToolTip("Active base model and adapter overlay")
     ctrl_layout.addWidget(w._model_pill)
 
     w._stop_btn = QPushButton("■ stop")
     w._stop_btn.setObjectName("btn-danger")
+    w._stop_btn.setFixedWidth(76)
     w._stop_btn.setEnabled(False)
     w._stop_btn.setToolTip("Interrupt the active generation thread")
     w._stop_btn.clicked.connect(w._stop)
@@ -125,6 +129,7 @@ def build_input_area(w) -> QWidget:
 
     w._send_btn = QPushButton("send ↵")
     w._send_btn.setObjectName("btn-primary")
+    w._send_btn.setFixedWidth(86)
     w._send_btn.setToolTip("Send prompt to Karl (Ctrl+Enter)")
     w._send_btn.clicked.connect(w._send)
     ctrl_layout.addWidget(w._send_btn)

@@ -1142,6 +1142,9 @@ class WebSocketServerManager:
             future = asyncio.run_coroutine_threadsafe(self._stop_server(), self.loop)
             try:
                 future.result(timeout=5.0)
+            except TimeoutError:
+                future.cancel()
+                logger.debug("Timed out waiting for WebSocket server cleanup; cancelling close task.")
             except Exception as e:
                 logger.warning(f"Error closing server connection: {e}")
 

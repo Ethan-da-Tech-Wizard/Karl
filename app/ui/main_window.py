@@ -58,7 +58,7 @@ class MainWindow(QMainWindow):
         """Create AppState, build the workspace stack, and defer heavy startup work."""
         super().__init__()
         self.setWindowTitle("Karl")
-        self.setMinimumSize(1200, 760)
+        self.setMinimumSize(760, 560)
 
         self._state = AppState()
         self._build_ui()
@@ -197,6 +197,11 @@ class MainWindow(QMainWindow):
         wrapper_layout.addWidget(self._status_bar)
 
         self.setCentralWidget(wrapper)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_sidebar"):
+            self._sidebar.set_compact(event.size().width() < 850)
 
     def _connect_signals(self):
         self._sidebar.workspace_changed.connect(self._stack.setCurrentIndex)
@@ -458,7 +463,7 @@ class MainWindow(QMainWindow):
     def _init_websocket_server(self):
         from app.engine.websocket_server import WebSocketServerManager
         try:
-            self._ws_server = WebSocketServerManager.get_instance(port=8080, state=self.state)
+            self._ws_server = WebSocketServerManager.get_instance(port=8080, state=self._state)
         except Exception as e:
             logger.warning(f"Failed to start WebSocket server on boot: {e}")
 

@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
     QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox, QColorDialog,
     QApplication, QProgressBar, QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
+    QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QRect, QPropertyAnimation
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
@@ -115,6 +116,7 @@ class WorkbenchWorkspace(QMainWindow):
 
         self.setProperty("modelState", "idle")
         self._settings_overlay = None
+        self._responsive_mode: str | None = None
 
         self._build_ui()
 
@@ -141,6 +143,7 @@ class WorkbenchWorkspace(QMainWindow):
         self._refresh_model_combo()
         self._update_expert_strip()
         self._update_token_budget()
+        QTimer.singleShot(0, lambda: self._apply_responsive_layout(self.width()))
 
         # Hot-reload global signals
         hot_reload.signals.reload_success.connect(self._on_reload_success)
@@ -281,11 +284,13 @@ class WorkbenchWorkspace(QMainWindow):
         # HUD Toolbar placeholder (populated at the end of _build_ui)
         self._hud_toolbar = QFrame()
         self._hud_toolbar.setObjectName("hud-toolbar")
+        self._hud_toolbar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._hud_toolbar)
 
         # chat display
         self._chat_view = ChatView(w)
         self._chat_view.anchorClicked.connect(self._on_chat_link_clicked)
+        self._chat_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self._chat_view, 1)
 
         # Hot-reload notice banner (hidden until a generation triggers a reload)
@@ -305,10 +310,11 @@ class WorkbenchWorkspace(QMainWindow):
         self._context_bar = QProgressBar()
         self._context_bar.setRange(0, 100)
         self._context_bar.setValue(0)
-        self._context_bar.setFixedHeight(14)
+        self._context_bar.setFixedHeight(10)
         self._context_bar.setTextVisible(True)
         self._context_bar.setFormat("Connect a model to see context usage")
         self._context_bar.setStyleSheet("QProgressBar { font-size: 7.5pt; } QProgressBar::chunk { background: #2DD4A0; }")
+        self._context_bar.setVisible(False)
         layout.addWidget(self._context_bar)
 
         # RAG attribution panel — shown after each generation that used RAG
@@ -319,14 +325,18 @@ class WorkbenchWorkspace(QMainWindow):
         layout.addWidget(self._rag_sources_view)
 
         # input area
-        input_container = QWidget()
-        input_container.setFixedHeight(140)
+        input_container = QFrame()
+        input_container.setObjectName("chat-composer")
+        input_container.setFixedHeight(124)
+        input_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._input_container = input_container
         ic_layout = QVBoxLayout(input_container)
-        ic_layout.setContentsMargins(8, 6, 8, 6)
-        ic_layout.setSpacing(6)
+        ic_layout.setContentsMargins(10, 8, 10, 8)
+        ic_layout.setSpacing(5)
 
         # Token Budget HUD
         self._token_row = QWidget()
+        self._token_row.setObjectName("token-row")
         token_layout = QHBoxLayout(self._token_row)
         token_layout.setContentsMargins(0, 0, 0, 0)
         token_layout.setSpacing(8)
@@ -353,7 +363,7 @@ class WorkbenchWorkspace(QMainWindow):
 
         self._input = QTextEdit()
         self._input.setPlaceholderText("Ask Karl...")
-        self._input.setFixedHeight(72)
+        self._input.setFixedHeight(58)
         self._input.installEventFilter(self)
         self._input.textChanged.connect(self._update_token_budget)
         ic_layout.addWidget(self._input)
@@ -365,7 +375,8 @@ class WorkbenchWorkspace(QMainWindow):
         ctrl_layout.setSpacing(8)
 
         self._workflow_combo = QComboBox()
-        self._workflow_combo.setFixedWidth(160)
+        self._workflow_combo.setMinimumWidth(116)
+        self._workflow_combo.setMaximumWidth(150)
         self._workflow_combo.setToolTip("Active prompt generation workflow template")
         for name, label in list_workflows():
             self._workflow_combo.addItem(label, name)
@@ -376,7 +387,8 @@ class WorkbenchWorkspace(QMainWindow):
         ctrl_layout.addWidget(self._workflow_combo)
 
         self._agent_combo = QComboBox()
-        self._agent_combo.setFixedWidth(135)
+        self._agent_combo.setMinimumWidth(96)
+        self._agent_combo.setMaximumWidth(120)
         self._agent_combo.setToolTip("Select Karl's active workbench agent profile")
         for key, data in AGENT_PROFILES.items():
             self._agent_combo.addItem(data["label"], key)
@@ -415,13 +427,15 @@ class WorkbenchWorkspace(QMainWindow):
 
         ctrl_layout.addStretch()
 
-        self._model_pill = QLabel("● no model")
+        self._model_pill = QLabel("")
         self._model_pill.setObjectName("model-pill")
+        self._model_pill.setFixedWidth(0)
         self._model_pill.setToolTip("Active base model and adapter overlay")
         ctrl_layout.addWidget(self._model_pill)
 
         self._stop_btn = QPushButton("■ stop")
         self._stop_btn.setObjectName("btn-danger")
+        self._stop_btn.setFixedWidth(76)
         self._stop_btn.setEnabled(False)
         self._stop_btn.setToolTip("Interrupt the active generation thread")
         self._stop_btn.clicked.connect(self._stop)
@@ -431,6 +445,7 @@ class WorkbenchWorkspace(QMainWindow):
 
         self._send_btn = QPushButton("send ↵")
         self._send_btn.setObjectName("btn-primary")
+        self._send_btn.setFixedWidth(86)
         self._send_btn.setToolTip("Send prompt to Karl (Ctrl+Enter)")
         self._send_btn.clicked.connect(self._send)
         self._send_btn.setAccessibleName("Send Prompt")
@@ -447,8 +462,8 @@ class WorkbenchWorkspace(QMainWindow):
         header = QFrame()
         header.setObjectName("panel")
         root = QVBoxLayout(header)
-        root.setContentsMargins(10, 8, 10, 8)
-        root.setSpacing(8)
+        root.setContentsMargins(10, 6, 10, 6)
+        root.setSpacing(6)
 
         model_row = QWidget()
         ml = QHBoxLayout(model_row)
@@ -460,24 +475,31 @@ class WorkbenchWorkspace(QMainWindow):
         ml.addWidget(model_title)
 
         self._header_model_combo = QComboBox()
-        self._header_model_combo.setMinimumWidth(280)
+        self._header_model_combo.setMinimumWidth(240)
+        self._header_model_combo.setMaximumWidth(520)
+        self._header_model_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._header_model_combo.setToolTip("Installed GGUF models from data/models/. Select a row, then click Load Selected Model.")
         self._header_model_combo.currentIndexChanged.connect(self._on_header_model_staged)
         ml.addWidget(self._header_model_combo, 2)
 
-        self._header_load_model_btn = QPushButton("Load Selected Model")
+        self._header_load_model_btn = QPushButton("Load Model")
         self._header_load_model_btn.setObjectName("btn-primary")
+        self._header_load_model_btn.setMinimumWidth(92)
+        self._header_load_model_btn.setMaximumWidth(150)
         self._header_load_model_btn.clicked.connect(self._load_header_selected_model)
         ml.addWidget(self._header_load_model_btn)
 
         self._header_reload_model_btn = QPushButton("Reload Active")
         self._header_reload_model_btn.setObjectName("btn-ghost")
+        self._header_reload_model_btn.setMaximumWidth(120)
         self._header_reload_model_btn.clicked.connect(self._reload_active_model)
         ml.addWidget(self._header_reload_model_btn)
 
         self._header_model_status = QLabel("Model: none")
         self._header_model_status.setObjectName("lbl-muted")
-        self._header_model_status.setMinimumWidth(260)
+        self._header_model_status.setMinimumWidth(220)
+        self._header_model_status.setMaximumWidth(360)
+        self._header_model_status.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         ml.addWidget(self._header_model_status, 1)
         root.addWidget(model_row)
 
@@ -492,6 +514,7 @@ class WorkbenchWorkspace(QMainWindow):
 
         self._header_agent_combo = QComboBox()
         self._header_agent_combo.setMinimumWidth(130)
+        self._header_agent_combo.setMaximumWidth(160)
         self._header_agent_combo.setToolTip("Select Karl's active Workbench agent profile.")
         for key, data in AGENT_PROFILES.items():
             self._header_agent_combo.addItem(data["label"], key)
@@ -502,16 +525,19 @@ class WorkbenchWorkspace(QMainWindow):
 
         self._theme_indicator = QLabel("Theme: Karl Obsidian Core")
         self._theme_indicator.setObjectName("lbl-muted")
+        self._theme_indicator.setMinimumWidth(120)
         al.addWidget(self._theme_indicator, 1)
 
-        self._appearance_btn = QPushButton("Appearance / Color Wheel")
+        self._appearance_btn = QPushButton("Appearance")
         self._appearance_btn.setObjectName("btn-secondary")
+        self._appearance_btn.setMaximumWidth(120)
         self._appearance_btn.setToolTip("Open the System Theme tab to change palettes, accent color, glow, and motion.")
         self._appearance_btn.clicked.connect(self.appearance_requested.emit)
         al.addWidget(self._appearance_btn)
 
-        self._accent_btn = QPushButton("Accent Color")
+        self._accent_btn = QPushButton("Accent")
         self._accent_btn.setObjectName("btn-primary")
+        self._accent_btn.setMaximumWidth(92)
         self._accent_btn.setToolTip("Open a color wheel and apply a custom Karl accent color immediately.")
         self._accent_btn.clicked.connect(self._pick_header_accent)
         al.addWidget(self._accent_btn)
@@ -637,7 +663,7 @@ class WorkbenchWorkspace(QMainWindow):
             
             parent_width = self._chat_panel.width()
             parent_height = self._chat_panel.height()
-            overlay_width = 300
+            overlay_width = min(300, max(240, parent_width - 24))
             
             start_rect = QRect(parent_width, 0, overlay_width, parent_height)
             end_rect = QRect(parent_width - overlay_width, 0, overlay_width, parent_height)
@@ -655,7 +681,7 @@ class WorkbenchWorkspace(QMainWindow):
         else:
             parent_width = self._chat_panel.width()
             parent_height = self._chat_panel.height()
-            overlay_width = 300
+            overlay_width = min(300, max(240, parent_width - 24))
             
             start_rect = self._settings_overlay.geometry()
             end_rect = QRect(parent_width, 0, overlay_width, parent_height)
@@ -671,6 +697,87 @@ class WorkbenchWorkspace(QMainWindow):
                 self._settings_overlay.setGeometry(end_rect)
                 self._settings_overlay.hide()
                 
+        self._update_hud_btn_styles()
+
+    def _responsive_mode_for_width(self, width: int) -> str:
+        if width < 850:
+            return "single"
+        if width < 1100:
+            return "focus"
+        if width < 1400:
+            return "compact"
+        return "full"
+
+    def _set_button_text_width(self, button: QPushButton, text: str, width: int) -> None:
+        button.setText(text)
+        button.setFixedWidth(width)
+
+    def _apply_responsive_layout(self, width: int) -> None:
+        if width <= 0 or not hasattr(self, "_input_container"):
+            return
+
+        mode = self._responsive_mode_for_width(width)
+        if self._responsive_mode == mode:
+            return
+        self._responsive_mode = mode
+
+        is_full = mode == "full"
+        is_compact = mode == "compact"
+        is_focus = mode == "focus"
+        is_single = mode == "single"
+
+        self.setProperty("responsiveMode", mode)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+        if is_full:
+            self._sessions_dock.setMinimumWidth(200)
+            self._reasoning_dock.setMinimumWidth(260)
+        elif is_compact:
+            self._sessions_dock.setMinimumWidth(160)
+            self._reasoning_dock.setMinimumWidth(200)
+        else:
+            self._sessions_dock.hide()
+            self._reasoning_dock.hide()
+
+        self._command_header.setVisible(not is_single)
+        self._header_reload_model_btn.setVisible(is_full or is_compact)
+        self._header_model_status.setVisible(not is_single)
+        self._theme_indicator.setVisible(is_full or is_compact)
+        self._appearance_btn.setVisible(not is_single)
+        self._accent_btn.setVisible(not is_single)
+
+        self._header_model_combo.setMinimumWidth(170 if is_focus else 220 if is_compact else 240)
+        self._header_model_combo.setMaximumWidth(360 if is_focus else 460 if is_compact else 620)
+        self._header_load_model_btn.setText("Load" if is_focus else "Load Model")
+        self._header_agent_combo.setMaximumWidth(130 if is_focus else 160)
+
+        composer_h = 104 if is_single else 112 if is_focus else 118 if is_compact else 124
+        input_h = 48 if is_single else 52 if is_focus else 56 if is_compact else 58
+        self._input_container.setFixedHeight(composer_h)
+        self._input.setFixedHeight(input_h)
+        self._token_row.setVisible(not is_single)
+
+        self._workflow_combo.setMaximumWidth(128 if (is_focus or is_single) else 150)
+        self._agent_combo.setMaximumWidth(104 if (is_focus or is_single) else 120)
+        self._workflow_combo.setVisible(not is_single)
+        self._agent_combo.setVisible(not is_single)
+        self._rag_check.setVisible(not is_single)
+        self._loop_check.setVisible(not is_single)
+        self._model_pill.setVisible(False)
+
+        self._set_button_text_width(self._stop_btn, "■" if is_single else "■ stop", 44 if is_single else 70)
+        self._set_button_text_width(self._send_btn, "↵" if is_single else "send ↵", 52 if is_single else 82)
+
+        if hasattr(self, "_hud_sessions_btn"):
+            self._hud_sessions_btn.setText("Sess" if is_single else "Sessions")
+        if hasattr(self, "_hud_reasoning_btn"):
+            self._hud_reasoning_btn.setText("Think" if is_single else "Reasoning")
+        if hasattr(self, "_hud_context_btn"):
+            self._hud_context_btn.setText("Context HUD" if is_full else "Context")
+        if hasattr(self, "_hud_master_btn"):
+            self._hud_master_btn.setText("HUDs" if is_single else "Show All HUDs")
+
         self._update_hud_btn_styles()
 
     def _setup_glow_effects(self):
@@ -846,21 +953,24 @@ class WorkbenchWorkspace(QMainWindow):
         self._rag_sources_view.setVisible(target_visible)
         self._context_bar.setVisible(target_visible)
         if hasattr(self, "_token_row"):
-            self._token_row.setVisible(target_visible)
+            self._token_row.setVisible(target_visible and self._responsive_mode != "single")
             
         self._update_hud_btn_styles()
         
-        if target_visible:
+        if self._responsive_mode == "single":
+            self._hud_master_btn.setText("HUDs")
+        elif target_visible:
             self._hud_master_btn.setText("Hide All HUDs")
         else:
             self._hud_master_btn.setText("Show All HUDs")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._apply_responsive_layout(event.size().width())
         if hasattr(self, "_settings_overlay") and self._settings_overlay and self._settings_overlay.isVisible():
             parent_width = self._chat_panel.width()
             parent_height = self._chat_panel.height()
-            overlay_width = 300
+            overlay_width = min(300, max(240, parent_width - 24))
             self._settings_overlay.setGeometry(parent_width - overlay_width, 0, overlay_width, parent_height)
 
     def update_model_state(self, state: str):
@@ -2078,6 +2188,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._collapse_strip_btn.setStyleSheet("font-size: 7.5pt; padding: 2px;")
         self._collapse_strip_btn.clicked.connect(self._toggle_expert_strip)
         layout.addWidget(self._collapse_strip_btn)
+
+        QTimer.singleShot(0, self._toggle_expert_strip)
         
         return strip
 

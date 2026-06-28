@@ -1,0 +1,5 @@
+{
+  "experimental_speculative_decoding": false,
+  "multimodal_vision_ocr": false,
+  "agentic_swarming_loops": true
+}

@@ -23,6 +23,8 @@ class _SidebarButton(QPushButton):
         """Create a sidebar button for one workspace index."""
         super().__init__(parent)
         self.index = index
+        self._icon = icon
+        self._label = label
         self.setObjectName("sidebar-btn")
         self.setFixedSize(56, 62)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -30,6 +32,17 @@ class _SidebarButton(QPushButton):
         self.setFont(QFont("JetBrains Mono, Consolas, monospace", 7))
         self.setAccessibleName(f"Workspace Navigator: {label}")
         self.setAccessibleDescription(f"Switch active view to the {label} workspace")
+
+    def set_compact(self, compact: bool):
+        """Switch between label and icon-only presentation for narrow windows."""
+        if compact:
+            self.setText(self._icon)
+            self.setFixedSize(48, 50)
+            self.setFont(QFont("JetBrains Mono, Consolas, monospace", 12))
+        else:
+            self.setText(f"{self._icon}\n{self._label}")
+            self.setFixedSize(56, 62)
+            self.setFont(QFont("JetBrains Mono, Consolas, monospace", 7))
 
     def set_active(self, active: bool):
         """Set the active dynamic QSS property and force a style refresh."""
@@ -73,6 +86,7 @@ class Sidebar(QWidget):
             9: "Flywheel Studio (Telemetry & fine-tuning loop metrics)",
         }
         self._buttons: list[_SidebarButton] = []
+        self._compact = False
         for icon, label, idx in _ITEMS:
             btn = _SidebarButton(icon, label, idx, self)
             btn.setToolTip(tooltips.get(idx, ""))
@@ -91,3 +105,12 @@ class Sidebar(QWidget):
     def select(self, index: int):
         """Programmatically select a workspace index."""
         self._select(index)
+
+    def set_compact(self, compact: bool):
+        """Use icon-only navigation when the app is too narrow for labels."""
+        if self._compact == compact:
+            return
+        self._compact = compact
+        self.setFixedWidth(48 if compact else 56)
+        for btn in self._buttons:
+            btn.set_compact(compact)

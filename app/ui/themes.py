@@ -1083,6 +1083,44 @@ QProgressBar#token-budget-bar {{
     border-radius: 3px;
 }}
 
+/* ── Workbench Chat Composer ─────────────────────────────── */
+#chat-composer {{
+    background: {bg_surface};
+    border-top: 1px solid {border_hi};
+}}
+
+#token-row {{
+    background: {bg_surface};
+}}
+
+#chat-composer QTextEdit {{
+    background: {bg_input};
+    border: 1px solid {border};
+    border-radius: 5px;
+    padding: 8px 10px;
+    color: {text_hi};
+    selection-background-color: {accent};
+}}
+
+#chat-composer QComboBox {{
+    min-height: 26px;
+}}
+
+#workspace-root[responsiveMode="focus"] #hud-toolbar,
+#workspace-root[responsiveMode="single"] #hud-toolbar {{
+    padding: 4px 8px;
+}}
+
+#workspace-root[responsiveMode="focus"] #hud-btn,
+#workspace-root[responsiveMode="single"] #hud-btn {{
+    padding: 3px 7px;
+    font-size: 8pt;
+}}
+
+#workspace-root[responsiveMode="single"] #chat-composer QTextEdit {{
+    padding: 6px 8px;
+}}
+
 /* ── Reload Notice Banner ────────────────────────────────── */
 #reload-notice {{
     background: {bg_surface};
