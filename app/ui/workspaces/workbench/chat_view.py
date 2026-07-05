@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtWidgets import QTextBrowser
-from PyQt6.QtCore import QUrl
+from PyQt6.QtWidgets import QTextBrowser, QTextEdit
+from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QTextCursor
 
 
@@ -33,6 +33,10 @@ class ChatView(QTextBrowser):
         super().__init__(parent)
         self.setOpenLinks(False)
         self.setReadOnly(True)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.document().setDocumentMargin(0)
         self._messages: list[tuple[str, str, str]] = []   # (role, text, node_id)
         self._streaming_buf = ""
         self._streaming = False
@@ -140,7 +144,7 @@ class ChatView(QTextBrowser):
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(token)
         self.setTextCursor(cursor)
-        self.ensureCursorVisible()
+        self._scroll_to_bottom()
 
     def finalize_stream(self, node_id: str = ""):
         if not self._streaming:
@@ -153,7 +157,6 @@ class ChatView(QTextBrowser):
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.insertHtml('</div></div>')
         self.setTextCursor(cursor)
-        self.ensureCursorVisible()
         self._render_all()
 
     def clear_display(self):
@@ -178,7 +181,7 @@ class ChatView(QTextBrowser):
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertHtml(html)
-        self.ensureCursorVisible()
+        self._scroll_to_bottom()
 
     def append_diagnostics(self, model: str, n_ctx: int, diag: dict):
         self._finalize_stream()
@@ -211,7 +214,7 @@ class ChatView(QTextBrowser):
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertHtml(html_str)
-        self.ensureCursorVisible()
+        self._scroll_to_bottom()
 
     def append_rag_sources(self, results: list[dict]):
         self._finalize_stream()
@@ -242,7 +245,7 @@ class ChatView(QTextBrowser):
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertHtml("".join(lines))
-        self.ensureCursorVisible()
+        self._scroll_to_bottom()
 
     # internals ───────────────────────────────────────────────────────────────
 
@@ -263,8 +266,14 @@ class ChatView(QTextBrowser):
             else:
                 parts.append(self._get_karl_hdr(node_id) + _escape(text) + '</div></div>')
         self.setHtml(
-            '<html><body style="background:transparent;margin:8px;">'
+            '<html><body style="background:transparent;margin:8px 10px 28px 10px;'
+            'white-space:normal;overflow-x:hidden;">'
             + "".join(parts)
             + "</body></html>"
         )
         self.moveCursor(QTextCursor.MoveOperation.End)
+        self._scroll_to_bottom()
+
+    def _scroll_to_bottom(self):
+        bar = self.verticalScrollBar()
+        bar.setValue(bar.maximum())

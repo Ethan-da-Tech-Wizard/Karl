@@ -1,0 +1,52 @@
+flowchart TD
+    root["Project Root"]
+    folder_root_files[".: Root files and project manifests"]
+    root --> folder_root_files
+    folder_claude[".claude: Project files"]
+    root --> folder_claude
+    folder_github[".github: Project files"]
+    root --> folder_github
+    folder_mypy_cache[".mypy_cache: Project files"]
+    root --> folder_mypy_cache
+    folder_pytest_cache[".pytest_cache: Project files"]
+    root --> folder_pytest_cache
+    folder_ruff_cache[".ruff_cache: Project files"]
+    root --> folder_ruff_cache
+    folder_Karl_main["Karl-main: Project files"]
+    root --> folder_Karl_main
+    folder_app["app: Project files"]
+    root --> folder_app
+    folder_core["core: Project files"]
+    root --> folder_core
+    folder_data["data: Project files"]
+    root --> folder_data
+    folder_docs["docs: Project documentation"]
+    root --> folder_docs
+    folder_eval["eval: Project files"]
+    root --> folder_eval
+    folder_helm["helm: Project files"]
+    root --> folder_helm
+    folder_k8s["k8s: Project files"]
+    root --> folder_k8s
+    folder_neovim["neovim: Project files"]
+    root --> folder_neovim
+    folder_tests["tests: Tests and fixtures"]
+    root --> folder_tests
+    folder_tools["tools: Project files"]
+    root --> folder_tools
+    folder_training["training: Project files"]
+    root --> folder_training
+    folder_vscode_extension["vscode-extension: Project files"]
+    root --> folder_vscode_extension
+    entry_main_py["main.py"]
+    root --> entry_main_py
+    stack["Detected Stack"]
+    root --> stack
+    tech_language_Python_pyproject_toml["Python"]
+    stack --> tech_language_Python_pyproject_toml
+    tech_language_Python_requirements_txt["Python"]
+    stack --> tech_language_Python_requirements_txt
+    tech_tool_Docker_Dockerfile["Docker"]
+    stack --> tech_tool_Docker_Dockerfile
+    tech_tool_pyproject_pyproject_toml["pyproject"]
+    stack --> tech_tool_pyproject_pyproject_toml

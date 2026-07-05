@@ -9,7 +9,7 @@ from app.ui.workspaces.training_studio.mini_gpt_tab import MiniGptTab
 from app.ui.workspaces.training_studio.threads import AutoTrainThread
 
 class TrainingStudioWorkspace(QWidget):
-    """Tabbed training workspace for curation, export, LoRA, and flywheel flows."""
+    """AI Lab workspace for curation, export, LoRA, and flywheel flows."""
 
     def __init__(self, state, parent=None):
         """Create training tabs and bind dataset refresh signals."""
@@ -19,7 +19,7 @@ class TrainingStudioWorkspace(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        """Build the Training Studio title, stats row, and tab controller."""
+        """Build the AI Lab title, stats row, and tab controller."""
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
@@ -27,7 +27,7 @@ class TrainingStudioWorkspace(QWidget):
         title_row = QWidget()
         tr = QHBoxLayout(title_row)
         tr.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel("Training Studio")
+        lbl = QLabel("AI Lab")
         lbl.setObjectName("lbl-accent")
         tr.addWidget(lbl)
         tr.addStretch()
@@ -37,8 +37,8 @@ class TrainingStudioWorkspace(QWidget):
         root.addWidget(title_row)
 
         desc = QLabel(
-            "Manage curated user feedback datasets and run model training. "
-            "Export positive/negative ratings in SFT or DPO format, and train LoRA adapters locally."
+            "Build and improve local models with curated feedback, SFT/DPO export, "
+            "LoRA/QLoRA adapters, Auto-Train, and the Mini-GPT sandbox."
         )
         desc.setObjectName("lbl-muted")
         desc.setWordWrap(True)

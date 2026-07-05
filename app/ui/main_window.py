@@ -447,10 +447,14 @@ class MainWindow(QMainWindow):
                 elif preset_name == "Knowledge Heavy":
                     wb._sessions_dock.show()
                     wb._reasoning_dock.hide()
-                else:
-                    # Default/Research Lab/Wide Monitor Command
+                elif preset_name == "Wide Monitor Command":
                     wb._sessions_dock.show()
                     wb._reasoning_dock.show()
+                else:
+                    # Default/Research Lab stays chat-first. HUD buttons reopen
+                    # sessions/reasoning when the user explicitly asks for them.
+                    wb._sessions_dock.hide()
+                    wb._reasoning_dock.hide()
 
                 # Adjust sizes
                 if preset_name == "Wide Monitor Command":

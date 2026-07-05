@@ -187,6 +187,8 @@ class WorkbenchWorkspace(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._sessions_dock)
         self.splitDockWidget(self._sessions_dock, self._reasoning_dock, Qt.Orientation.Horizontal)
         self.resizeDocks([self._sessions_dock, self._reasoning_dock], [200, 280], Qt.Orientation.Horizontal)
+        self._sessions_dock.hide()
+        self._reasoning_dock.hide()
 
         # Build settings overlay (this creates all hyperparam and feedback buttons)
         self._build_settings_overlay()
