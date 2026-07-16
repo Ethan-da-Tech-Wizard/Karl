@@ -559,30 +559,41 @@ class KnowledgeBaseWorkspace(QWidget):
         lbl.setStyleSheet("font-size: 14pt; font-weight: bold; padding-bottom: 4px;")
         tr.addWidget(lbl)
         tr.addStretch()
-        
+        root.addWidget(title_row)
+
+        # Status cluster on its own row: title + 5 status widgets competing
+        # for one line overflowed the app's 760px minimum width, clipping
+        # whichever widget the layout ran out of room for first (observed:
+        # the encoder status label). A dedicated row has room regardless of
+        # window width.
+        status_row = QWidget()
+        sr = QHBoxLayout(status_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+
         # Lazy model loader indicator
         self._model_status_lbl = QLabel("Encoder: Not loaded")
         self._model_status_lbl.setObjectName("lbl-muted")
-        tr.addWidget(self._model_status_lbl)
-        
+        sr.addWidget(self._model_status_lbl)
+
         self._preload_btn = QPushButton("Preload")
         self._preload_btn.setObjectName("btn-ghost")
         self._preload_btn.setStyleSheet("font-size: 8pt; padding: 2px 6px;")
         self._preload_btn.clicked.connect(self._preload_encoder)
-        tr.addWidget(self._preload_btn)
-        
-        tr.addWidget(_label("|", "lbl-muted"))
+        sr.addWidget(self._preload_btn)
+
+        sr.addWidget(_label("|", "lbl-muted"))
 
         self._health_lbl = QLabel("Index Health: Healthy")
         self._health_lbl.setObjectName("lbl-muted")
-        tr.addWidget(self._health_lbl)
-        
-        tr.addWidget(_label("|", "lbl-muted"))
+        sr.addWidget(self._health_lbl)
+
+        sr.addWidget(_label("|", "lbl-muted"))
 
         self._stats_lbl = QLabel("0 sources · 0 chunks")
         self._stats_lbl.setObjectName("lbl-muted")
-        tr.addWidget(self._stats_lbl)
-        root.addWidget(title_row)
+        sr.addWidget(self._stats_lbl)
+        sr.addStretch()
+        root.addWidget(status_row)
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_explorer_tab(), "Index Explorer")

@@ -3,7 +3,7 @@ import json
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QFrame, QTextBrowser, QMessageBox, QFileDialog
+    QLabel, QFrame, QTextBrowser, QMessageBox, QFileDialog, QScrollArea
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -123,10 +123,22 @@ class FlywheelTab(QWidget):
         self._sft_preview.setPlaceholderText("No recent SFT exports found.")
         ec_lay.addWidget(self._sft_preview, 1)
 
+        # Each card needs real width for its labels/buttons to stay readable
+        # (e.g. "Export SFT"/"Export DPO" buttons) -- 5 equal-stretch columns
+        # squeezed into the app's 760px minimum width clipped them to
+        # unreadable fragments. Give each a floor and let the row scroll
+        # horizontally at narrow widths instead of shrinking below it.
         for card in (self._fw_interactions, self._fw_feedback, self._fw_data, self._fw_eval, self._fw_export_card):
+            card.setMinimumWidth(240)
             cl.addWidget(card, 1)
 
-        layout.addWidget(cards)
+        cards_scroll = QScrollArea()
+        cards_scroll.setWidgetResizable(True)
+        cards_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cards_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        cards_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        cards_scroll.setWidget(cards)
+        layout.addWidget(cards_scroll)
 
         self._fw_status_lbl = QLabel("")
         self._fw_status_lbl.setObjectName("lbl-muted")

@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QLineEdit, QStackedWidget,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QLinearGradient, QPainterPath
+from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QFontMetrics, QBrush, QLinearGradient, QPainterPath
 
 from app.ui.themes import MONO
 from app.ui.widgets.glow_panel import GlowPanel
@@ -157,8 +157,17 @@ class CustomLineChart(QWidget):
         painter.drawRect(margin_left, margin_top, plot_w, plot_h)
         
         painter.setPen(QPen(QColor(240, 245, 255), 1))
-        painter.setFont(QFont("Outfit, Inter, sans-serif", 9, QFont.Weight.Bold))
-        painter.drawText(margin_left, 25, self.title)
+        title_font = QFont("Outfit, Inter, sans-serif", 9, QFont.Weight.Bold)
+        painter.setFont(title_font)
+        # drawText(x, y, text) has no width limit of its own -- at narrow
+        # widget widths (e.g. the app's 760px minimum) a long title (like
+        # "Loss Curve: <adapter_name>") just got clipped mid-character by
+        # the widget's paint boundary instead of eliding gracefully.
+        available_title_width = max(10, w - margin_left - margin_right)
+        elided_title = QFontMetrics(title_font).elidedText(
+            self.title, Qt.TextElideMode.ElideRight, available_title_width
+        )
+        painter.drawText(margin_left, 25, elided_title)
         
         if not self.points:
             painter.setPen(QPen(text_color, 1))

@@ -7,6 +7,7 @@ from PyQt6.QtGui import QDesktopServices, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -14,6 +15,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTextEdit,
     QVBoxLayout,
@@ -206,7 +208,19 @@ class VisionWorkbench(QWidget):
         self._save_caption_btn.clicked.connect(self._save_caption_correction)
         crl.addWidget(self._save_caption_btn)
         rl.addWidget(caption_row)
-        splitter.addWidget(right)
+
+        # The right panel stacks a lot of controls (metadata, warning/status
+        # labels, mode combo, prompt box, kind combo, tags, OCR editor,
+        # caption editor, and their action buttons) with no stretch to
+        # spare -- at the app's 760x560 minimum size there isn't enough
+        # vertical room for all of it, so several got squeezed down far
+        # enough to visibly clip their own (word-wrapped) text. Scrolling
+        # beats every widget silently losing height it needs.
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setWidget(right)
+        splitter.addWidget(right_scroll)
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)

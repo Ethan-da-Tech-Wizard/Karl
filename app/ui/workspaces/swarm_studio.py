@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -186,7 +187,18 @@ class SwarmStudioWorkspace(QWidget):
         self._recent_list = QListWidget()
         self._recent_list.itemClicked.connect(self._load_history_item)
         layout.addWidget(self._recent_list, 1)
-        return panel
+
+        # This panel stacks the objective box, two line-edit fields, two
+        # QGroupBoxes of runtime/intelligence controls, the launch row, and
+        # a history list -- with no room to spare, all of it got squeezed
+        # below readable height at the app's 760x560 minimum size (observed:
+        # the objective placeholder text and the verification-command field
+        # both visibly clipped). Scrolling beats every widget losing height.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(panel)
+        return scroll
 
     def _build_center_panel(self) -> QWidget:
         panel = QWidget()
@@ -285,22 +297,27 @@ class SwarmStudioWorkspace(QWidget):
         layout.addWidget(self._stream_view)
 
         # ── Live steering: inject a human correction into an in-flight task ──
-        steer_row = QWidget()
-        sr = QHBoxLayout(steer_row)
-        sr.setContentsMargins(0, 0, 0, 0)
-        sr.setSpacing(4)
+        # Target path, message, and button used to share one row -- three
+        # widgets fighting for a panel that's only ~1/3 of the app's 760px
+        # minimum width left the message field showing a couple of
+        # characters of its own placeholder. Message gets its own full-width
+        # row since it's the one that actually needs the room.
+        steer_target_row = QWidget()
+        str_l = QHBoxLayout(steer_target_row)
+        str_l.setContentsMargins(0, 0, 0, 0)
+        str_l.setSpacing(4)
         self._steering_target = QLineEdit()
         self._steering_target.setPlaceholderText("target filepath (e.g. app/foo.py)")
-        self._steering_target.setMaximumWidth(160)
+        self._steering_btn = QPushButton("Steer")
+        self._steering_btn.clicked.connect(self._on_send_guidance)
+        str_l.addWidget(self._steering_target, 1)
+        str_l.addWidget(self._steering_btn)
+        layout.addWidget(steer_target_row)
+
         self._steering_input = QLineEdit()
         self._steering_input.setPlaceholderText("Live steering: correct the agent mid-task, no restart needed...")
         self._steering_input.returnPressed.connect(self._on_send_guidance)
-        self._steering_btn = QPushButton("Steer")
-        self._steering_btn.clicked.connect(self._on_send_guidance)
-        sr.addWidget(self._steering_target)
-        sr.addWidget(self._steering_input, 1)
-        sr.addWidget(self._steering_btn)
-        layout.addWidget(steer_row)
+        layout.addWidget(self._steering_input)
 
         cog_header = QLabel("Swarm Intelligence")
         cog_header.setObjectName("section-header")
