@@ -205,6 +205,135 @@ class TestSwarmOrchestrator(unittest.TestCase):
         self.assertIsNotNone(signals["finished"])
         self.assertTrue(signals["finished"][0])
 
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_multiverse_candidates_default_to_one_unchanged_behavior(self, mock_get_llm):
+        """candidates_per_task defaults to 1 -- no candidate/winner signals fire,
+        and exactly one LLM call happens per phase, matching pre-Swarm-2.0 behavior."""
+        call_count = 0
+
+        def stateful_mock_llm(prompt, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if "Architect" in prompt or "tasks" in prompt:
+                plan = {
+                    "explanation": "x",
+                    "tasks": [{"filepath": "math_utils.py", "instructions": "Define an add(a, b) function."}],
+                }
+                return {"choices": [{"text": json.dumps(plan)}]}
+            return {"choices": [{"text": "def add(a, b):\n    return a + b\n"}]}
+
+        mock_get_llm.return_value = MagicMock(side_effect=stateful_mock_llm)
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create an add function",
+            test_command="echo ok",
+        )
+        signals = {"candidates": [], "winner": None, "finished": None}
+        orchestrator.candidates_generated.connect(lambda fp, n: signals["candidates"].append((fp, n)))
+        orchestrator.winner_selected.connect(lambda fp, i, r: signals.update({"winner": (fp, i, r)}))
+        orchestrator.finished_swarm.connect(lambda s, summary: signals.update({"finished": (s, summary)}))
+        orchestrator.edits_proposed.connect(
+            lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals])
+        )
+
+        orchestrator.run()
+
+        self.assertEqual(call_count, 2)  # exactly: 1 architect + 1 coder call
+        self.assertEqual(signals["candidates"], [])  # no multiverse signal for a single candidate
+        self.assertIsNone(signals["winner"])
+        self.assertTrue(signals["finished"][0])
+
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_multiverse_selects_best_of_n_candidates(self, mock_get_llm):
+        """candidates_per_task > 1 generates N candidates and the Judge picks
+        the syntactically valid one over broken ones."""
+        coder_call_count = 0
+
+        def stateful_mock_llm(prompt, **kwargs):
+            nonlocal coder_call_count
+            if "Architect" in prompt or "tasks" in prompt:
+                plan = {
+                    "explanation": "x",
+                    "tasks": [{"filepath": "math_utils.py", "instructions": "Define an add(a, b) function."}],
+                }
+                return {"choices": [{"text": json.dumps(plan)}]}
+            coder_call_count += 1
+            # First two candidates are syntactically broken; only the third is valid.
+            if coder_call_count < 3:
+                return {"choices": [{"text": "def add(a, b)\n    return a + b\n"}]}
+            return {"choices": [{"text": "def add(a, b):\n    return a + b\n"}]}
+
+        mock_get_llm.return_value = MagicMock(side_effect=stateful_mock_llm)
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create an add function",
+            test_command="echo ok",
+            hyperparams={"candidates_per_task": 3},
+        )
+        signals = {"candidates": [], "scores": [], "winner": None, "finished": None}
+        orchestrator.candidates_generated.connect(lambda fp, n: signals["candidates"].append((fp, n)))
+        orchestrator.candidate_scored.connect(lambda fp, i, sc: signals["scores"].append((i, sc["syntax_ok"])))
+        orchestrator.winner_selected.connect(lambda fp, i, r: signals.update({"winner": (fp, i, r)}))
+        orchestrator.finished_swarm.connect(lambda s, summary: signals.update({"finished": (s, summary)}))
+        orchestrator.edits_proposed.connect(
+            lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals])
+        )
+
+        orchestrator.run()
+
+        self.assertEqual(signals["candidates"], [("math_utils.py", 3)])
+        self.assertEqual(len(signals["scores"]), 3)
+        self.assertEqual(signals["scores"][0][1], False)  # candidate 0 broken
+        self.assertEqual(signals["scores"][1][1], False)  # candidate 1 broken
+        self.assertEqual(signals["scores"][2][1], True)   # candidate 2 valid
+        self.assertEqual(signals["winner"][1], 2)          # winner is the valid one
+        self.assertTrue(signals["finished"][0])
+
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_inject_guidance_reaches_the_coder_tool_loop(self, mock_get_llm):
+        """inject_guidance() queues a message that surfaces as a user turn in
+        the Coder's next tool-loop generation."""
+        seen_prompts = []
+
+        def stateful_mock_llm(prompt, **kwargs):
+            seen_prompts.append(prompt)
+            if "Architect" in prompt or "tasks" in prompt:
+                plan = {
+                    "explanation": "x",
+                    "tasks": [{"filepath": "math_utils.py", "instructions": "Define an add(a, b) function."}],
+                }
+                return {"choices": [{"text": json.dumps(plan)}]}
+            if len(seen_prompts) == 2:
+                # First coder turn: emit a tool call so the loop continues to a
+                # second turn (where injected guidance should be visible).
+                return {"choices": [{"text": (
+                    "<reasoning>thinking</reasoning>"
+                    "<tool_call name='read_file'>\n  path: math_utils.py\n</tool_call>"
+                )}]}
+            return {"choices": [{"text": "def add(a, b):\n    return a + b\n"}]}
+
+        mock_get_llm.return_value = MagicMock(side_effect=stateful_mock_llm)
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create an add function",
+            test_command="echo ok",
+        )
+        orchestrator.edits_proposed.connect(
+            lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals])
+        )
+        # Guidance injected before the run starts is still queued and drained
+        # on the coder's very first tool-loop turn check.
+        orchestrator.inject_guidance("math_utils.py", "Use a docstring explaining the function.")
+
+        orchestrator.run()
+
+        matching = [p for p in seen_prompts if "Human guidance (mid-task correction)" in p]
+        self.assertTrue(matching, "expected the injected guidance to appear in a later coder prompt")
+        self.assertIn("docstring", matching[0])
+
 
 if __name__ == "__main__":
     unittest.main()

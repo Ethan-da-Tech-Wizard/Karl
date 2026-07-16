@@ -126,6 +126,7 @@ class WebSocketServerManager:
         "ingest_path":        "write:kb",
         "submit_task":        "admin:execute",
         "submit_chat":        "admin:execute",
+        "swarm_inject_guidance": "admin:execute",
     }
     _SSL_CERT_PATH = "data/ssl/localhost.crt"
     _SSL_KEY_PATH = "data/ssl/localhost.key"
@@ -153,6 +154,7 @@ class WebSocketServerManager:
         "submit_task",
         "stop_task",
         "submit_chat",
+        "swarm_inject_guidance",
         "list_codex_topics",
         "get_codex_content",
         "compute_diff",
@@ -856,6 +858,11 @@ class WebSocketServerManager:
                 error = require_string(name)
                 if error:
                     return error
+        if method == "swarm_inject_guidance":
+            for name in ("filepath", "message"):
+                error = require_string(name)
+                if error:
+                    return error
         if method == "start_auto_train":
             for name in ("topic", "adapter_name"):
                 error = require_string(name)
@@ -1498,6 +1505,46 @@ class WebSocketServerManager:
                                 ],
                                 Qt.ConnectionType.DirectConnection
                             )
+                            # ── Swarm 2.0 telemetry — forwarded so the editor extension gets
+                            # the same multiverse/memory/specialist/steering visibility as the
+                            # desktop Swarm Studio UI.
+                            self.orchestrator.candidates_generated.connect(
+                                lambda fp, count: self._send_notification(
+                                    "swarm_candidates_generated", {"filepath": fp, "count": count}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.winner_selected.connect(
+                                lambda fp, index, reason: self._send_notification(
+                                    "swarm_winner_selected", {"filepath": fp, "index": index, "reason": reason}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.memory_recalled.connect(
+                                lambda fp, text: self._send_notification(
+                                    "swarm_memory_recalled", {"filepath": fp, "text": text}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.specialist_review.connect(
+                                lambda fp, specialist, result: self._send_notification(
+                                    "swarm_specialist_review",
+                                    {"filepath": fp, "specialist": specialist, "result": result}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.concurrency_adjusted.connect(
+                                lambda workers, reason: self._send_notification(
+                                    "swarm_concurrency_adjusted", {"workers": workers, "reason": reason}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.guidance_injected.connect(
+                                lambda fp, message: self._send_notification(
+                                    "swarm_guidance_injected", {"filepath": fp, "message": message}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
 
                             self.orchestrator.start()
                         await websocket.send(json.dumps({
@@ -1505,6 +1552,27 @@ class WebSocketServerManager:
                             "id": req_id,
                             "result": {"status": "started"}
                         }))
+
+                    elif method == "swarm_inject_guidance":
+                        filepath = params.get("filepath")
+                        message = params.get("message")
+                        with self._threads_lock:
+                            if self.orchestrator and self.orchestrator.isRunning():
+                                self.orchestrator.inject_guidance(filepath, message)
+                                await websocket.send(json.dumps({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "result": {"status": "injected"}
+                                }))
+                            else:
+                                await websocket.send(json.dumps({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "error": {
+                                        "code": -32000,
+                                        "message": "No swarm task is currently running."
+                                    }
+                                }))
 
                     elif method == "submit_chat":
                         message = params.get("message")

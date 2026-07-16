@@ -252,3 +252,132 @@ flag at every loop boundary and exits cleanly, emitting
 
 Tool-level timeouts (shell_run: 15s, test command: 30s) prevent indefinite
 hangs inside individual agent steps.
+
+---
+
+## Swarm 2.0
+
+Six additions on top of the pipeline above. All are opt-in or LLM-free by
+default — a `SwarmOrchestratorThread` constructed with no `hyperparams` (or
+`candidates_per_task` left at its default of 1) behaves byte-for-byte like
+the pipeline described above. Everything below is controlled through the
+same `hyperparams` dict already accepted by `submit_task` / the Swarm Studio
+UI's "Swarm Intelligence" panel.
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `candidates_per_task` | `1` | Multiverse candidate count per task |
+| `enable_memory` | `True` | Cross-run failure/fix recall (no LLM cost) |
+| `enable_specialists` | `True` | Adaptive Security/Performance auditors (no LLM cost) |
+| `enable_critic` | `True` | Red-team static review (no LLM cost) |
+| `adaptive_concurrency` | `True` | Hardware-aware worker pool sizing |
+
+### Multiverse Execution
+
+When `candidates_per_task > 1`, each task's `CoderAgent.generate()` runs N
+times with a different sampling temperature per candidate
+(`_persona_temperature()` spreads them from conservative to exploratory
+around the configured base temperature). All N candidates are scored by
+`app/engine/swarm_judge.py`'s `select_winner()` — four independent,
+zero-token signals:
+
+1. **syntax_ok** — does it parse? (dominates the score; a broken candidate
+   effectively never wins over a working one)
+2. **lint_violations** — pyflakes violation count on the candidate content
+3. **diff_size** — unified-diff line count against the current file (a
+   crude "did this stay targeted" proxy)
+4. **signature_alignment** — fraction of the candidate's call sites that
+   match a function/class the codebase (via `CodebaseMemory`) actually
+   defines, vs. hallucinated APIs
+
+Only the *winning* candidate goes through the existing AST/JSON validation,
+specialist review, cherry-pick, and test-verification pipeline — the
+official test command still runs exactly once per layer attempt, so turning
+candidates up costs generation time, not verification time.
+Signals: `candidates_generated(filepath, count)`,
+`candidate_scored(filepath, index, score_dict)`,
+`winner_selected(filepath, index, reason)`.
+
+### SwarmMemory — cross-run failure/fix learning
+
+`app/engine/swarm_memory.py`. Every layer failure (syntax error, exception,
+or a real test-command failure) is fingerprinted —
+`fingerprint_failure()` collapses a traceback to `{ErrorClass}:{normalized
+first line}`, stable across runs even when line numbers/values differ — and
+appended to a JSON store scoped to that workspace
+(`data/swarm_memory/<sha1(realpath(workspace))[:16]>.json`, so unrelated
+codebases never share history). When a layer that previously failed later
+succeeds, the fingerprints it accumulated are linked to the instructions
+that fixed them (`record_success`).
+
+Before every generation, `SwarmMemory.recall()` does a pure keyword-overlap
+search (no embeddings, no LLM call) over past failures relevant to the
+current task and — when a match exists — injects a "Known Past Failure
+Patterns" block into the Coder's system prompt, including the fix if one is
+known. The swarm stops repeating the same mistake on the same codebase
+across separate runs, and even across separate app restarts.
+Signal: `memory_recalled(filepath, text)`.
+
+### Adaptive specialist auditors
+
+`app/engine/swarm_specialists.py`. `classify_task()` tags each task by
+regex over its filepath + instructions (`security`, `performance`); only
+matching specialists run, so a CSS tweak never pays for a security audit.
+All three reviewers are static analysis — regex and `ast.walk()`, no model
+call:
+
+- **SecurityAuditorAgent** — `eval`/`exec`, `shell=True`, `pickle.loads`,
+  unsafe `yaml.load`, string-built SQL, hardcoded credential-looking
+  literals. A `"revise"` verdict is folded into the layer's failure trace
+  exactly like a syntax error or failed test, so the existing
+  self-correction retry loop handles it automatically — this is the one
+  specialist that *gates*.
+- **PerformanceAuditorAgent** — nested loops, `+=` accumulation in a loop.
+  Advisory only.
+- **CriticAgent** — bare `except: pass`, leftover `TODO`/`FIXME`,
+  functions over 120 lines. Advisory only.
+
+Signal: `specialist_review(filepath, specialist_name, result_dict)`, where
+`result_dict` is `{specialist, filepath, concerns, risk_score, verdict}`.
+
+### Adaptive concurrency
+
+`_compute_max_workers()` replaces the old fixed `min(len(tasks), 4)` with a
+live read of `core.hardware_scout.get_hardware_profile()`: worker count
+starts from logical CPU count, halves under GPU thermal pressure
+(`gpu_temp_c >= 80`) and halves again under low free VRAM (`< 1.0GB`),
+capped to `[1, 8]`. Falls back to the historical fixed cap if
+`adaptive_concurrency` is off or the hardware probe fails.
+Signal: `concurrency_adjusted(worker_count, reason)`.
+
+### Live mid-run steering
+
+`SwarmOrchestratorThread.inject_guidance(filepath, message)` is safe to call
+from any thread — the UI thread (Swarm Studio's steering box), or the
+WebSocket bridge (`swarm_inject_guidance` RPC, `admin:execute` scope) — while
+a task is mid-flight. The message is queued per-filepath and drained by
+`CoderAgent.generate()` at the top of every tool-loop turn, appearing as a
+`"Human guidance (mid-task correction): ..."` user message before the next
+generation. No restart, no lost tool-loop state.
+Signal: `guidance_injected(filepath, message)`.
+
+### Cognitive trace graph
+
+Every event above (plus concurrency decisions and guidance injections)
+becomes a structured node — `{"type": ..., "timestamp": ..., ...}` —
+appended to an in-memory list and emitted live via `cognitive_node(dict)`.
+The full graph for a run is persisted to
+`data/logs/swarm_cognition/run_<8-char-id>.json` when the run ends (success,
+failure, or exception — via a `finally` block), giving a complete,
+replayable record of *why* the swarm made each decision, not just what it
+did. This is the same "introspection" philosophy Karl applies to
+single-agent reasoning, extended to the swarm.
+
+### VS Code / Code OSS extension parity
+
+The WebSocket bridge forwards `swarm_candidates_generated`,
+`swarm_winner_selected`, `swarm_memory_recalled`, `swarm_specialist_review`,
+`swarm_concurrency_adjusted`, and `swarm_guidance_injected` notifications, and
+exposes `swarm_inject_guidance` as an RPC method — the editor extension gets
+the same multiverse/memory/specialist/steering visibility as the desktop
+Swarm Studio workspace.

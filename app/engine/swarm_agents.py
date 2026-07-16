@@ -296,13 +296,27 @@ class CoderAgent(BaseSwarmAgent):
 
     def generate(self, task: dict, workspace_context: dict,
                  workspace_path: str = ".",
-                 token_callback: Callable[[str], None] | None = None) -> str:
+                 token_callback: Callable[[str], None] | None = None,
+                 guidance_getter: Callable[[], list[str]] | None = None,
+                 memory_hint: str = "",
+                 temperature_override: float | None = None) -> str:
         """
         Multi-turn tool loop. Model reads workspace, thinks, writes files.
         Returns the final written content for the primary task file, or an error string.
+
         token_callback: if provided, called with each generated token for streaming.
+        guidance_getter: if provided, called at the top of every tool-loop turn;
+            any strings it returns are woven in as human-guidance messages before
+            the next generation, enabling live mid-task steering.
+        memory_hint: optional "known past failure patterns" block (see
+            SwarmMemory.recall) injected into the system prompt so the agent
+            doesn't repeat mistakes already made on this codebase.
+        temperature_override: sampling temperature for this call; falls back to
+            self.temperature when None (used by Multiverse candidate generation
+            to explore genuinely different solutions per candidate).
         """
         llm = ModelLoader.get_instance()
+        temperature = self.temperature if temperature_override is None else temperature_override
         tool_schema = get_tool_schema_block()
         memory_reference = ""
         try:
@@ -311,7 +325,7 @@ class CoderAgent(BaseSwarmAgent):
             memory_reference = memory.query_memory(keywords_from_task(task))
         except Exception as exc:
             logger.debug("CodebaseMemory lookup failed: %s", exc)
-    
+
         # Build initial prompt
         context_snippet = "\n".join(
             f"--- {k} ---\n{v[:800]}" for k, v in list(workspace_context.items())[:8]
@@ -323,6 +337,7 @@ class CoderAgent(BaseSwarmAgent):
                 "Use the following existing codebase signatures to ensure integration:\n"
                 f"{memory_reference}"
             )
+        swarm_memory_block = f"\n\n{memory_hint}\nAvoid repeating these mistakes." if memory_hint else ""
         system = (
             "You are an expert software engineer. You MUST reason before acting.\n"
             "Use the tools below to read existing code, then write correct, tested changes.\n"
@@ -336,6 +351,7 @@ class CoderAgent(BaseSwarmAgent):
             "</tool_call>\n\n"
             "To finish: <tool_call_call name='done'></tool_call_call>"
             f"{memory_block}"
+            f"{swarm_memory_block}"
         )
         messages = [
             {"role": "system", "content": system},
@@ -349,15 +365,22 @@ class CoderAgent(BaseSwarmAgent):
         written_content = ""
 
         for _turn in range(8):
+            if guidance_getter:
+                for guidance_msg in guidance_getter():
+                    messages.append({
+                        "role": "user",
+                        "content": f"Human guidance (mid-task correction): {guidance_msg}",
+                    })
+
             # Build prompt and generate
             from core.interaction_loop import build_prompt
             prompt_text = build_prompt(system, messages[1:])
-    
+
             raw = ""
             if token_callback:
                 try:
                     res = llm(prompt_text, max_tokens=self.max_tokens,
-                              temperature=self.temperature, stream=True,
+                              temperature=temperature, stream=True,
                               stop=["</tool_call>", "<|im_end|>"], echo=False)
                     if hasattr(res, "__iter__") and not isinstance(res, dict):
                         for chunk in res:
@@ -371,7 +394,7 @@ class CoderAgent(BaseSwarmAgent):
                             raw = str(res)
                 except Exception:
                     res = llm(prompt_text, max_tokens=self.max_tokens,
-                              temperature=self.temperature, stream=False,
+                              temperature=temperature, stream=False,
                               stop=["<|im_end|>"], echo=False)
                     if isinstance(res, dict):
                         raw = res["choices"][0]["text"]
@@ -379,7 +402,7 @@ class CoderAgent(BaseSwarmAgent):
                         raw = str(res)
             else:
                 res = llm(prompt_text, max_tokens=self.max_tokens,
-                           temperature=self.temperature, stream=False,
+                           temperature=temperature, stream=False,
                            stop=["<|im_end|>"], echo=False)
                 if isinstance(res, dict):
                     raw = res["choices"][0]["text"]
@@ -483,7 +506,7 @@ class TesterAgent:
                 cwd=self.workspace_path,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=300
             )
             passed = res.returncode == 0
             output = res.stdout + "\n" + res.stderr
@@ -512,7 +535,7 @@ class TesterAgent:
         except subprocess.TimeoutExpired:
             return {
                 "passed": False,
-                "output": "Test execution timed out after 30 seconds.",
+                "output": "Test execution timed out after 300 seconds.",
                 "error_trace": "TimeoutExpired"
             }
         except Exception as e:

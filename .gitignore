@@ -12,6 +12,9 @@ data/vector_db/
 data/logs/
 data/sessions/
 
+# Swarm cross-run failure/fix memory — per-workspace runtime state, not source
+data/swarm_memory/
+
 # model_registry.json is SOURCE CONTROLLED — do not ignore it
 # Runtime-written state files (never commit)
 data/active_model.json

@@ -10,12 +10,22 @@ import time
 import ast
 import json
 import threading
+import uuid
 import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from PyQt6.QtCore import QThread, pyqtSignal
 from concurrent.futures import ThreadPoolExecutor
 from app.engine.swarm_agents import ArchitectAgent, CoderAgent, TesterAgent
+from app.engine.swarm_memory import SwarmMemory
+from app.engine.swarm_judge import select_winner
+from app.engine.swarm_specialists import (
+    classify_task,
+    SecurityAuditorAgent,
+    PerformanceAuditorAgent,
+    CriticAgent,
+)
+from app.engine.agent_memory import CodebaseMemory
 from app.utils.tracing import Span
 
 
@@ -68,6 +78,16 @@ class SwarmOrchestratorThread(QThread):
     finished_swarm = pyqtSignal(bool, str)        # success, final_summary
     coder_token = pyqtSignal(str, str)            # (filepath, token)
 
+    # ── Swarm 2.0 signals ────────────────────────────────────────────────────
+    candidates_generated = pyqtSignal(str, int)         # filepath, candidate_count
+    candidate_scored = pyqtSignal(str, int, dict)       # filepath, candidate_index, score
+    winner_selected = pyqtSignal(str, int, str)         # filepath, winner_index, reason
+    memory_recalled = pyqtSignal(str, str)              # filepath, recalled_text
+    specialist_review = pyqtSignal(str, str, dict)      # filepath, specialist_name, result
+    concurrency_adjusted = pyqtSignal(int, str)         # worker_count, reason
+    guidance_injected = pyqtSignal(str, str)            # filepath, message
+    cognitive_node = pyqtSignal(dict)                   # structured trace-graph node
+
     def __init__(self, workspace_path: str, objective: str, test_command: str, hyperparams: dict = None):
         super().__init__()
         self.state = SwarmSessionState(workspace_path, objective, test_command)
@@ -79,6 +99,20 @@ class SwarmOrchestratorThread(QThread):
         self._cherry_pick_event = threading.Event()
         self._cherry_pick_selected: list[str] = []
 
+        # ── Swarm 2.0 state ──────────────────────────────────────────────────
+        self.memory = SwarmMemory(workspace_path)
+        self.candidates_per_task = 1
+        self.enable_memory = True
+        self.enable_specialists = True
+        self.enable_critic = True
+        self.adaptive_concurrency = True
+        self._guidance_lock = threading.Lock()
+        self._guidance: dict[str, list[str]] = {}
+        self._task_failure_fps: dict[str, list[str]] = {}
+        self._cognition_nodes: list[dict] = []
+        self._run_id = str(uuid.uuid4())[:8]
+        self._known_names_cache: set[str] = set()
+
         if hyperparams:
             temp = hyperparams.get("temperature")
             max_tok = hyperparams.get("max_tokens")
@@ -88,6 +122,126 @@ class SwarmOrchestratorThread(QThread):
             if max_tok is not None:
                 self.architect.max_tokens = max_tok
                 self.coder.max_tokens = max_tok
+            self.candidates_per_task = max(1, int(hyperparams.get("candidates_per_task", 1) or 1))
+            self.enable_memory = bool(hyperparams.get("enable_memory", True))
+            self.enable_specialists = bool(hyperparams.get("enable_specialists", True))
+            self.enable_critic = bool(hyperparams.get("enable_critic", True))
+            self.adaptive_concurrency = bool(hyperparams.get("adaptive_concurrency", True))
+
+    # ── Live steering ────────────────────────────────────────────────────────
+
+    def inject_guidance(self, filepath: str, message: str) -> None:
+        """Queue a human correction to be woven into *filepath*'s next tool-loop
+        turn. Safe to call from any thread (e.g. the UI thread or the WS bridge)
+        while the orchestrator is mid-run.
+        """
+        if not filepath or not message or not message.strip():
+            return
+        with self._guidance_lock:
+            self._guidance.setdefault(filepath, []).append(message.strip())
+        self.guidance_injected.emit(filepath, message.strip())
+        self._emit_cognition("guidance_injected", filepath=filepath, message=message.strip())
+
+    def _drain_guidance(self, filepath: str) -> list[str]:
+        with self._guidance_lock:
+            return self._guidance.pop(filepath, [])
+
+    def _record_memory_success(self, filepath: str, task: dict) -> None:
+        """When a task's file finally passes verification, link whatever
+        failure fingerprints it accumulated along the way to the instructions
+        that resolved them, so future runs recall the fix, not just the bug.
+        """
+        fingerprints = self._task_failure_fps.pop(filepath, [])
+        if not fingerprints:
+            return
+        try:
+            self.memory.record_success(filepath, task.get("instructions", ""), fingerprints)
+        except Exception as exc:
+            logger.debug("SwarmMemory.record_success failed (non-fatal): %s", exc)
+
+    # ── Cognitive trace graph ────────────────────────────────────────────────
+
+    def _emit_cognition(self, node_type: str, **data) -> None:
+        node = {"type": node_type, "timestamp": time.time(), **data}
+        self._cognition_nodes.append(node)
+        self.cognitive_node.emit(node)
+
+    def _persist_cognition_graph(self) -> None:
+        try:
+            out_dir = Path("data/logs/swarm_cognition")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / f"run_{self._run_id}.json"
+            path.write_text(json.dumps(self._cognition_nodes, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            logger.debug("Could not persist cognition graph (non-fatal): %s", exc)
+
+    # ── Adaptive concurrency ─────────────────────────────────────────────────
+
+    def _compute_max_workers(self, task_count: int) -> tuple[int, str]:
+        """Pick a worker-pool size for this layer. Falls back to the historical
+        fixed cap of 4 when adaptive_concurrency is off or hardware probing
+        fails, so behavior is unchanged for callers that don't opt in.
+        """
+        if not self.adaptive_concurrency:
+            return min(task_count, 4), "adaptive concurrency disabled (fixed cap)"
+        try:
+            from core.hardware_scout import get_hardware_profile
+            profile = get_hardware_profile()
+            budget = max(1, os.cpu_count() or 4)
+            reasons = [f"{budget} logical cores"]
+
+            gpu_temp = profile.get("gpu_temp_c")
+            if gpu_temp is not None and gpu_temp >= 80:
+                budget = max(1, budget // 2)
+                reasons.append(f"GPU at {gpu_temp:.0f}C, halved for thermal headroom")
+
+            vram_gb = profile.get("vram_gb")
+            if vram_gb is not None and 0 < vram_gb < 1.0:
+                budget = max(1, budget // 2)
+                reasons.append(f"low free VRAM ({vram_gb:.2f}GB), halved")
+
+            workers = max(1, min(task_count, budget, 8))
+            return workers, "; ".join(reasons)
+        except Exception as exc:
+            return min(task_count, 4), f"hardware probe failed ({exc}), fixed cap"
+
+    def _known_codebase_names(self) -> set[str]:
+        """All function/class/method names the codebase already defines, used
+        by the Judge to detect candidates that call hallucinated APIs.
+        """
+        try:
+            mem = CodebaseMemory(self.state.workspace_path)
+            index = mem.build_index()
+            names: set[str] = set()
+            for payload in index.values():
+                for fn in payload.get("functions", []):
+                    if fn.get("name"):
+                        names.add(fn["name"])
+                for cls in payload.get("classes", []):
+                    if cls.get("name"):
+                        names.add(cls["name"])
+                    for m in cls.get("methods", []):
+                        if m.get("name"):
+                            names.add(m["name"])
+            return names
+        except Exception as exc:
+            logger.debug("Could not build known-names index (non-fatal): %s", exc)
+            return set()
+
+    def _persona_temperature(self, index: int, total: int) -> float | None:
+        """Vary temperature across multiverse candidates so they explore
+        genuinely different solutions rather than re-sampling near-duplicates.
+        Returns None (use the Coder's own default) when only one candidate is
+        requested, so single-candidate runs are bit-for-bit unchanged.
+        """
+        if total <= 1:
+            return None
+        base = self.coder.temperature
+        # Spread candidates from conservative (below base) to exploratory
+        # (above base), evenly across the requested count.
+        spread = [0.6, 1.0, 1.4, 1.7, 2.0]
+        factor = spread[min(index, len(spread) - 1)]
+        return max(0.05, min(1.2, round(base * factor, 3)))
 
     def _process_events_if_main_thread(self):
         import threading
@@ -235,11 +389,20 @@ class SwarmOrchestratorThread(QThread):
     def _run_layer(self, layer_tasks: list, layer_index: int, total_layers: int, layer_failure_traces: dict) -> bool:
         self.layer_started.emit(layer_index, total_layers, layer_tasks)
         workspace_ctx = self.scan_workspace()
-        max_workers = min(len(layer_tasks), 4)
+        max_workers, worker_reason = self._compute_max_workers(len(layer_tasks))
+        self.concurrency_adjusted.emit(max_workers, worker_reason)
+        self._emit_cognition("concurrency_adjusted", workers=max_workers, reason=worker_reason, layer_index=layer_index)
         results: dict[str, tuple[bool, str]] = {}
 
+        def _record_failure(filepath: str, task: dict, detail: str) -> None:
+            try:
+                fp_hash = self.memory.record_failure(filepath, task.get("instructions", ""), detail)
+                self._task_failure_fps.setdefault(filepath, []).append(fp_hash)
+            except Exception as exc:
+                logger.debug("SwarmMemory.record_failure failed (non-fatal): %s", exc)
+
         def _run_one(task: dict) -> tuple[str, bool, str]:
-            """Generate and validate content only — does NOT write to disk."""
+            """Generate (possibly N candidates), score, validate — does NOT write to disk."""
             if self._stop_requested:
                 return task["filepath"], False, "stopped"
             filepath = task["filepath"]
@@ -247,6 +410,8 @@ class SwarmOrchestratorThread(QThread):
 
             def _tok_cb(tok: str):
                 self.coder_token.emit(filepath, tok)
+
+            tags = classify_task(task)
 
             task_copy = dict(task)
             prior_trace = layer_failure_traces.get(filepath)
@@ -256,41 +421,31 @@ class SwarmOrchestratorThread(QThread):
                     "Correct the code to fix this."
                 )
 
+            memory_hint = ""
+            if self.enable_memory:
+                try:
+                    memory_hint = self.memory.recall(filepath, task_copy["instructions"])
+                except Exception as exc:
+                    logger.debug("SwarmMemory.recall failed (non-fatal): %s", exc)
+                if memory_hint:
+                    self.memory_recalled.emit(filepath, memory_hint)
+                    self._emit_cognition("memory_recalled", filepath=filepath, text=memory_hint)
+
+            guidance_getter = lambda fp=filepath: self._drain_guidance(fp)
+
+            n = self.candidates_per_task
+            candidates: list[str] = []
             try:
-                content = self.coder.generate(
-                    task_copy, workspace_ctx,
-                    workspace_path=self.state.workspace_path,
-                    token_callback=_tok_cb,
-                )
-                if content.startswith("# SYNTAX ERROR"):
-                    self.task_status_changed.emit(filepath, "failed", content[:120])
-                    self.traceback_captured.emit(filepath, content)
-                    self.verification_failed.emit(filepath, content)
-                    self.test_result.emit(False, content)
-                    layer_failure_traces[filepath] = content
-                    return filepath, False, content
-
-                syntax_error = None
-                if filepath.endswith(".py"):
-                    try:
-                        ast.parse(content)
-                    except SyntaxError as e:
-                        syntax_error = f"SyntaxError: {e.msg} at line {e.lineno}"
-                elif filepath.endswith(".json"):
-                    try:
-                        json.loads(content)
-                    except json.JSONDecodeError as e:
-                        syntax_error = f"JSONDecodeError: {e.msg} at line {e.lineno} col {e.colno}"
-
-                if syntax_error:
-                    self.task_status_changed.emit(filepath, "failed", syntax_error)
-                    self.traceback_captured.emit(filepath, syntax_error)
-                    self.verification_failed.emit(filepath, syntax_error)
-                    self.test_result.emit(False, syntax_error)
-                    layer_failure_traces[filepath] = syntax_error
-                    return filepath, False, syntax_error
-
-                return filepath, True, content
+                for i in range(n):
+                    content = self.coder.generate(
+                        task_copy, workspace_ctx,
+                        workspace_path=self.state.workspace_path,
+                        token_callback=_tok_cb if i == 0 else None,
+                        guidance_getter=guidance_getter,
+                        memory_hint=memory_hint,
+                        temperature_override=self._persona_temperature(i, n),
+                    )
+                    candidates.append(content)
             except Exception as e:
                 msg = str(e)
                 self.task_status_changed.emit(filepath, "failed", msg[:120])
@@ -298,7 +453,83 @@ class SwarmOrchestratorThread(QThread):
                 self.verification_failed.emit(filepath, msg)
                 self.test_result.emit(False, msg)
                 layer_failure_traces[filepath] = msg
+                _record_failure(filepath, task, msg)
                 return filepath, False, msg
+
+            if n > 1:
+                self.candidates_generated.emit(filepath, n)
+                self._emit_cognition("candidates_generated", filepath=filepath, count=n)
+
+            winner_idx, winner_score, all_scores = select_winner(
+                filepath, candidates,
+                original_content=workspace_ctx.get(filepath, ""),
+                known_names=self._known_names_cache,
+            )
+            content = candidates[winner_idx]
+
+            if n > 1:
+                for i, sc in enumerate(all_scores):
+                    self.candidate_scored.emit(filepath, i, sc)
+                    self._emit_cognition("candidate_scored", filepath=filepath, index=i, score=sc)
+                self.winner_selected.emit(filepath, winner_idx, f"total_score={winner_score['total_score']}")
+                self._emit_cognition("winner_selected", filepath=filepath, index=winner_idx, score=winner_score)
+
+            if content.startswith("# SYNTAX ERROR"):
+                self.task_status_changed.emit(filepath, "failed", content[:120])
+                self.traceback_captured.emit(filepath, content)
+                self.verification_failed.emit(filepath, content)
+                self.test_result.emit(False, content)
+                layer_failure_traces[filepath] = content
+                _record_failure(filepath, task, content)
+                return filepath, False, content
+
+            syntax_error = None
+            if filepath.endswith(".py"):
+                try:
+                    ast.parse(content)
+                except SyntaxError as e:
+                    syntax_error = f"SyntaxError: {e.msg} at line {e.lineno}"
+            elif filepath.endswith(".json"):
+                try:
+                    json.loads(content)
+                except json.JSONDecodeError as e:
+                    syntax_error = f"JSONDecodeError: {e.msg} at line {e.lineno} col {e.colno}"
+
+            if syntax_error:
+                self.task_status_changed.emit(filepath, "failed", syntax_error)
+                self.traceback_captured.emit(filepath, syntax_error)
+                self.verification_failed.emit(filepath, syntax_error)
+                self.test_result.emit(False, syntax_error)
+                layer_failure_traces[filepath] = syntax_error
+                _record_failure(filepath, task, syntax_error)
+                return filepath, False, syntax_error
+
+            # ── Adaptive specialist review (LLM-free, gated by task classification) ──
+            if self.enable_specialists and "security" in tags:
+                sec = SecurityAuditorAgent().review(filepath, content)
+                self.specialist_review.emit(filepath, "security", sec)
+                self._emit_cognition("specialist_review", filepath=filepath, specialist="security", result=sec)
+                if sec["verdict"] == "revise":
+                    msg = "Security review flagged concerns: " + "; ".join(sec["concerns"])
+                    self.task_status_changed.emit(filepath, "failed", msg[:160])
+                    self.traceback_captured.emit(filepath, msg)
+                    self.verification_failed.emit(filepath, msg)
+                    self.test_result.emit(False, msg)
+                    layer_failure_traces[filepath] = msg
+                    _record_failure(filepath, task, msg)
+                    return filepath, False, msg
+
+            if self.enable_specialists and "performance" in tags:
+                perf = PerformanceAuditorAgent().review(filepath, content)
+                self.specialist_review.emit(filepath, "performance", perf)
+                self._emit_cognition("specialist_review", filepath=filepath, specialist="performance", result=perf)
+
+            if self.enable_critic:
+                crit = CriticAgent().review(filepath, content)
+                self.specialist_review.emit(filepath, "critic", crit)
+                self._emit_cognition("specialist_review", filepath=filepath, specialist="critic", result=crit)
+
+            return filepath, True, content
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {pool.submit(_run_one, task): task for task in layer_tasks}
@@ -380,8 +611,14 @@ class SwarmOrchestratorThread(QThread):
                 self.traceback_captured.emit(f"Layer {layer_index}", trace)
                 self.verification_failed.emit(f"Layer {layer_index}", trace)
                 for task in layer_tasks:
-                    layer_failure_traces[task["filepath"]] = trace
-                    self.task_status_changed.emit(task["filepath"], "verification_failed", trace)
+                    fp = task["filepath"]
+                    layer_failure_traces[fp] = trace
+                    self.task_status_changed.emit(fp, "verification_failed", trace)
+                    try:
+                        fp_hash = self.memory.record_failure(fp, task.get("instructions", ""), trace)
+                        self._task_failure_fps.setdefault(fp, []).append(fp_hash)
+                    except Exception as exc:
+                        logger.debug("SwarmMemory.record_failure failed (non-fatal): %s", exc)
                 self.layer_finished.emit(layer_index, False, f"Layer {layer_index} verification failed")
                 self._process_events_if_main_thread()
                 return False
@@ -391,6 +628,7 @@ class SwarmOrchestratorThread(QThread):
                     if fp in self._cherry_pick_selected:
                         self.state.tasks_status[fp] = "completed"
                         self.task_status_changed.emit(fp, "completed", f"Layer {layer_index} verified")
+                    self._record_memory_success(fp, task)
                 self.layer_finished.emit(layer_index, True, f"Layer {layer_index} verified")
                 self._process_events_if_main_thread()
                 return True
@@ -399,6 +637,7 @@ class SwarmOrchestratorThread(QThread):
                 fp = task["filepath"]
                 self.state.tasks_status[fp] = "completed"
                 self.task_status_changed.emit(fp, "completed", f"Layer {layer_index} complete")
+                self._record_memory_success(fp, task)
             self.layer_finished.emit(layer_index, True, f"Layer {layer_index} complete")
             self._process_events_if_main_thread()
             return True
@@ -415,7 +654,9 @@ class SwarmOrchestratorThread(QThread):
                     context = self.scan_workspace()
                     retrieve_span.set_attribute("chunks", len(context))
                     retrieve_span.set_attribute("bytes", sum(len(v) for v in context.values()))
-                
+
+                self._known_names_cache = self._known_codebase_names()
+
                 if self._stop_requested:
                     swarm_span.set_attribute("stopped", True)
                     self.finished_swarm.emit(False, "Execution stopped by user.")
@@ -534,3 +775,5 @@ class SwarmOrchestratorThread(QThread):
                 self.status_update.emit(f"[Error] Swarm runtime exception: {e}")
                 self.finished_swarm.emit(False, f"Exception: {e}")
                 self._process_events_if_main_thread()
+            finally:
+                self._persist_cognition_graph()

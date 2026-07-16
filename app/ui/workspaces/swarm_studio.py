@@ -53,6 +53,7 @@ class SwarmStudioWorkspace(QWidget):
         self._history = []
         self._task_nodes: dict[str, QGraphicsRectItem] = {}
         self._graph_scene: QGraphicsScene | None = None
+        self._active_filepaths: list[str] = []
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -130,6 +131,42 @@ class SwarmStudioWorkspace(QWidget):
         gl.addWidget(QLabel("Max Tokens"), 1, 0)
         gl.addWidget(self._tokens_spin, 1, 1)
         layout.addWidget(group)
+
+        intel_group = QGroupBox("Swarm Intelligence")
+        ig = QGridLayout(intel_group)
+        self._candidates_spin = QSpinBox()
+        self._candidates_spin.setRange(1, 5)
+        self._candidates_spin.setValue(1)
+        self._candidates_spin.setToolTip(
+            "Multiverse execution: generate N independent candidate solutions per\n"
+            "task (different temperatures) and let the Judge pick the strongest one."
+        )
+        ig.addWidget(QLabel("Candidates / Task"), 0, 0)
+        ig.addWidget(self._candidates_spin, 0, 1)
+
+        self._memory_check = QPushButton("Cross-Run Memory")
+        self._memory_check.setCheckable(True)
+        self._memory_check.setChecked(True)
+        self._memory_check.setToolTip("Recall past failure patterns on this codebase before coding.")
+        self._specialists_check = QPushButton("Specialist Audit")
+        self._specialists_check.setCheckable(True)
+        self._specialists_check.setChecked(True)
+        self._specialists_check.setToolTip("Auto-run security/performance auditors on tasks that touch sensitive code.")
+        self._critic_check = QPushButton("Critic Review")
+        self._critic_check.setCheckable(True)
+        self._critic_check.setChecked(True)
+        self._critic_check.setToolTip("Red-team pass for silent failure modes and code smells.")
+        self._adaptive_check = QPushButton("Adaptive Concurrency")
+        self._adaptive_check.setCheckable(True)
+        self._adaptive_check.setChecked(True)
+        self._adaptive_check.setToolTip("Size the parallel worker pool from live GPU/CPU/VRAM headroom.")
+        for btn in (self._memory_check, self._specialists_check, self._critic_check, self._adaptive_check):
+            btn.setObjectName("btn-toggle")
+        ig.addWidget(self._memory_check, 1, 0)
+        ig.addWidget(self._specialists_check, 1, 1)
+        ig.addWidget(self._critic_check, 2, 0)
+        ig.addWidget(self._adaptive_check, 2, 1)
+        layout.addWidget(intel_group)
 
         row = QWidget()
         rl = QHBoxLayout(row)
@@ -247,6 +284,40 @@ class SwarmStudioWorkspace(QWidget):
         )
         layout.addWidget(self._stream_view)
 
+        # ── Live steering: inject a human correction into an in-flight task ──
+        steer_row = QWidget()
+        sr = QHBoxLayout(steer_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.setSpacing(4)
+        self._steering_target = QLineEdit()
+        self._steering_target.setPlaceholderText("target filepath (e.g. app/foo.py)")
+        self._steering_target.setMaximumWidth(160)
+        self._steering_input = QLineEdit()
+        self._steering_input.setPlaceholderText("Live steering: correct the agent mid-task, no restart needed...")
+        self._steering_input.returnPressed.connect(self._on_send_guidance)
+        self._steering_btn = QPushButton("Steer")
+        self._steering_btn.clicked.connect(self._on_send_guidance)
+        sr.addWidget(self._steering_target)
+        sr.addWidget(self._steering_input, 1)
+        sr.addWidget(self._steering_btn)
+        layout.addWidget(steer_row)
+
+        cog_header = QLabel("Swarm Intelligence")
+        cog_header.setObjectName("section-header")
+        layout.addWidget(cog_header)
+        self._cognition_log = QPlainTextEdit()
+        self._cognition_log.setReadOnly(True)
+        self._cognition_log.setFont(QFont("Monospace", 8))
+        self._cognition_log.setPlaceholderText(
+            "Multiverse candidates, memory recalls, specialist reviews, and concurrency\n"
+            "decisions stream here in real time."
+        )
+        self._cognition_log.setMaximumHeight(140)
+        self._cognition_log.setStyleSheet(
+            "background: #0A0812; color: #C9A8FF; border: 1px solid #26203A; border-radius: 4px; padding: 4px;"
+        )
+        layout.addWidget(self._cognition_log)
+
         # ── Cherry-pick panel (hidden until the orchestrator proposes edits) ──
         self._cherry_pick_group = QGroupBox("Proposed Edits — Cherry Pick")
         cg = QVBoxLayout(self._cherry_pick_group)
@@ -349,6 +420,11 @@ class SwarmStudioWorkspace(QWidget):
         hyperparams = {
             "temperature": self._temp_spin.value() / 100.0,
             "max_tokens": self._tokens_spin.value(),
+            "candidates_per_task": self._candidates_spin.value(),
+            "enable_memory": self._memory_check.isChecked(),
+            "enable_specialists": self._specialists_check.isChecked(),
+            "enable_critic": self._critic_check.isChecked(),
+            "adaptive_concurrency": self._adaptive_check.isChecked(),
         }
         self._thread = SwarmOrchestratorThread(workspace_path, objective, test_command, hyperparams)
         self._thread.status_update.connect(self._on_status)
@@ -365,6 +441,13 @@ class SwarmStudioWorkspace(QWidget):
         self._thread.test_result.connect(self._on_test_result)
         self._thread.finished_swarm.connect(self._on_finished)
         self._thread.coder_token.connect(self._on_coder_token)
+        self._thread.candidates_generated.connect(self._on_candidates_generated)
+        self._thread.candidate_scored.connect(self._on_candidate_scored)
+        self._thread.winner_selected.connect(self._on_winner_selected)
+        self._thread.memory_recalled.connect(self._on_memory_recalled)
+        self._thread.specialist_review.connect(self._on_specialist_review)
+        self._thread.concurrency_adjusted.connect(self._on_concurrency_adjusted)
+        self._thread.guidance_injected.connect(self._on_guidance_injected)
         self._thread.finished.connect(self._thread.deleteLater)
 
         self._launch_btn.setEnabled(False)
@@ -390,6 +473,8 @@ class SwarmStudioWorkspace(QWidget):
         self._commit_btn.setEnabled(False)
         self._stream_view.clear()
         self._stream_current_file = None
+        self._cognition_log.clear()
+        self._active_filepaths = []
         self._progress.setValue(0)
         self._layer_lbl.setText("Layers: 0")
         self._task_lbl.setText("Tasks: 0")
@@ -451,6 +536,64 @@ class SwarmStudioWorkspace(QWidget):
                 completed += 1
         self._progress.setValue(int((completed / total) * 100))
         self._update_graph_node_status(filepath, status)
+        if status == "in_progress":
+            if filepath not in self._active_filepaths:
+                self._active_filepaths.append(filepath)
+            if not self._steering_target.text().strip():
+                self._steering_target.setText(filepath)
+        elif filepath in self._active_filepaths and status in {"completed", "failed", "skipped"}:
+            self._active_filepaths.remove(filepath)
+            if self._steering_target.text().strip() == filepath:
+                self._steering_target.setText(self._active_filepaths[0] if self._active_filepaths else "")
+
+    # ── Swarm 2.0 telemetry ──────────────────────────────────────────────────
+
+    def _log_intel(self, line: str):
+        self._cognition_log.appendPlainText(line)
+
+    def _on_candidates_generated(self, filepath: str, count: int):
+        self._log_intel(f"[Multiverse] {filepath}: generating {count} candidate solutions...")
+
+    def _on_candidate_scored(self, filepath: str, index: int, score: dict):
+        ok = "✓" if score.get("syntax_ok") else "✗"
+        self._log_intel(
+            f"  candidate {index} [{ok}] score={score.get('total_score')} "
+            f"lint={score.get('lint_violations')} diff={score.get('diff_size')} "
+            f"align={score.get('signature_alignment')}"
+        )
+
+    def _on_winner_selected(self, filepath: str, index: int, reason: str):
+        self._log_intel(f"[Multiverse] {filepath}: winner is candidate {index} ({reason})")
+
+    def _on_memory_recalled(self, filepath: str, text: str):
+        self._log_intel(f"[Memory] {filepath}: recalled past pattern(s):\n{text}")
+
+    def _on_specialist_review(self, filepath: str, specialist: str, result: dict):
+        verdict = result.get("verdict", "?")
+        concerns = result.get("concerns", [])
+        if concerns:
+            self._log_intel(
+                f"[{specialist.title()}] {filepath}: verdict={verdict} risk={result.get('risk_score')} — "
+                + "; ".join(concerns)
+            )
+        else:
+            self._log_intel(f"[{specialist.title()}] {filepath}: clean (verdict={verdict})")
+
+    def _on_concurrency_adjusted(self, workers: int, reason: str):
+        self._log_intel(f"[Concurrency] {workers} parallel workers — {reason}")
+
+    def _on_guidance_injected(self, filepath: str, message: str):
+        self._log_intel(f"[Steering] → {filepath}: \"{message}\"")
+
+    def _on_send_guidance(self):
+        if not self._thread or not self._thread.isRunning():
+            return
+        target = self._steering_target.text().strip()
+        message = self._steering_input.text().strip()
+        if not target or not message:
+            return
+        self._thread.inject_guidance(target, message)
+        self._steering_input.clear()
 
     def _on_verification_started(self, layer_index: int, command: str):
         self._verify_lbl.setText(f"Layer {layer_index}: verifying")
