@@ -1,13 +1,45 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Callable
 
 from app.engine.event_broker import EventBroker
 
 
-OPEN_GUARDS = ["<", "<t", "<th", "<thi", "<thin", "<think"]
-CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
+_THINK_TAGS = ["<think>", "</think>"]
+
+# ChatML control tokens (stop sequences passed to llm(..., stop=[...]) in
+# llm_thread.py/agentic_thread.py). llama.cpp streams generation a few bytes
+# at a time, and these can arrive fragmented across many separate chunks --
+# e.g. "<|im_end|>" observed live as five separate feed() calls: "<", "|",
+# "im", "_end", ">\n". A regex over each individual chunk can never catch
+# that (no single chunk contains the full pattern), so the guard mechanism
+# below has to hold back anything that *might still become* one of these
+# tokens, the same way it already holds back a partial "<think>"/"</think>",
+# until the full token (or a clear divergence from it) is visible.
+_CHATML_CONTROL_TOKENS = ["<|im_end|>", "<|im_start|>", "<|endoftext|>", "<|end_of_text|>"]
+
+_PROTECTED_SEQUENCES = _THINK_TAGS + _CHATML_CONTROL_TOKENS
+
+# Every proper prefix of every protected sequence, e.g. for "<|im_end|>":
+# "<", "<|", "<|i", "<|im", "<|im_", "<|im_e", "<|im_en", "<|im_end", "<|im_end|".
+# If the buffer's tail is one of these, more incoming text could still turn
+# it into a full protected sequence, so emission must wait.
+OPEN_GUARDS = sorted({seq[:i] for seq in _PROTECTED_SEQUENCES for i in range(1, len(seq))})
+CLOSE_GUARDS = OPEN_GUARDS
+
+# Complete (or truncated-by-one -- see the leak this was written for, which
+# dropped exactly one character) forms of the control tokens, stripped from
+# whatever's about to be emitted once the buffer has grown enough to no
+# longer be a mere prefix.
+_SPECIAL_TOKEN_LEAK_RE = re.compile(
+    r"<\|(?:im_end|im_start|endoftext|end_of_text)\|?>?"
+)
+
+
+def _strip_special_token_leaks(text: str) -> str:
+    return _SPECIAL_TOKEN_LEAK_RE.sub("", text)
 
 
 @dataclass
@@ -76,6 +108,7 @@ class StreamingThoughtParser:
         self.buffer = ""
 
     def _emit_thought(self, token: str) -> None:
+        token = _strip_special_token_leaks(token)
         if not token:
             return
         self._thought_cb(token)
@@ -84,6 +117,7 @@ class StreamingThoughtParser:
         self.parsed_thought += token
 
     def _emit_chat(self, token: str) -> None:
+        token = _strip_special_token_leaks(token)
         if not token:
             return
         self._chat_cb(token)
