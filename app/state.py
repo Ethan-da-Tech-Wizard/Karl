@@ -31,6 +31,10 @@ _PERSIST_FIELDS: tuple[str, ...] = (
     "thinking_temperature",
     "answering_temperature",
     "quantized_kv_cache",
+    # Empty string sentinel — WorkbenchWorkspace reads this at startup to restore
+    # the last-applied system prompt. AppState stores it here so save_to_disk /
+    # load_from_disk keep the config_store contract consistent.
+    "workbench_system_prompt",
 )
 
 
@@ -97,6 +101,11 @@ class AppState(QObject):
 
         # KV-cache quantization (8-bit) — reduces VRAM at slight accuracy cost
         self.quantized_kv_cache: bool = False
+
+        # Last-applied Workbench system prompt — empty string means "use DEFAULT_SYSTEM_PROMPT".
+        # WorkbenchWorkspace reads config_store directly at startup; this field
+        # ensures save_to_disk / load_from_disk keep the ui_config.json in sync.
+        self.workbench_system_prompt: str = ""
 
         self._initialized = True
 

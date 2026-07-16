@@ -259,21 +259,38 @@ function handleSocketMessage(data) {
     } else if (method === 'task_plan_created') {
         addTimeline('Plan', 'Swarm architect created an implementation plan.');
 
-    } else if (method === 'file_edited') {
-        log(`[Edit] Proposed change for ${params.filepath}`);
-        vscode.postMessage({
-            command: 'queue_file_edit',
-            filepath: params.filepath,
-            content: params.content,
-            summary: params.summary || 'Swarm proposed a file update.'
+    } else if (method === 'edits_proposed') {
+        const proposals = Array.isArray(params.proposals) ? params.proposals : [];
+        const batchId = `swarm-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        addTimeline('Review', `Swarm proposed ${proposals.length} file edit(s).`);
+        proposals.forEach(proposal => {
+            if (!proposal || !proposal.filepath || typeof proposal.content !== 'string') return;
+            log(`[Review] Awaiting approval for ${proposal.filepath}`);
+            vscode.postMessage({
+                command: 'queue_file_edit',
+                filepath: proposal.filepath,
+                content: proposal.content,
+                summary: proposal.summary || 'Swarm proposed a verified file update.',
+                swarmBatchId: batchId
+            });
         });
         switchWorkspace('changes');
+
+    } else if (method === 'file_edited') {
+        log(`[Edit] Karl wrote approved change for ${params.filepath}`);
+        addTimeline('Write', `Applied approved edit: ${params.filepath}`);
 
     } else if (method === 'test_result') {
         const status = params.passed ? 'passed' : 'failed';
         addTimeline('Test', `Verification ${status}.`);
         log(`[Test] ${status.toUpperCase()}`);
         if (!params.passed && params.error_trace) log(params.error_trace);
+
+    } else if (method === 'proposal_verification_finished') {
+        const status = params.passed ? 'passed' : 'failed';
+        addTimeline('Dry Run', `Layer ${params.layer} proposal verification ${status}.`);
+        log(`[Dry Run] Layer ${params.layer} ${status.toUpperCase()} before approval.`);
+        if (!params.passed && params.trace) log(params.trace);
 
     } else if (method === 'finished_swarm') {
         setConnectionState('connected', 'Connected');

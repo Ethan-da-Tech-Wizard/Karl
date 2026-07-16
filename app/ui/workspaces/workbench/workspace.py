@@ -44,6 +44,7 @@ from app.ui.workspaces.workbench.chat_view import ChatView
 from app.ui.workspaces.workbench.profiles import AGENT_PROFILES
 from app.utils.correlation_logger import new_correlation_id, set_correlation_id
 from core.default_prompts import DEFAULT_SYSTEM_PROMPT
+from app.engine import config_store
 
 
 logger = logging.getLogger("karl.workbench")
@@ -63,6 +64,26 @@ def _label(text: str, obj: str = "") -> QLabel:
 
 
 # ── chat display ─────────────────────────────────────────────────────────────
+
+
+# ── persistence helpers ────────────────────────────────────────────────────────
+
+def _load_persisted_system_prompt() -> str:
+    """Load the last-applied system prompt from ui_config.json.
+
+    Falls back to DEFAULT_SYSTEM_PROMPT when the key is absent (first run)
+    or when the persisted value is an empty string.
+    """
+    cfg = config_store.get_ui_config()
+    stored = cfg.get("workbench_system_prompt", "")
+    return stored if isinstance(stored, str) and stored.strip() else DEFAULT_SYSTEM_PROMPT
+
+
+def _save_system_prompt(prompt: str) -> None:
+    """Persist the active system prompt to ui_config.json."""
+    cfg = config_store.get_ui_config()
+    cfg["workbench_system_prompt"] = prompt
+    config_store.save_ui_config(cfg)
 
 
 # ── workbench workspace ───────────────────────────────────────────────────────
@@ -97,7 +118,7 @@ class WorkbenchWorkspace(QMainWindow):
             "thinking_temperature": getattr(self.state, "thinking_temperature", 0.8),
             "answering_temperature": getattr(self.state, "answering_temperature", 0.1),
         }
-        self._system_prompt = DEFAULT_SYSTEM_PROMPT
+        self._system_prompt = _load_persisted_system_prompt()
         self._agent_profile = "karl"
         self._current_session_file: str | None = None
         self._session_id: str | None = None
@@ -2389,6 +2410,7 @@ class WorkbenchWorkspace(QMainWindow):
 
     def set_system_prompt(self, prompt: str):
         self._system_prompt = prompt
+        _save_system_prompt(prompt)
 
     def set_hyperparams(self, params: dict):
         self._hyperparams.update(params)

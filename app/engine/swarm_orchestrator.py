@@ -9,6 +9,8 @@ import os
 import time
 import ast
 import json
+import shutil
+import tempfile
 import threading
 import uuid
 import logging
@@ -70,6 +72,7 @@ class SwarmOrchestratorThread(QThread):
     layer_finished = pyqtSignal(int, bool, str)    # layer_index, success, summary
     task_status_changed = pyqtSignal(str, str, str)  # filepath, status, detail
     verification_started = pyqtSignal(int, str)    # layer_index, command
+    proposal_verification_finished = pyqtSignal(int, bool, str)  # layer_index, passed, trace
     traceback_captured = pyqtSignal(str, str)      # filepath/layer, traceback
     verification_failed = pyqtSignal(str, str)    # context (filepath/layer), full traceback
     edits_proposed = pyqtSignal(list)             # list[{filepath, content}] — awaits commit_selected_edits()
@@ -158,6 +161,61 @@ class SwarmOrchestratorThread(QThread):
             self.memory.record_success(filepath, task.get("instructions", ""), fingerprints)
         except Exception as exc:
             logger.debug("SwarmMemory.record_success failed (non-fatal): %s", exc)
+
+    def _verify_proposals_in_temp_workspace(
+        self,
+        proposals: list[dict],
+        layer_index: int,
+    ) -> tuple[bool, str]:
+        """Apply proposed edits to a temporary copy and run verification there."""
+        cmd = self.state.test_command
+        if not cmd:
+            return True, "No verification command configured."
+
+        source = Path(self.state.workspace_path).resolve()
+
+        def ignore(_dir: str, names: list[str]) -> set[str]:
+            blocked = {
+                ".git",
+                ".hg",
+                ".svn",
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                "node_modules",
+                "venv",
+                ".venv",
+                "dist",
+                "build",
+            }
+            return {name for name in names if name in blocked}
+
+        with tempfile.TemporaryDirectory(prefix="karl-swarm-dryrun-") as tmp:
+            sandbox = Path(tmp) / source.name
+            shutil.copytree(source, sandbox, ignore=ignore, symlinks=True)
+            sandbox_root = sandbox.resolve()
+            for proposal in proposals:
+                rel = proposal.get("filepath", "")
+                content = proposal.get("content", "")
+                target = (sandbox / rel).resolve()
+                try:
+                    target.relative_to(sandbox_root)
+                except ValueError:
+                    return False, f"Dry-run blocked unsafe proposal path: {rel}"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+
+            self.status_update.emit(
+                f"[Verifier] Dry-running Layer {layer_index} in a temporary workspace before approval..."
+            )
+            tester = TesterAgent(str(sandbox))
+            passed, trace = tester.run(cmd, str(sandbox))
+            trace = trace or ("Dry-run verification passed." if passed else "Dry-run verification failed.")
+            self.proposal_verification_finished.emit(layer_index, passed, trace)
+            if not passed:
+                self.test_result.emit(passed, trace)
+            return passed, trace
 
     # ── Cognitive trace graph ────────────────────────────────────────────────
 
@@ -561,6 +619,24 @@ class SwarmOrchestratorThread(QThread):
             for fp, (ok, detail) in results.items()
             if ok
         ]
+
+        dry_run_passed, dry_run_trace = self._verify_proposals_in_temp_workspace(proposals, layer_index)
+        if not dry_run_passed:
+            self.traceback_captured.emit(f"Layer {layer_index} dry-run", dry_run_trace)
+            self.verification_failed.emit(f"Layer {layer_index} dry-run", dry_run_trace)
+            for task in layer_tasks:
+                fp = task["filepath"]
+                layer_failure_traces[fp] = dry_run_trace
+                self.task_status_changed.emit(fp, "dry_run_failed", dry_run_trace)
+                try:
+                    fp_hash = self.memory.record_failure(fp, task.get("instructions", ""), dry_run_trace)
+                    self._task_failure_fps.setdefault(fp, []).append(fp_hash)
+                except Exception as exc:
+                    logger.debug("SwarmMemory.record_failure failed (non-fatal): %s", exc)
+            self.layer_finished.emit(layer_index, False, f"Layer {layer_index} dry-run verification failed")
+            self._process_events_if_main_thread()
+            return False
+
         self._cherry_pick_event.clear()
         self._cherry_pick_selected = [p["filepath"] for p in proposals]  # default: all selected
         self.edits_proposed.emit(proposals)

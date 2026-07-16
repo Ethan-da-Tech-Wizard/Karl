@@ -102,6 +102,8 @@ window.addEventListener('message', event => {
         markPendingEdit(message.editId, 'previewed');
     } else if (message.command === 'file_edit_applied') {
         markPendingEdit(message.editId, 'applied');
+    } else if (message.command === 'file_edit_status') {
+        markPendingEdit(message.editId, message.status || 'proposed');
     } else if (message.command === 'file_edit_rejected') {
         removePendingEdit(message.editId, 'Rejected');
     } else if (message.command === 'file_edit_rolled_back') {

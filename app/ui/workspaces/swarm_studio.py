@@ -434,6 +434,7 @@ class SwarmStudioWorkspace(QWidget):
         self._thread.layer_finished.connect(self._on_layer_finished)
         self._thread.task_status_changed.connect(self._on_task_status)
         self._thread.verification_started.connect(self._on_verification_started)
+        self._thread.proposal_verification_finished.connect(self._on_proposal_verification_finished)
         self._thread.traceback_captured.connect(self._on_traceback)
         self._thread.verification_failed.connect(self._on_verification_failed)
         self._thread.edits_proposed.connect(self._on_edits_proposed)
@@ -598,6 +599,16 @@ class SwarmStudioWorkspace(QWidget):
     def _on_verification_started(self, layer_index: int, command: str):
         self._verify_lbl.setText(f"Layer {layer_index}: verifying")
         self._status_log.append(f"[Tester] Layer {layer_index}: {command}")
+
+    def _on_proposal_verification_finished(self, layer_index: int, passed: bool, trace: str):
+        status = "passed" if passed else "failed"
+        self._verify_lbl.setText(f"Layer {layer_index}: dry-run {status}")
+        self._status_log.append(f"[Tester] Layer {layer_index} dry-run {status} before approval.")
+        if trace:
+            key = f"Layer {layer_index} dry-run"
+            self._tracebacks[key] = trace
+            if not passed:
+                self._traceback_browser.setHtml(self._format_traceback_html(trace, key))
 
     def _on_traceback(self, key: str, trace: str):
         self._tracebacks[key] = trace

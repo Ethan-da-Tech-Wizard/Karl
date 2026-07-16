@@ -21,6 +21,7 @@ const {
  * @property {number} newLines
  * @property {string} status
  * @property {string} [backupPath]
+ * @property {string|null} [swarmBatchId]
  */
 
 function getDiagnosticsStats() {
@@ -100,6 +101,7 @@ class KarlSidebarProvider {
         /** @type {Map<string, PendingEdit>} */
         const savedEdits = context.workspaceState.get('karl.pendingEdits', []);
         this.pendingEdits = new Map(savedEdits);
+        this.committedSwarmBatches = new Set();
         
         /** @type {(() => void) | null} */
         this._resolveWebview = null;
@@ -555,7 +557,9 @@ class KarlSidebarProvider {
                     await sendActiveFileToKb(this);
                     break;
                 case 'queue_file_edit':
-                    this.queueFileEdit(message.filepath, message.content, message.summary);
+                    this.queueFileEdit(message.filepath, message.content, message.summary, {
+                        swarmBatchId: message.swarmBatchId
+                    });
                     break;
                 case 'preview_file':
                     await this.previewFile(message.editId);
@@ -634,7 +638,7 @@ class KarlSidebarProvider {
         }
     }
 
-    async queueFileEdit(filepath, content, summary = '') {
+    async queueFileEdit(filepath, content, summary = '', meta = {}) {
         if (!filepath || typeof content !== 'string') {
             vscode.window.showErrorMessage('Karl sent an invalid file edit payload.');
             return;
@@ -660,7 +664,16 @@ class KarlSidebarProvider {
         }
         const oldLines = previous ? previous.split(/\r?\n/).length : 0;
         const newLines = content ? content.split(/\r?\n/).length : 0;
-        this.pendingEdits.set(editId, { filepath, content, summary, filename, oldLines, newLines, status: 'proposed' });
+        this.pendingEdits.set(editId, {
+            filepath,
+            content,
+            summary,
+            filename,
+            oldLines,
+            newLines,
+            status: 'proposed',
+            swarmBatchId: meta.swarmBatchId || null,
+        });
         this._savePendingEdits();
 
         this.postMessageToWebview({
@@ -674,7 +687,8 @@ class KarlSidebarProvider {
                 oldLines,
                 newLines,
                 lineDelta: newLines - oldLines,
-                status: 'proposed'
+                status: 'proposed',
+                swarmBatchId: meta.swarmBatchId || null
             }
         });
         sendActiveStateToWebview(this);
@@ -717,6 +731,17 @@ class KarlSidebarProvider {
         const edit = this.pendingEdits.get(editId);
         if (!edit) {
             vscode.window.showWarningMessage('That Karl edit is no longer pending.');
+            return;
+        }
+
+        if (edit.swarmBatchId) {
+            edit.status = 'approved';
+            this.pendingEdits.set(editId, edit);
+            this._savePendingEdits();
+            this.postMessageToWebview({ command: 'file_edit_status', editId, status: 'approved' });
+            vscode.window.showInformationMessage(`Approved Karl swarm edit for ${edit.filename}.`);
+            this.maybeCommitSwarmBatch(edit.swarmBatchId);
+            sendActiveStateToWebview(this);
             return;
         }
 
@@ -769,6 +794,16 @@ class KarlSidebarProvider {
             vscode.window.showWarningMessage('Applied edits stay in Review Bay until rollback or manual cleanup.');
             return;
         }
+        if (edit && edit.swarmBatchId) {
+            edit.status = 'rejected';
+            this.pendingEdits.set(editId, edit);
+            this._savePendingEdits();
+            this.postMessageToWebview({ command: 'file_edit_status', editId, status: 'rejected' });
+            vscode.window.showInformationMessage(`Rejected Karl swarm edit for ${edit.filename}.`);
+            this.maybeCommitSwarmBatch(edit.swarmBatchId);
+            sendActiveStateToWebview(this);
+            return;
+        }
         this.pendingEdits.delete(editId);
         this._savePendingEdits();
         this.postMessageToWebview({ command: 'file_edit_rejected', editId });
@@ -778,14 +813,46 @@ class KarlSidebarProvider {
         sendActiveStateToWebview(this);
     }
 
+    maybeCommitSwarmBatch(batchId) {
+        if (!batchId || this.committedSwarmBatches.has(batchId)) return;
+        const batch = Array.from(this.pendingEdits.values()).filter(edit => edit.swarmBatchId === batchId);
+        if (!batch.length) return;
+        const decided = batch.every(edit => edit.status === 'approved' || edit.status === 'rejected');
+        if (!decided) return;
+        const selected = batch.filter(edit => edit.status === 'approved').map(edit => edit.filepath);
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            vscode.window.showWarningMessage('Karl bridge is offline; approved swarm edits cannot be committed yet.');
+            return;
+        }
+        this.committedSwarmBatches.add(batchId);
+        this.socket.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: Date.now(),
+            method: 'swarm_commit_edits',
+            params: { selected_filepaths: selected }
+        }));
+        vscode.window.showInformationMessage(`Submitted ${selected.length} approved swarm edit(s) to Karl.`);
+    }
+
     rejectAllFiles() {
+        const touchedSwarmBatches = new Set();
         for (const [editId, edit] of this.pendingEdits.entries()) {
+            if (edit.swarmBatchId && edit.status !== 'approved') {
+                edit.status = 'rejected';
+                this.pendingEdits.set(editId, edit);
+                touchedSwarmBatches.add(edit.swarmBatchId);
+                this.postMessageToWebview({ command: 'file_edit_status', editId, status: 'rejected' });
+                continue;
+            }
             if (edit.status !== 'applied') {
                 this.pendingEdits.delete(editId);
                 this.postMessageToWebview({ command: 'file_edit_rejected', editId });
             }
         }
         this._savePendingEdits();
+        for (const batchId of touchedSwarmBatches) {
+            this.maybeCommitSwarmBatch(batchId);
+        }
         sendActiveStateToWebview(this);
     }
 

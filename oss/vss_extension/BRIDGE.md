@@ -231,11 +231,27 @@ Emitted when an implementation plan is drafted.
 * **Params**: `{ "plan": "Markdown implementation steps..." }`
 
 ### `file_edited`
-Emitted when a Swarm agent proposes editing a file.
+Emitted after Karl writes an approved Swarm edit to disk.
 * **Params**:
   * `filepath` (string): Targeted file.
   * `content` (string): New proposed content.
-  * `summary` (string): Summary of proposed modifications.
+
+### `edits_proposed`
+Emitted when the Swarm has generated a dry-run-verified batch of file edits and is waiting for user approval.
+* **Params**:
+  * `proposals` (array): `{ filepath, content, summary? }` items.
+
+### `proposal_verification_finished`
+Emitted after Karl applies proposed edits to a temporary workspace copy and runs the configured verification command.
+* **Params**:
+  * `layer` (number): Dependency layer index.
+  * `passed` (boolean): Whether the temporary-workspace verification passed.
+  * `trace` (string): Captured verification output.
+
+### `swarm_commit_edits`
+JSON-RPC method sent by the editor after the user approves/rejects every file in a proposed batch.
+* **Params**:
+  * `selected_filepaths` (array): File paths approved for Karl to write into the real workspace.
 
 ### `test_result`
 Emitted after a verification test suite runs.

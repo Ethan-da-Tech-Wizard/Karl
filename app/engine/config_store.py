@@ -276,6 +276,9 @@ UI_CONFIG_DEFAULTS: dict[str, Any] = {
     "thermal_protection_enabled": True,
     "thermal_protection_threshold": 95,
     "quantized_kv_cache": False,
+    # Empty string sentinel → load DEFAULT_SYSTEM_PROMPT at startup.
+    # Storing the actual prompt text so changes survive restarts.
+    "workbench_system_prompt": "",
 }
 
 # Per-field validation rules: (type_or_types, min_value_or_None, max_value_or_None).

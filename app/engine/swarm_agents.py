@@ -16,6 +16,7 @@ from typing import Dict, Any, List, Optional, Callable
 from app.engine.model_loader import ModelLoader
 from app.engine.agent_memory import CodebaseMemory, keywords_from_task
 from core.interaction_loop import build_prompt
+from core.default_prompts import SWARM_ARCHITECT_SYSTEM_PROMPT, SWARM_CODER_SYSTEM_PROMPT
 
 logger = logging.getLogger("karl.swarm_agents")
 
@@ -191,22 +192,7 @@ class BaseSwarmAgent:
 # ── Architect Agent ───────────────────────────────────────────────────────────
 
 class ArchitectAgent(BaseSwarmAgent):
-    SYSTEM_PROMPT = (
-        "You are an Architect Agent. Your job is to analyze the user's objective and "
-        "propose a step-by-step implementation plan. You must inspect the codebase files "
-        "provided and specify exactly which files need to be edited.\n\n"
-        "You MUST respond ONLY in a valid JSON object matching this schema:\n"
-        "{\n"
-        "  \"explanation\": \"A high-level summary of the solution,\",\n"
-        "  \"tasks\": [\n"
-        "    {\n"
-        "      \"filepath\": \"relative/path/to/file.py\",\n"
-        "      \"instructions\": \"Clear description of what edits are needed inside this file\"\n"
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        "Do not output any introductory or concluding text. Output ONLY the JSON."
-    )
+    SYSTEM_PROMPT = SWARM_ARCHITECT_SYSTEM_PROMPT
 
     def __init__(self):
         super().__init__(self.SYSTEM_PROMPT, temperature=0.1, max_tokens=1536)
@@ -270,26 +256,7 @@ def parse_reasoning_and_tool(raw_text: str) -> tuple[Optional[str], Optional[str
 # ── Coder Agent ───────────────────────────────────────────────────────────────
 
 class CoderAgent(BaseSwarmAgent):
-    SYSTEM_PROMPT = (
-        "You are a Coder Agent. Your job is to modify a single file's contents "
-        "based on the instructions provided. You will receive the current file contents, "
-        "the goal, and optional compiler/test feedback from previous failures.\n\n"
-        "You must write down your reasoning inside <reasoning>...</reasoning> tags. "
-        "After explaining your approach, you must invoke the write_file tool by wrapping "
-        "the COMPLETE new content of the file inside <tool_call name=\"write_file\">...</tool_call> tags.\n\n"
-        "Example output:\n"
-        "<reasoning>\n"
-        "We need to fix the division by zero error by adding a check.\n"
-        "</reasoning>\n"
-        "<tool_call name=\"write_file\">\n"
-        "def divide(a, b):\n"
-        "    if b == 0:\n"
-        "        return 0\n"
-        "    return a / b\n"
-        "</tool_call>\n\n"
-        "Do not include any conversational text or markdown code fences outside these tags. "
-        "The content inside the tool call will replace the target file directly."
-    )
+    SYSTEM_PROMPT = SWARM_CODER_SYSTEM_PROMPT
 
     def __init__(self):
         super().__init__(self.SYSTEM_PROMPT, temperature=0.3, max_tokens=4096)

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QLineEdit,
-    QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox,
+    QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QInputDialog, QMessageBox,
 )
 
 from .common import _hline, _row, _section
-from core.default_prompts import DEFAULT_SYSTEM_PROMPT
+from core.default_prompts import DEFAULT_SYSTEM_PROMPT, load_prompt_presets, save_user_preset, delete_user_preset
 
 logger = logging.getLogger("karl.system_config")
 
@@ -194,7 +195,6 @@ class DefaultsPanelMixin:
 
     # ── identity tab ──────────────────────────────────────────────────────────
 
-
     def _build_identity_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -208,7 +208,7 @@ class DefaultsPanelMixin:
         ip_layout.setSpacing(8)
 
         ip_layout.addWidget(_section("SYSTEM PROMPT"))
-        
+
         desc = QLabel(
             "This prompt defines Karl's persona and is sent before every conversation."
         )
@@ -216,15 +216,72 @@ class DefaultsPanelMixin:
         desc.setWordWrap(True)
         ip_layout.addWidget(desc)
 
+        # ── Presets row ────────────────────────────────────────────────────────
+        presets_row = QHBoxLayout()
+        presets_row.setSpacing(6)
+
+        presets_lbl = QLabel("Preset:")
+        presets_lbl.setObjectName("lbl-muted")
+        presets_lbl.setStyleSheet("font-size: 8.5pt;")
+        presets_lbl.setFixedWidth(44)
+        presets_row.addWidget(presets_lbl)
+
+        self._preset_combo = QComboBox()
+        self._preset_combo.setToolTip("Load a named system prompt into the editor below")
+        self._preset_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._preset_combo.setMinimumWidth(160)
+        self._reload_preset_combo()
+        presets_row.addWidget(self._preset_combo, 1)
+
+        load_preset_btn = QPushButton("load")
+        load_preset_btn.setObjectName("btn-ghost")
+        load_preset_btn.setFixedWidth(52)
+        load_preset_btn.setToolTip("Load selected preset into the editor (does not apply immediately)")
+        load_preset_btn.clicked.connect(self._on_load_preset)
+        presets_row.addWidget(load_preset_btn)
+
+        save_preset_btn = QPushButton("save as…")
+        save_preset_btn.setObjectName("btn-ghost")
+        save_preset_btn.setFixedWidth(72)
+        save_preset_btn.setToolTip("Save the current editor text as a new named preset")
+        save_preset_btn.clicked.connect(self._on_save_preset)
+        presets_row.addWidget(save_preset_btn)
+
+        self._delete_preset_btn = QPushButton("delete")
+        self._delete_preset_btn.setObjectName("btn-danger")
+        self._delete_preset_btn.setFixedWidth(56)
+        self._delete_preset_btn.setToolTip("Delete the selected user-defined preset (built-ins are protected)")
+        self._delete_preset_btn.clicked.connect(self._on_delete_preset)
+        presets_row.addWidget(self._delete_preset_btn)
+
+        ip_layout.addLayout(presets_row)
+
+        # Preset description label
+        self._preset_desc_lbl = QLabel("")
+        self._preset_desc_lbl.setObjectName("lbl-muted")
+        self._preset_desc_lbl.setWordWrap(True)
+        self._preset_desc_lbl.setStyleSheet("font-size: 8pt; font-style: italic;")
+        ip_layout.addWidget(self._preset_desc_lbl)
+        self._preset_combo.currentIndexChanged.connect(self._on_preset_combo_changed)
+        # Trigger once to populate description for the initial selection
+        self._on_preset_combo_changed(self._preset_combo.currentIndex())
+
+        ip_layout.addWidget(_hline())
+
         from PyQt6.QtWidgets import QTextEdit
         self._system_edit = QTextEdit()
-        self._system_edit.setPlainText(DEFAULT_SYSTEM_PROMPT)
-        self._system_edit.setToolTip("System prompt active during generation. Determines Karl's personality and guidelines.")
+        self._system_edit.setToolTip(
+            "System prompt active during generation. Determines Karl's personality and guidelines."
+        )
+        # Load currently-active prompt (persisted or default)
+        from app.engine import config_store as _cs
+        stored = _cs.get_ui_config().get("workbench_system_prompt", "")
+        self._system_edit.setPlainText(stored if stored.strip() else DEFAULT_SYSTEM_PROMPT)
         ip_layout.addWidget(self._system_edit, 1)
 
         apply_btn = QPushButton("apply system prompt")
         apply_btn.setObjectName("btn-primary")
-        apply_btn.setToolTip("Save this system prompt as the default identity")
+        apply_btn.setToolTip("Apply this system prompt to all future generations in this session")
         apply_btn.clicked.connect(self._apply_identity)
         ip_layout.addWidget(apply_btn)
 
@@ -233,6 +290,114 @@ class DefaultsPanelMixin:
 
     # ── vision tab ────────────────────────────────────────────────────────────
 
+    def _reload_preset_combo(self) -> None:
+        """Rebuild the Presets combo box from the current merged preset dict."""
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.clear()
+        self._presets_data: dict = load_prompt_presets()
+        built_in_keys = [k for k in self._presets_data if k.startswith("_")]
+        user_keys = [k for k in self._presets_data if not k.startswith("_")]
+
+        for key in built_in_keys:
+            label = self._presets_data[key].get("label", key)
+            self._preset_combo.addItem(label, userData=key)
+
+        if user_keys:
+            self._preset_combo.insertSeparator(len(built_in_keys))
+            for key in user_keys:
+                label = self._presets_data[key].get("label", key)
+                self._preset_combo.addItem(f"★ {label}", userData=key)
+
+        self._preset_combo.blockSignals(False)
+        self._update_delete_btn_state()
+
+    def _on_preset_combo_changed(self, index: int) -> None:
+        """Update the description label when the combo selection changes."""
+        if not hasattr(self, "_presets_data"):
+            return
+        key = self._preset_combo.itemData(index)
+        if key and key in self._presets_data:
+            desc = self._presets_data[key].get("description", "")
+            self._preset_desc_lbl.setText(desc)
+        else:
+            self._preset_desc_lbl.setText("")
+        self._update_delete_btn_state()
+
+    def _update_delete_btn_state(self) -> None:
+        """Enable Delete only for user-defined presets (non-underscore keys)."""
+        if not hasattr(self, "_delete_preset_btn"):
+            return
+        idx = self._preset_combo.currentIndex()
+        key = self._preset_combo.itemData(idx) if idx >= 0 else None
+        is_user = isinstance(key, str) and not key.startswith("_")
+        self._delete_preset_btn.setEnabled(is_user)
+
+    def _on_load_preset(self) -> None:
+        """Load the selected preset text into the editor."""
+        idx = self._preset_combo.currentIndex()
+        key = self._preset_combo.itemData(idx)
+        if not key or not hasattr(self, "_presets_data"):
+            return
+        entry = self._presets_data.get(key, {})
+        prompt = entry.get("prompt", "")
+        if prompt and hasattr(self, "_system_edit"):
+            self._system_edit.setPlainText(prompt)
+
+    def _on_save_preset(self) -> None:
+        """Save the current editor text as a new user preset."""
+        if not hasattr(self, "_system_edit"):
+            return
+        text = self._system_edit.toPlainText().strip()
+        if not text:
+            QMessageBox.warning(self, "Empty Prompt", "Cannot save an empty system prompt as a preset.")
+            return
+        label, ok = QInputDialog.getText(
+            self, "Save Preset", "Preset name:",
+        )
+        if not ok or not label.strip():
+            return
+        label = label.strip()
+        # Generate a safe key from the label
+        key = re.sub(r"[^a-z0-9_]", "_", label.lower()).strip("_") or "custom_preset"
+        # Avoid collision with built-in keys
+        if key.startswith("_"):
+            key = key.lstrip("_")
+        desc, ok2 = QInputDialog.getText(
+            self, "Save Preset", "Short description (optional):",
+        )
+        if not ok2:
+            desc = ""
+        if save_user_preset(key, label, desc.strip(), text):
+            self._reload_preset_combo()
+            # Select the newly saved preset
+            for i in range(self._preset_combo.count()):
+                if self._preset_combo.itemData(i) == key:
+                    self._preset_combo.setCurrentIndex(i)
+                    break
+        else:
+            QMessageBox.critical(self, "Save Failed", f"Could not save preset '{label}'. Check logs.")
+
+    def _on_delete_preset(self) -> None:
+        """Delete the selected user preset after confirmation."""
+        idx = self._preset_combo.currentIndex()
+        key = self._preset_combo.itemData(idx)
+        if not key or key.startswith("_"):
+            return
+        entry = self._presets_data.get(key, {})
+        label = entry.get("label", key)
+        reply = QMessageBox.question(
+            self,
+            "Delete Preset",
+            f"Delete preset '{label}'? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if delete_user_preset(key):
+            self._reload_preset_combo()
+        else:
+            QMessageBox.critical(self, "Delete Failed", f"Could not delete preset '{label}'. Check logs.")
 
     def _apply_identity(self):
         self.state.set_workbench_system_prompt.emit(
@@ -247,4 +412,5 @@ class DefaultsPanelMixin:
                 row_widget.setVisible(True)
             else:
                 row_widget.setVisible(False)
+
 

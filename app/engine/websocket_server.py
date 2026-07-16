@@ -154,6 +154,7 @@ class WebSocketServerManager:
         "search_kb":          "read:kb",
         "ingest_path":        "write:kb",
         "submit_task":        "admin:execute",
+        "swarm_commit_edits": "admin:execute",
         "submit_chat":        "admin:execute",
         "swarm_inject_guidance": "admin:execute",
         "set_active_model":   "admin:execute",
@@ -189,6 +190,7 @@ class WebSocketServerManager:
         "ingest_path",
         "search_kb",
         "submit_task",
+        "swarm_commit_edits",
         "stop_task",
         "submit_chat",
         "swarm_inject_guidance",
@@ -949,6 +951,10 @@ class WebSocketServerManager:
                 error = require_string(name)
                 if error:
                     return error
+        if method == "swarm_commit_edits":
+            selected = params.get("selected_filepaths")
+            if not isinstance(selected, list) or any(not isinstance(p, str) for p in selected):
+                return "selected_filepaths is required and must be a list of strings."
         if method == "swarm_inject_guidance":
             for name in ("filepath", "message"):
                 error = require_string(name)
@@ -1635,6 +1641,13 @@ class WebSocketServerManager:
                                 ),
                                 Qt.ConnectionType.DirectConnection
                             )
+                            self.orchestrator.proposal_verification_finished.connect(
+                                lambda layer, passed, trace: self._send_notification(
+                                    "proposal_verification_finished",
+                                    {"layer": layer, "passed": passed, "trace": trace}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
                             self.orchestrator.finished_swarm.connect(
                                 lambda success, summary: self._send_notification(
                                     "finished_swarm", {"success": success, "summary": summary}
@@ -1642,10 +1655,9 @@ class WebSocketServerManager:
                                 Qt.ConnectionType.DirectConnection
                             )
                             self.orchestrator.edits_proposed.connect(
-                                lambda proposals: [
-                                    self._send_notification("edits_proposed", {"proposals": proposals}),
-                                    self.orchestrator.commit_selected_edits([p["filepath"] for p in proposals])
-                                ],
+                                lambda proposals: self._send_notification(
+                                    "edits_proposed", {"proposals": proposals}
+                                ),
                                 Qt.ConnectionType.DirectConnection
                             )
                             # ── Swarm 2.0 telemetry — forwarded so the editor extension gets
@@ -1695,6 +1707,26 @@ class WebSocketServerManager:
                             "id": req_id,
                             "result": {"status": "started"}
                         }))
+
+                    elif method == "swarm_commit_edits":
+                        selected = params.get("selected_filepaths", [])
+                        with self._threads_lock:
+                            if self.orchestrator and self.orchestrator.isRunning():
+                                self.orchestrator.commit_selected_edits(selected)
+                                await websocket.send(json.dumps({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "result": {"status": "committed", "count": len(selected)}
+                                }))
+                            else:
+                                await websocket.send(json.dumps({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "error": {
+                                        "code": -32000,
+                                        "message": "No swarm task is currently awaiting edits."
+                                    }
+                                }))
 
                     elif method == "swarm_inject_guidance":
                         filepath = params.get("filepath")
