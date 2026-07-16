@@ -226,7 +226,9 @@ class TestCustomAgents(unittest.TestCase):
                 self.assertIn("supercoder", resp_list["result"])
                 self.assertEqual(resp_list["result"]["supercoder"]["base_model"], "coder-v1.gguf")
 
-        asyncio.new_event_loop().run_until_complete(run_client())
+            await asyncio.sleep(0.05)
+
+        asyncio.run(run_client())
 
     @patch("app.engine.model_loader.ModelLoader.get_instance")
     def test_llm_thread_custom_model_and_adapter(self, mock_get_llm):
@@ -321,6 +323,7 @@ class TestCustomAgents(unittest.TestCase):
                     # Verify ModelLoader was called with routing-model.gguf
                     expected_model_path = os.path.join("data", "models", "routing-model.gguf")
                     mock_get_llm.assert_called_with(model_path=expected_model_path, adapter_name="routing-adapter")
+                await asyncio.sleep(0.05)
             finally:
                 spinner.cancel()
                 try:
@@ -328,7 +331,7 @@ class TestCustomAgents(unittest.TestCase):
                 except asyncio.CancelledError:
                     pass
 
-        asyncio.new_event_loop().run_until_complete(run_client())
+        asyncio.run(run_client())
 
 
 if __name__ == "__main__":

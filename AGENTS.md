@@ -84,7 +84,7 @@ The user is expected to edit them directly. Do NOT add complex dependencies here
 
 ### Editor Extension Integration
 
-Karl is equipped with a native VS Code/Code OSS editor extension (`vscode-extension/`) that acts as a client to the running Karl PyQt6 desktop application.
+Karl is equipped with a native VS Code/Code OSS editor extension (`oss/vss_extension/`) that acts as a client to the running Karl PyQt6 desktop application.
 
 * **Architecture**: The extension is a Webview panel that executes HTML5/JavaScript UI logic, proxying RPC calls to Karl's WebSocket server over local secure ports.
 * **Message Protocol (`postMessage`)**: The Webview and VS Code host communicate via JSON messages. The host forwards connections and editor status telemetry (`cockpit_state_update`) to the Webview and processes workspace file writes (`queue_file_edit`) proposed by the agents.
@@ -658,10 +658,10 @@ python eval/run_eval.py --dataset eval/datasets/grounded_answer.jsonl
 ```
 Karl/
 ├── AGENTS.md                  ← YOU ARE HERE
-├── README.md                  ← [outdated — needs rewrite for Linux, Phase 5]
+├── README.md                  ← documentation reference
 ├── main.py                    ← entry point; sets env vars, loads stylesheet, launches MainWindow
-├── engine_test.py             ← headless inference test [hardcoded path — fix in Phase 5]
-├── smoke_test.py              ← template/workflow smoke tests [hardcoded path — fix in Phase 5]
+├── engine_test.py             ← headless inference test
+├── smoke_test.py              ← template/workflow smoke tests
 ├── raw_test.py                ← raw token streaming test
 ├── download_test_model.py     ← downloads deepseek-r1-1.5b.gguf Q4_K_M
 ├── requirements.txt           ← pip deps; peft/trl/transformers/datasets are optional (Training Studio)
@@ -695,7 +695,7 @@ Karl/
 │   │       ├── workbench/        ← Workbench package; params, sessions, branching, feedback
 │   │       ├── prompt_lab.py     ← Prompt Lab; A/B streams, saved pairs, diff, tokenizer
 │   │       ├── knowledge_base.py ← chunk size/overlap controls; threshold wired to AppState (Phase 3.1 / 2.1)
-│   │       ├── training_studio.py ← training requires HF weights; DPO export wired (Phase 3.3 / 4.2)
+│   │       ├── training_studio/  ← Training Studio package; training requires HF weights; DPO export wired (Phase 3.3 / 4.2)
 │   │       ├── eval_suite.py     ← progress_cb wired to harness (Phase 3.1)
 │   │       └── system_config/    ← System Config package; model registry, runtime, hardware
 │   └── utils/
@@ -731,7 +731,7 @@ Karl/
     ├── training/              ← gitignored (curated.jsonl, export files)
     └── vector_db/             ← gitignored (index.faiss, meta.db)
 │
-└── vscode-extension/          ← VS Code/Code OSS editor extension
+└── oss/vss_extension/          ← VS Code/Code OSS editor extension
     ├── package.json           ← Extension configuration and commands registry
     ├── extension.js           ← Extension host entry point (commands, workspaces, diffs)
     ├── src/

@@ -1043,7 +1043,19 @@ class WebSocketServerManager:
         self.loop.run_until_complete(self._start_server())
         if self.server is not None:
             self._lease_audit_task = self.loop.create_task(self._audit_session_leases())
-        self.loop.run_forever()
+        try:
+            self.loop.run_forever()
+        finally:
+            try:
+                pending = asyncio.all_tasks(self.loop)
+                if pending:
+                    # Let the loop run to cancel tasks
+                    for task in pending:
+                        task.cancel()
+                    self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            self.loop.close()
 
     _DISCOVERY_PATH = pathlib.Path.home() / ".karl" / "service_discovery.json"
     _PORT_RANGE = 10  # try self.port through self.port + 9
@@ -1060,12 +1072,21 @@ class WebSocketServerManager:
 
     async def _start_server(self):
         try:
-            ssl_context = self._build_ssl_context()
+            host = os.environ.get("KARL_WS_HOST", "localhost")
+            ssl_context = None
+
+            # Standard WS (no SSL) bypasses self-signed certificate validation errors
+            # in editor webviews, but is only safe for a strictly loopback bind.
+            # "0.0.0.0" (and any other host) binds a network-reachable interface, so
+            # TLS is mandatory there -- never fall back to plaintext on that path.
+            if host in ("localhost", "127.0.0.1", "::1"):
+                logger.info("Using standard WS (no SSL) for loopback-only server.")
+            else:
+                ssl_context = self._build_ssl_context()
 
             # Try self.port through self.port + _PORT_RANGE - 1 to survive conflicts.
             server = None
             last_exc: Exception | None = None
-            host = os.environ.get("KARL_WS_HOST", "localhost")
             for candidate in range(self.port, self.port + self._PORT_RANGE):
                 try:
                     server = await websockets.serve(
@@ -1275,9 +1296,12 @@ class WebSocketServerManager:
                     # already authenticated (token was valid at handshake).
                     if self._validate_token(client_token) or client_meta.get("authenticated"):
                         old_scopes = list(client_meta.get("scopes", self._FULL_SCOPES))
-                        self._rotate_token()
-                        # Re-map this connection's scopes to the new admin token scopes.
-                        # Non-admin connections keep their original (narrower) scopes.
+                        # Issue a fresh token scoped to what this connection already
+                        # held -- never the global admin bridge token. Minting the
+                        # admin token here would let any authenticated (even
+                        # read-only) client hand itself full admin scope on a new
+                        # connection.
+                        new_token = self.add_scoped_token(old_scopes)
                         client_meta["scopes"] = old_scopes
                         client_meta["session_start"] = time.time()
                         expires_at = client_meta["session_start"] + self._TOKEN_LIFETIME
@@ -1285,7 +1309,7 @@ class WebSocketServerManager:
                             "jsonrpc": "2.0",
                             "id": req_id,
                             "result": {
-                                "token": self.bridge_token,
+                                "token": new_token,
                                 "expires_at": expires_at,
                             },
                         }))

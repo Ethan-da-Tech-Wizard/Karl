@@ -1,7 +1,25 @@
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_thoughts(node_dict: dict) -> dict:
+    """Recursively strip reasoning content from a SessionNode dict before it's
+    written to disk. AGENTS.md documents that saved sessions never persist the
+    model's raw <think> trace (see memory_manager._serialize_history) -- this
+    is the SessionTree-side equivalent, since SessionTree.save() is the path
+    actual sessions are written through, not MemoryManager.
+    """
+    if node_dict.get("role") == "assistant":
+        node_dict["content"] = _THINK_RE.sub("", node_dict.get("content") or "").strip()
+        node_dict["thought"] = None
+    for child in node_dict.get("children", []):
+        _strip_thoughts(child)
+    return node_dict
 
 
 @dataclass(frozen=True)
@@ -260,6 +278,7 @@ class SessionTree:
             session_id = str(uuid.uuid4())[:8]
         path = os.path.join(self.SESSIONS_DIR, f"{session_id}.json")
         payload = self.to_dict()
+        _strip_thoughts(payload["root"])
         payload["session_id"] = session_id
         # Store first user message as preview
         for node_data in payload.get("root", {}).get("children", []):

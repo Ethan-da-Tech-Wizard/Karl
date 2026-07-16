@@ -528,7 +528,7 @@ class TestWebSocketBridge(unittest.TestCase):
                 resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
                 self.assertIn("result", resp)
 
-        asyncio.new_event_loop().run_until_complete(run_client())
+        asyncio.run(run_client())
 
     @patch("time.time")
     def test_token_expiry_fail(self, mock_time):
@@ -566,7 +566,7 @@ class TestWebSocketBridge(unittest.TestCase):
             
             self.fail("Connection was not rejected with 4001")
 
-        asyncio.new_event_loop().run_until_complete(run_client())
+        asyncio.run(run_client())
 
     @patch("time.time")
     def test_token_rotation_on_disk(self, mock_time):
@@ -591,7 +591,7 @@ class TestWebSocketBridge(unittest.TestCase):
             except (websockets.exceptions.InvalidStatusCode, websockets.exceptions.ConnectionClosedError):
                 pass
         
-        asyncio.new_event_loop().run_until_complete(run_client())
+        asyncio.run(run_client())
             
         # 3. Verify token has changed on disk
         with open("data/bridge_token.json", "r") as f:

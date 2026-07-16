@@ -810,7 +810,7 @@ Files:
 - `app/vision/vision_model_loader.py`
 - `app/vision/vision_analyzer.py`
 - `app/engine/image_analysis_thread.py`
-- `app/ui/workspaces/system_config.py`
+- `app/ui/workspaces/system_config/`
 - `data/vision_model_registry.json`
 
 Tasks:

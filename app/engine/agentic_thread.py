@@ -4,12 +4,15 @@ import time
 import psutil
 import re
 import threading
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.hot_reload import compile_and_reload
 from app.engine.model_loader import CircuitBreakerOpenException, ModelLoader
 from app.engine.kv_cache import kv_cache_stats, log_cache_stats
 from app.engine.event_broker import EventBroker
+from app.engine.task_supervisor import TaskSupervisor
+from app.engine.streaming_parser import StreamingThoughtParser
 from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
 import core.agentic_loop
@@ -97,6 +100,7 @@ class AgenticThread(QThread):
         self._watchdog_error_emitted = False
         self._watchdog_stop = threading.Event()
         self._active_response_generator = None
+        self.task_id: str | None = None
 
     def request_stop(self):
         """Request cooperative cancellation and stop the watchdog."""
@@ -116,6 +120,11 @@ class AgenticThread(QThread):
         self._stop_requested = True
         self._watchdog_timed_out = True
         self._emit_watchdog_timeout()
+        if self.task_id:
+            try:
+                TaskSupervisor.instance().fail(self.task_id, _WATCHDOG_ERROR)
+            except Exception:
+                pass
         generator = self._active_response_generator
         close_fn = getattr(generator, "close", None)
         if callable(close_fn):
@@ -241,15 +250,78 @@ class AgenticThread(QThread):
             )
         return kept
 
+    def _response_reserve(self) -> int:
+        try:
+            max_tokens = int(self.hyperparams.get("max_tokens", _RESPONSE_RESERVE))
+        except Exception:
+            max_tokens = _RESPONSE_RESERVE
+        return min(max(128, max_tokens), _RESPONSE_RESERVE)
+
+    def _build_prompt_with_context_budget(self, llm, system_prompt: str, history: list[dict]):
+        """Compile the prompt and enforce a final tokenizer-measured budget."""
+        budget = max(256, ModelLoader.context_limit() - self._response_reserve())
+        working_history = [dict(m) for m in history]
+        working_system = system_prompt
+        changed = False
+
+        def _compile():
+            prompt_text = core.interaction_loop.build_prompt(working_system, working_history)
+            return prompt_text, self._token_count(llm, prompt_text)
+
+        prompt, tokens = _compile()
+
+        while working_history and tokens > budget:
+            if len(working_history) > 1:
+                working_history.pop(0)
+                changed = True
+            else:
+                content = working_history[0].get("content", "")
+                if len(content) <= 256:
+                    break
+                keep = max(256, len(content) // 2)
+                working_history[0] = {
+                    **working_history[0],
+                    "content": "[...truncated to fit context...]\n" + content[-keep:],
+                }
+                changed = True
+            prompt, tokens = _compile()
+
+        while tokens > budget and len(working_system) > 512:
+            keep = max(512, len(working_system) // 2)
+            working_system = (
+                working_system[:keep]
+                + "\n\n[System/RAG context truncated to fit model context.]"
+            )
+            changed = True
+            prompt, tokens = _compile()
+
+        if changed:
+            self.new_thought_token.emit(
+                "\n[Context budget: prompt was reduced to fit the loaded model window.]\n"
+            )
+
+        return prompt, working_history, working_system, tokens, budget
+
+    def _is_repetitive_response(self, previous: str, current: str) -> bool:
+        prev = " ".join((previous or "").split()).lower()
+        curr = " ".join((current or "").split()).lower()
+        if len(prev) < 80 or len(curr) < 80:
+            return False
+        return SequenceMatcher(None, prev, curr).ratio() >= 0.96
+
     def _run_single_generation(self, llm, prompt, raw_file, thermal_enabled: bool = False):
         """Runs streaming generation, continuing automatically if truncated."""
         global _thermal_suspended
         raw_output = ""
-        parsed_thought = ""
-        parsed_response = ""
-        # Prompt pre-seeds <think>\n -- always start in thought mode
-        in_thought = True
-        buffer = ""
+        # Determine starting mode for the streaming parser.
+        # If the compiled prompt ends with <think> (ignoring trailing whitespace/newlines),
+        # we pre-seeded it, so we start in thought mode.
+        in_thought = prompt.rstrip().endswith("<think>")
+        parser = StreamingThoughtParser(
+            in_thought=in_thought,
+            thought_cb=self.new_thought_token.emit,
+            chat_cb=self.new_chat_token.emit,
+        )
         first_token_time = None
         gen_token_count = 0
 
@@ -278,7 +350,7 @@ class AgenticThread(QThread):
             current_top_p = self.hyperparams.get("top_p", 0.95)
             
             if self.hyperparams.get("enable_dynamic_scheduling", True):
-                if in_thought:
+                if parser.in_thought:
                     current_temp = self.hyperparams.get("thinking_temperature", 0.8)
                 else:
                     current_temp = self.hyperparams.get("answering_temperature", 0.1)
@@ -330,7 +402,6 @@ class AgenticThread(QThread):
 
                     has_tokens = True
                     raw_output += text
-                    buffer += text
 
                     # M7: write raw token before parsing
                     micro_ts = f"{time.time():.6f}"
@@ -339,44 +410,15 @@ class AgenticThread(QThread):
                     self.new_raw_token.emit(text)
                     EventBroker.get_instance().publish("tokens:raw", {"token": text})
 
-                    if "<think>" in buffer and not in_thought:
-                        in_thought = True
-                        pre_think = buffer.split("<think>")[0]
-                        if pre_think:
-                            self.new_chat_token.emit(pre_think)
-                            EventBroker.get_instance().publish("tokens:chat", {"token": pre_think})
-                            parsed_response += pre_think
-                        buffer = buffer.split("<think>", 1)[1]
-
-                    if in_thought and "</think>" in buffer:
-                        in_thought = False
-                        parts = buffer.split("</think>", 1)
-                        if parts[0]:
-                            self.new_thought_token.emit(parts[0])
-                            EventBroker.get_instance().publish("tokens:thought", {"token": parts[0]})
-                            parsed_thought += parts[0]
-                        buffer = parts[1]
-
-                        if self.hyperparams.get("enable_dynamic_scheduling", True):
-                            logger.info("Agentic Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
-                            state_transitioned = True
-                            break
-
-                    _OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
-                    _CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
-
-                    if in_thought:
-                        if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
-                            self.new_thought_token.emit(buffer)
-                            EventBroker.get_instance().publish("tokens:thought", {"token": buffer})
-                            parsed_thought += buffer
-                            buffer = ""
-                    else:
-                        if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
-                            self.new_chat_token.emit(buffer)
-                            EventBroker.get_instance().publish("tokens:chat", {"token": buffer})
-                            parsed_response += buffer
-                            buffer = ""
+                    dynamic_scheduling = self.hyperparams.get("enable_dynamic_scheduling", True)
+                    parse_result = parser.feed(
+                        text,
+                        defer_after_think_close=dynamic_scheduling,
+                    )
+                    if parse_result.closed_think and dynamic_scheduling:
+                        logger.info("Agentic Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
+                        state_transitioned = True
+                        break
             finally:
                 self._stop_watchdog(watchdog_thread)
                 _close_fn = getattr(response_gen, "close", None)
@@ -401,7 +443,7 @@ class AgenticThread(QThread):
             context_budget = ModelLoader.context_limit()
             
             compressed = False
-            if current_tokens_count > 0.8 * context_budget and parsed_thought:
+            if current_tokens_count > 0.8 * context_budget and parser.parsed_thought:
                 self.new_thought_token.emit("\n[Context full — compressing cognitive state...]\n")
                 try:
                     compress_prompt = (
@@ -410,7 +452,7 @@ class AgenticThread(QThread):
                         "and findings established in the thinking process below. Write a dense, concise summary "
                         "in one short paragraph so that the reasoning can proceed from that point. "
                         "Do not solve the problem yourself, just summarize the current train of thought.\n"
-                        f"Thinking process to summarize:\n{parsed_thought}\n<|im_end|>\n"
+                        f"Thinking process to summarize:\n{parser.parsed_thought}\n<|im_end|>\n"
                         "<|im_start|>assistant\n"
                         "<think>\n"
                     )
@@ -424,11 +466,12 @@ class AgenticThread(QThread):
                     summary = comp_res['choices'][0]['text'].strip()
                     summary = summary.replace("<think>", "").replace("</think>", "")
                     
-                    parsed_thought = f"[Summary of thoughts so far: {summary}]"
-                    raw_output = f"<think>\n{parsed_thought}\n"
-                    in_thought = True # Resume in thought mode
+                    parser.parsed_thought = f"[Summary of thoughts so far: {summary}]"
+                    parser.buffer = ""
+                    raw_output = f"<think>\n{parser.parsed_thought}\n"
+                    parser.in_thought = True # Resume in thought mode
                     compressed = True
-                    self.new_thought_token.emit(f"\n[Compressed state: {parsed_thought}]\n")
+                    self.new_thought_token.emit(f"\n[Compressed state: {parser.parsed_thought}]\n")
                 except Exception as ce:
                     logger.warning("Cognitive compression failed: %s", ce)
                     self.new_thought_token.emit("\n[continuing...]\n")
@@ -444,15 +487,7 @@ class AgenticThread(QThread):
                 continuation_count += 1
 
         # flush remainder
-        if buffer:
-            if in_thought:
-                self.new_thought_token.emit(buffer)
-                EventBroker.get_instance().publish("tokens:thought", {"token": buffer})
-                parsed_thought += buffer
-            else:
-                self.new_chat_token.emit(buffer)
-                EventBroker.get_instance().publish("tokens:chat", {"token": buffer})
-                parsed_response += buffer
+        parser.flush()
 
         # Log KV-cache hit statistics now that we have TTFT.
         _ttft_ms = (
@@ -463,7 +498,7 @@ class AgenticThread(QThread):
         _ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
         log_cache_stats({**_init_cache_stats, "ttft_ms": _ttft_ms}, _ts)
 
-        return raw_output, parsed_thought, parsed_response, first_token_time
+        return raw_output, parser.parsed_thought, parser.parsed_response, first_token_time
 
     def run(self):
         """Run iterative generation until stop condition, max iterations, or error.
@@ -471,16 +506,24 @@ class AgenticThread(QThread):
         CircuitBreakerOpenException is converted into error_occurred with the
         operator-facing circuit-breaker message.
         """
+        supervisor = TaskSupervisor.instance()
+        if self.task_id is None:
+            self.task_id = supervisor.register("Agentic loop", cancellable=self)
+
         # ── CPU Core Pinning ──────────────────────────────────────────────────
-        # Pin inference to physical cores to optimize TPS.
+        # Pin inference to physical cores to optimize TPS. os.sched_setaffinity(0, ...)
+        # targets the calling thread specifically, preventing process-wide races.
         original_affinity = None
         try:
-            original_affinity = psutil.Process().cpu_affinity()
-            p_count = psutil.cpu_count(logical=False)
-            if p_count:
-                physical_cores = list(range(p_count))
-                psutil.Process().cpu_affinity(physical_cores)
-                logger.debug(f"AgenticThread pinned to physical cores: {physical_cores}")
+            import os
+            import psutil
+            if hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity"):
+                original_affinity = os.sched_getaffinity(0)
+                p_count = psutil.cpu_count(logical=False)
+                if p_count:
+                    physical_cores = list(range(p_count))
+                    os.sched_setaffinity(0, physical_cores)
+                    logger.debug(f"AgenticThread pinned to physical cores: {physical_cores}")
         except Exception as e:
             logger.warning(f"Could not set CPU affinity: {e}")
 
@@ -507,6 +550,7 @@ class AgenticThread(QThread):
             actual_context_budget = ModelLoader.context_limit()
 
             iteration = 0
+            previous_response = ""
 
             global _thermal_suspended
             while not self._stop_requested:
@@ -541,7 +585,9 @@ class AgenticThread(QThread):
 
                 # Trim history to fit context before building prompt
                 trimmed_history = self._trim_history(self.chat_history, system_prompt, llm)
-                prompt = core.interaction_loop.build_prompt(system_prompt, trimmed_history)
+                prompt, trimmed_history, system_prompt, prompt_tokens, _prompt_budget = (
+                    self._build_prompt_with_context_budget(llm, system_prompt, trimmed_history)
+                )
 
                 # Emit context budget stats for the HUD
                 try:
@@ -551,9 +597,6 @@ class AgenticThread(QThread):
                     self.context_stats.emit(sys_tokens + hist_tokens + rag_tokens, hist_tokens, rag_tokens, actual_context_budget)
                 except Exception:
                     pass
-
-                # Tokenize prompt to get accurate prompt token count
-                prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
 
                 start = time.perf_counter()
                 # M7: open raw archive file for this iteration
@@ -680,6 +723,13 @@ class AgenticThread(QThread):
                 if not core.agentic_loop.should_continue(iteration, response):
                     break
 
+                if self._is_repetitive_response(previous_response, response):
+                    self.new_thought_token.emit(
+                        "\n[Agentic loop stopped: latest response repeated the previous iteration.]\n"
+                    )
+                    break
+                previous_response = response
+
                 # Build next user turn and inject it
                 next_prompt_content = core.agentic_loop.build_next_prompt(response, iteration)
                 self.chat_history.append({"role": "user", "content": next_prompt_content})
@@ -688,16 +738,21 @@ class AgenticThread(QThread):
             EventBroker.get_instance().publish("loop:finished", {
                 "total_iterations": iteration
             })
+            supervisor.finish(self.task_id)
 
         except CircuitBreakerOpenException as e:
             self.error_occurred.emit(str(e))
+            supervisor.fail(self.task_id, str(e))
         except Exception as e:
             self.error_occurred.emit(f"Agentic Error: {str(e)}")
+            supervisor.fail(self.task_id, str(e))
         finally:
             ModelLoader.unlock_instance()
             # Restore original CPU affinity
             if original_affinity:
                 try:
-                    psutil.Process().cpu_affinity(original_affinity)
+                    import os
+                    if hasattr(os, "sched_setaffinity"):
+                        os.sched_setaffinity(0, original_affinity)
                 except Exception as e:
                     logger.debug(f"Could not restore CPU affinity: {e}")

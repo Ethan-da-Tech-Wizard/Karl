@@ -221,11 +221,21 @@ class DatasetMerger:
 
             if pk in prompt_to_idx:
                 # Same prompt exists — keep the record with the latest timestamp.
+                # prompt_to_idx indexes into the eventual primary_clean + additions
+                # list, so resolve into whichever of the two lists actually holds
+                # that slot right now (additions may still be shorter than the
+                # stored offset implies, since it grows as we process the batch).
                 existing_idx = prompt_to_idx[pk]
-                existing = primary_clean[existing_idx]
+                if existing_idx < len(primary_clean):
+                    existing = primary_clean[existing_idx]
+                else:
+                    existing = additions[existing_idx - len(primary_clean)]
                 if _parse_ts(record) > _parse_ts(existing):
                     # Incoming is newer: replace the existing record in-place.
-                    primary_clean[existing_idx] = record
+                    if existing_idx < len(primary_clean):
+                        primary_clean[existing_idx] = record
+                    else:
+                        additions[existing_idx - len(primary_clean)] = record
                     # Update exact hash set so subsequent duplicates of the new
                     # record are caught correctly.
                     exact_hashes.discard(_exact_hash(existing))

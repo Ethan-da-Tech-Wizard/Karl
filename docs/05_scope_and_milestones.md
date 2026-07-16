@@ -222,7 +222,7 @@ No new components. No architecture changes.
 | 2.2 | Add thumbs-down button to Workbench feedback row; wire to `curator.save_example(source="thumbs_down")` | `app/ui/workspaces/workbench.py`, `app/utils/training_curator.py` |
 | 2.3 | Connect `MemoryManager` to Workbench: sessions list panel, save on new session, load on click | `app/ui/workspaces/workbench.py` |
 | 2.4 | Update `feedback` field in trace log when user rates a generation | `app/engine/llm_thread.py`, `app/ui/workspaces/workbench.py` |
-| 2.5 | Normalise `training_curator.export_unsloth()` return to path string only (remove tuple) | `app/utils/training_curator.py`, `app/ui/workspaces/training_studio.py` |
+| 2.5 | Normalise `training_curator.export_unsloth()` return to path string only (remove tuple) | `app/utils/training_curator.py`, `app/ui/workspaces/training_studio/` |
 
 **Exit criteria:** Full trace → curate → export → Unsloth-ready loop works end-to-end.
 
@@ -277,10 +277,10 @@ HF model weights must be present in `data/hf_models/`.
 
 | # | Task | File(s) |
 |---|------|---------|
-| 3.3a | Detect HF model in `data/hf_models/`; show clear guide if absent | `app/ui/workspaces/training_studio.py` |
-| 3.3b | `TrainingThread(QThread)` running `SFTTrainer` from `trl`; streams loss to log view | `app/ui/workspaces/training_studio.py` |
-| 3.3c | Save trained adapter to `data/adapters/<name>/`; load adapter into ModelLoader | `app/engine/model_loader.py`, `app/ui/workspaces/training_studio.py` |
-| 3.3d | QLoRA path: if `bitsandbytes` is available, offer 4-bit quantised training | `app/ui/workspaces/training_studio.py` |
+| 3.3a | Detect HF model in `data/hf_models/`; show clear guide if absent | `app/ui/workspaces/training_studio/` |
+| 3.3b | `TrainingThread(QThread)` running `SFTTrainer` from `trl`; streams loss to log view | `app/ui/workspaces/training_studio/` |
+| 3.3c | Save trained adapter to `data/adapters/<name>/`; load adapter into ModelLoader | `app/engine/model_loader.py`, `app/ui/workspaces/training_studio/` |
+| 3.3d | QLoRA path: if `bitsandbytes` is available, offer 4-bit quantised training | `app/ui/workspaces/training_studio/` |
 
 **Exit criteria:** Training runs on a 5-example dataset, loss curve visible, adapter saved.
 
@@ -292,8 +292,8 @@ HF model weights must be present in `data/hf_models/`.
 
 | # | Task | File(s) |
 |---|------|---------|
-| 3.4a | Read `model_registry.json`; render tier table (name, RAM req, n_ctx, size) | `app/ui/workspaces/system_config.py` |
-| 3.4b | Download button per tier: fetch GGUF to `data/models/`, show progress, set active | `app/ui/workspaces/system_config.py`, `app/engine/model_loader.py` |
+| 3.4a | Read `model_registry.json`; render tier table (name, RAM req, n_ctx, size) | `app/ui/workspaces/system_config/` |
+| 3.4b | Download button per tier: fetch GGUF to `data/models/`, show progress, set active | `app/ui/workspaces/system_config/`, `app/engine/model_loader.py` |
 
 ---
 
@@ -318,7 +318,7 @@ spans in a dedicated panel. Lives in Prompt Lab or as a drawer in Workbench.
 | # | Task | File(s) |
 |---|------|---------|
 | 4.2a | `training_curator` pairing algorithm: match thumbs-up (chosen) with thumbs-down (rejected) on same prompt | `app/utils/training_curator.py` |
-| 4.2b | `export_dpo(path)` produces Unsloth-compatible DPO JSONL: `{prompt, chosen, rejected}` | `app/utils/training_curator.py`, `app/ui/workspaces/training_studio.py` |
+| 4.2b | `export_dpo(path)` produces Unsloth-compatible DPO JSONL: `{prompt, chosen, rejected}` | `app/utils/training_curator.py`, `app/ui/workspaces/training_studio/` |
 
 **Exit criteria:** Exported DPO file loadable by Unsloth without modification.
 

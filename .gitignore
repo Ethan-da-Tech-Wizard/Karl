@@ -19,6 +19,10 @@ data/active_vision_model.json
 data/ui_config.json
 data/theme_config.json
 
+# Live bridge auth tokens — secrets, never commit
+data/bridge_token.json
+data/bridge_token.txt
+
 # Local scratch datasets (kept on disk, not in source control)
 workers.csv
 workers.xlsx

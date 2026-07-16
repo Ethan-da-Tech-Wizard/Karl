@@ -168,4 +168,4 @@ class SharedMemoryManager:
     @property
     def active_names(self) -> list[str]:
         with _registry_lock:
-            return [inst.name for instance in _active_allocations]
+            return [instance.name for instance in _active_allocations]

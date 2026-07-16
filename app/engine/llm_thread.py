@@ -12,6 +12,7 @@ from app.engine.model_loader import CircuitBreakerOpenException, ModelLoader
 from app.engine.kv_cache import kv_cache_stats, log_cache_stats
 from app.engine.event_broker import EventBroker
 from app.engine.task_supervisor import TaskSupervisor
+from app.engine.streaming_parser import StreamingThoughtParser
 from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
 
@@ -21,8 +22,6 @@ _PERF_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB rotation threshold
 _RESPONSE_RESERVE = 1024
 _MAX_MSG_CHARS = 100000   # Truncate any single message to this length before it enters the prompt
 
-_OPEN_GUARDS  = ["<", "<t", "<th", "<thi", "<thin", "<think"]
-_CLOSE_GUARDS = ["<", "</", "</t", "</th", "</thi", "</thin", "</think"]
 _WATCHDOG_TIMEOUT_SECONDS = 30.0
 _WATCHDOG_ERROR = (
     "Inference Watchdog Timeout: Token generation froze for more than 30s. "
@@ -159,6 +158,11 @@ class LLMThread(QThread):
         self._stop_requested = True
         self._watchdog_timed_out = True
         self._emit_watchdog_timeout()
+        if self.task_id:
+            try:
+                TaskSupervisor.instance().fail(self.task_id, _WATCHDOG_ERROR)
+            except Exception:
+                pass
         generator = self._active_response_generator
         close_fn = getattr(generator, "close", None)
         if callable(close_fn):
@@ -284,6 +288,65 @@ class LLMThread(QThread):
             kept.insert(0, capped[0])
         return kept
 
+    def _response_reserve(self) -> int:
+        try:
+            max_tokens = int(self.hyperparams.get("max_tokens", _RESPONSE_RESERVE))
+        except Exception:
+            max_tokens = _RESPONSE_RESERVE
+        return min(max(128, max_tokens), _RESPONSE_RESERVE)
+
+    def _build_prompt_with_context_budget(self, llm, system_prompt: str, history: list[dict]):
+        """
+        Compile the prompt and enforce a final tokenizer-measured budget.
+
+        _trim_history() is intentionally conservative, but RAG/system prompt
+        expansion and a huge seed message can still overflow the loaded context.
+        This final pass degrades oldest context first, then truncates the lone
+        remaining message/system prompt only as a last resort.
+        """
+        budget = max(256, ModelLoader.context_limit() - self._response_reserve())
+        working_history = [dict(m) for m in history]
+        working_system = system_prompt
+        changed = False
+
+        def _compile():
+            prompt_text = core.interaction_loop.build_prompt(working_system, working_history)
+            return prompt_text, self._token_count(llm, prompt_text)
+
+        prompt, tokens = _compile()
+
+        while working_history and tokens > budget:
+            if len(working_history) > 1:
+                working_history.pop(0)
+                changed = True
+            else:
+                content = working_history[0].get("content", "")
+                if len(content) <= 256:
+                    break
+                keep = max(256, len(content) // 2)
+                working_history[0] = {
+                    **working_history[0],
+                    "content": "[...truncated to fit context...]\n" + content[-keep:],
+                }
+                changed = True
+            prompt, tokens = _compile()
+
+        while tokens > budget and len(working_system) > 512:
+            keep = max(512, len(working_system) // 2)
+            working_system = (
+                working_system[:keep]
+                + "\n\n[System/RAG context truncated to fit model context.]"
+            )
+            changed = True
+            prompt, tokens = _compile()
+
+        if changed:
+            self.new_thought_token.emit(
+                "\n[Context budget: prompt was reduced to fit the loaded model window.]\n"
+            )
+
+        return prompt, working_history, working_system, tokens, budget
+
     def run(self):
         """Load the model, stream tokens, write traces, and emit completion signals.
 
@@ -295,15 +358,19 @@ class LLMThread(QThread):
             self.task_id = supervisor.register("LLM generation", cancellable=self)
 
         # ── CPU Core Pinning ──────────────────────────────────────────────────
-        # Pin inference to physical cores to optimize TPS.
+        # Pin inference to physical cores to optimize TPS. os.sched_setaffinity(0, ...)
+        # targets the calling thread specifically, preventing process-wide races.
         original_affinity = None
         try:
-            original_affinity = psutil.Process().cpu_affinity()
-            p_count = psutil.cpu_count(logical=False)
-            if p_count:
-                physical_cores = list(range(p_count))
-                psutil.Process().cpu_affinity(physical_cores)
-                logger.debug(f"LLMThread pinned to physical cores: {physical_cores}")
+            import os
+            import psutil
+            if hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity"):
+                original_affinity = os.sched_getaffinity(0)
+                p_count = psutil.cpu_count(logical=False)
+                if p_count:
+                    physical_cores = list(range(p_count))
+                    os.sched_setaffinity(0, physical_cores)
+                    logger.debug(f"LLMThread pinned to physical cores: {physical_cores}")
         except Exception as e:
             logger.warning(f"Could not set CPU affinity: {e}")
 
@@ -320,6 +387,7 @@ class LLMThread(QThread):
                     f"GPU thermal suspension active ({t}°C). "
                     "Generation blocked until GPU cools below 85°C."
                 )
+                supervisor.fail(self.task_id, "Thermal suspension active")
                 return
             _thermal_suspended = False
         # ─────────────────────────────────────────────────────────────────────
@@ -359,7 +427,9 @@ class LLMThread(QThread):
             elif self.retrieved_chunks:
                 system_prompt += "\n\nRetrieved Context:\n" + context_str
             trimmed_history = self._trim_history(self.chat_history, llm, system_prompt)
-            prompt = core.interaction_loop.build_prompt(system_prompt, trimmed_history)
+            prompt, trimmed_history, system_prompt, prompt_tokens, _prompt_budget = (
+                self._build_prompt_with_context_budget(llm, system_prompt, trimmed_history)
+            )
 
             # Emit context budget stats for the HUD
             try:
@@ -374,9 +444,6 @@ class LLMThread(QThread):
             if rag_attribution_chunks is not None:
                 self.rag_context_used.emit(rag_attribution_chunks)
 
-            # Tokenize prompt to get accurate prompt token count
-            prompt_tokens = len(llm.tokenize(prompt.encode('utf-8')))
-
             os.makedirs(RAW_LOG_DIR, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
             raw_log_path = os.path.join(RAW_LOG_DIR, f"{ts}.tokens")
@@ -390,20 +457,18 @@ class LLMThread(QThread):
             first_token_time = None
             gen_token_count = 0
             raw_output = ""
-            parsed_thought = ""
-            parsed_response = ""
             # Determine starting mode for the streaming parser.
-            # Base model: interaction_loop pre-seeds <think>\n → start inside thought block.
-            # Adapter active: interaction_loop does NOT pre-seed <think> → start in chat mode
-            # and detect <think> naturally if the adapter generates one.
-            adapter_active = bool(getattr(ModelLoader, "_active_adapter", None))
             if self.start_in_thought:
                 in_thought = self.start_in_thought  # continuation chains honour explicit flag
-            elif adapter_active:
-                in_thought = False   # adapter generates <think> from scratch if it wants one
             else:
-                in_thought = True    # base model: prompt already pre-seeded <think>\n
-            buffer = ""
+                # If the compiled prompt ends with <think> (ignoring trailing whitespace/newlines),
+                # we pre-seeded it, so we start in thought mode.
+                in_thought = prompt.rstrip().endswith("<think>")
+            parser = StreamingThoughtParser(
+                in_thought=in_thought,
+                thought_cb=self.new_thought_token.emit,
+                chat_cb=self.new_chat_token.emit,
+            )
             finish_reason = "stop"
 
             continuation_count = 0
@@ -428,7 +493,7 @@ class LLMThread(QThread):
                     current_top_p = self.hyperparams.get("top_p", 0.95)
                     
                     if self.hyperparams.get("enable_dynamic_scheduling", True):
-                        if in_thought:
+                        if parser.in_thought:
                             current_temp = self.hyperparams.get("thinking_temperature", 0.8)
                         else:
                             current_temp = self.hyperparams.get("answering_temperature", 0.1)
@@ -489,43 +554,15 @@ class LLMThread(QThread):
                             EventBroker.get_instance().publish("tokens:raw", {"token": text})
 
                             raw_output += text
-                            buffer += text
-
-                            if "<think>" in buffer and not in_thought:
-                                in_thought = True
-                                pre_think = buffer.split("<think>")[0]
-                                if pre_think:
-                                    self.new_chat_token.emit(pre_think)
-                                    EventBroker.get_instance().publish("tokens:chat", {"token": pre_think})
-                                    parsed_response += pre_think
-                                buffer = buffer.split("<think>", 1)[1]
-
-                            if in_thought and "</think>" in buffer:
-                                in_thought = False
-                                parts = buffer.split("</think>", 1)
-                                if parts[0]:
-                                    self.new_thought_token.emit(parts[0])
-                                    EventBroker.get_instance().publish("tokens:thought", {"token": parts[0]})
-                                    parsed_thought += parts[0]
-                                buffer = parts[1]
-                                
-                                if self.hyperparams.get("enable_dynamic_scheduling", True):
-                                    logger.info("Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
-                                    state_transitioned = True
-                                    break
-
-                            if in_thought:
-                                if not any(buffer.endswith(s) for s in _CLOSE_GUARDS):
-                                    self.new_thought_token.emit(buffer)
-                                    EventBroker.get_instance().publish("tokens:thought", {"token": buffer})
-                                    parsed_thought += buffer
-                                    buffer = ""
-                            else:
-                                if not any(buffer.endswith(s) for s in _OPEN_GUARDS):
-                                    self.new_chat_token.emit(buffer)
-                                    EventBroker.get_instance().publish("tokens:chat", {"token": buffer})
-                                    parsed_response += buffer
-                                    buffer = ""
+                            dynamic_scheduling = self.hyperparams.get("enable_dynamic_scheduling", True)
+                            parse_result = parser.feed(
+                                text,
+                                defer_after_think_close=dynamic_scheduling,
+                            )
+                            if parse_result.closed_think and dynamic_scheduling:
+                                logger.info("Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
+                                state_transitioned = True
+                                break
                     finally:
                         self._stop_watchdog(watchdog_thread)
                         close_fn = getattr(response_generator, "close", None)
@@ -534,6 +571,10 @@ class LLMThread(QThread):
                         self._active_response_generator = None
 
                     if self._watchdog_timed_out:
+                        # _cleanup_after_watchdog_timeout() already called
+                        # supervisor.fail() from the watchdog thread; a bare
+                        # return here is safe since the task record is already
+                        # closed out (fail() is a no-op once status != RUNNING).
                         return
 
                     if state_transitioned:
@@ -547,7 +588,7 @@ class LLMThread(QThread):
                     context_budget = ModelLoader.context_limit()
                     
                     compressed = False
-                    if current_tokens_count > 0.8 * context_budget and parsed_thought:
+                    if current_tokens_count > 0.8 * context_budget and parser.parsed_thought:
                         self.new_thought_token.emit("\n[Context full — compressing cognitive state...]\n")
                         try:
                             compress_prompt = (
@@ -556,7 +597,7 @@ class LLMThread(QThread):
                                 "and findings established in the thinking process below. Write a dense, concise summary "
                                 "in one short paragraph so that the reasoning can proceed from that point. "
                                 "Do not solve the problem yourself, just summarize the current train of thought.\n"
-                                f"Thinking process to summarize:\n{parsed_thought}\n<|im_end|>\n"
+                                f"Thinking process to summarize:\n{parser.parsed_thought}\n<|im_end|>\n"
                                 "<|im_start|>assistant\n"
                                 "<think>\n"
                             )
@@ -570,11 +611,12 @@ class LLMThread(QThread):
                             summary = comp_res['choices'][0]['text'].strip()
                             summary = summary.replace("<think>", "").replace("</think>", "")
                             
-                            parsed_thought = f"[Summary of thoughts so far: {summary}]"
-                            raw_output = f"<think>\n{parsed_thought}\n"
-                            in_thought = True # Resume in thought mode
+                            parser.parsed_thought = f"[Summary of thoughts so far: {summary}]"
+                            parser.buffer = ""
+                            raw_output = f"<think>\n{parser.parsed_thought}\n"
+                            parser.in_thought = True # Resume in thought mode
                             compressed = True
-                            self.new_thought_token.emit(f"\n[Compressed state: {parsed_thought}]\n")
+                            self.new_thought_token.emit(f"\n[Compressed state: {parser.parsed_thought}]\n")
                         except Exception as ce:
                             logger.warning("Cognitive compression failed: %s", ce)
                             self.new_thought_token.emit("\n[continuing...]\n")
@@ -590,27 +632,40 @@ class LLMThread(QThread):
                         continuation_count += 1
 
             # Flush remainder
-            if buffer:
-                if in_thought:
-                    self.new_thought_token.emit(buffer)
-                    EventBroker.get_instance().publish("tokens:thought", {"token": buffer})
-                    parsed_thought += buffer
-                else:
-                    self.new_chat_token.emit(buffer)
-                    EventBroker.get_instance().publish("tokens:chat", {"token": buffer})
-                    parsed_response += buffer
+            parser.flush()
 
             # MCP Tool loop — if enabled and model emitted tool calls, execute and continue
             if self.enable_tools:
                 from app.engine.tool_executor import parse_tool_calls, execute_tool_calls
+                from app.engine.mcp_client import MCPClientManager
                 MAX_TOOL_TURNS = 5
                 tool_turn = 0
                 executed_calls = set()
+                # Allow-list of (server, tool) pairs actually offered to the model.
+                # parse_tool_calls() scans the *entire* generated text, which can
+                # include content copied verbatim from RAG-retrieved documents --
+                # without this check, a document containing a forged <tool_call>
+                # tag would get executed as an indirect prompt injection.
+                try:
+                    allowed_tools = {
+                        (t.get("server_name", ""), t.get("name", ""))
+                        for t in MCPClientManager.get_instance().list_tools()
+                    }
+                except Exception as exc:
+                    logger.warning("Could not fetch MCP tool allow-list: %s", exc)
+                    allowed_tools = set()
                 while tool_turn < MAX_TOOL_TURNS:
-                    all_calls = parse_tool_calls(parsed_response + parsed_thought)
-                    # Filter to only calls we haven't executed yet
+                    all_calls = parse_tool_calls(parser.parsed_response + parser.parsed_thought)
+                    # Filter to only calls we haven't executed yet, and only ones
+                    # actually offered to the model this session.
                     calls = []
                     for c in all_calls:
+                        if c["name"] != "done" and (c["server"], c["name"]) not in allowed_tools:
+                            logger.warning(
+                                "Ignoring tool call not in offered tool set: server=%r name=%r",
+                                c["server"], c["name"],
+                            )
+                            continue
                         call_key = (c["server"], c["name"], frozenset(c["args"].items()))
                         if call_key not in executed_calls:
                             calls.append(c)
@@ -624,7 +679,7 @@ class LLMThread(QThread):
                     results = execute_tool_calls(calls)
                     tool_result_text = "\n".join(results)
                     self.new_chat_token.emit(f"\n[Tool Results]\n{tool_result_text}\n")
-                    parsed_response += f"\n[Tool Results]\n{tool_result_text}\n"
+                    parser.parsed_response += f"\n[Tool Results]\n{tool_result_text}\n"
                     # Continue generation with tool results as context
                     prompt = prompt + raw_output + tool_result_text
                     raw_output = ""
@@ -632,7 +687,7 @@ class LLMThread(QThread):
                                    temperature=self.hyperparams.get("temperature", 0.7),
                                    stream=False, stop=["<|im_end|>"], echo=False)
                     continuation = tool_gen["choices"][0]["text"]
-                    parsed_response += continuation
+                    parser.parsed_response += continuation
                     self.new_chat_token.emit(continuation)
                     raw_output = continuation
                     tool_turn += 1
@@ -692,7 +747,7 @@ class LLMThread(QThread):
 
             truncated = (finish_reason == "length")
             # Pass whether we ended inside a thought block so continuation knows where to resume
-            ended_in_thought = in_thought
+            ended_in_thought = parser.in_thought
 
             gpu_temp = _get_gpu_temp()
             throttle_reasons = []
@@ -740,8 +795,8 @@ class LLMThread(QThread):
                 compiled_prompt=prompt,
                 hyperparams=self.hyperparams,
                 raw_output=raw_output,
-                parsed_thought=parsed_thought,
-                parsed_response=parsed_response,
+                parsed_thought=parser.parsed_thought,
+                parsed_response=parser.parsed_response,
                 execution_time=total_time,
                 rag_context=self.retrieved_chunks,
                 model_name=ModelLoader.model_name(),
@@ -754,10 +809,10 @@ class LLMThread(QThread):
                 cooling_duration_sec=cooling_duration,
             )
 
-            self.generation_finished.emit(parsed_thought, parsed_response, truncated, ended_in_thought, diagnostics)
+            self.generation_finished.emit(parser.parsed_thought, parser.parsed_response, truncated, ended_in_thought, diagnostics)
             EventBroker.get_instance().publish("generation:finished", {
-                "thought": parsed_thought,
-                "response": parsed_response,
+                "thought": parser.parsed_thought,
+                "response": parser.parsed_response,
                 "truncated": truncated,
                 "ended_in_thought": ended_in_thought,
                 "diagnostics": diagnostics
@@ -775,6 +830,8 @@ class LLMThread(QThread):
             # Restore original CPU affinity
             if original_affinity:
                 try:
-                    psutil.Process().cpu_affinity(original_affinity)
+                    import os
+                    if hasattr(os, "sched_setaffinity"):
+                        os.sched_setaffinity(0, original_affinity)
                 except Exception as e:
                     logger.debug(f"Could not restore CPU affinity: {e}")

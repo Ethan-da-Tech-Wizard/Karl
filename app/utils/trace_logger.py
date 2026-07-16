@@ -405,18 +405,16 @@ class TraceLogger:
             from cryptography.fernet import Fernet
             import hashlib
             import base64
-            import psutil
-            import platform
-            from core.hardware_scout import get_cpu_flags
-            
-            # 1. Derive key from PROVIDED token and STABLE hardware salt
-            total_ram = psutil.virtual_memory().total
-            total_storage = shutil.disk_usage(os.getcwd()).total
-            cpu_flags = "".join(get_cpu_flags())
-            os_name = platform.system()
-            salt_seed = f"{total_ram}-{total_storage}-{cpu_flags}-{os_name}"
-            
-            k = hashlib.pbkdf2_hmac('sha256', token.encode(), salt_seed.encode(), 100000)
+            from core.hardware_scout import get_hardware_profile
+
+            # 1. Derive key from PROVIDED token and the SAME motherboard-UUID salt
+            # used by _get_encryption_key() at archive time. This must match
+            # exactly, or every archive encrypted by _archive_log() becomes
+            # permanently undecryptable.
+            profile = get_hardware_profile()
+            hardware_uuid = profile.get("hardware_uuid", "karl-locked-host-salt")
+
+            k = hashlib.pbkdf2_hmac('sha256', token.encode(), hardware_uuid.encode(), 100000)
             key = base64.urlsafe_b64encode(k)
             
             # 2. Decrypt

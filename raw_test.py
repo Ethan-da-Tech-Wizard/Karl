@@ -5,13 +5,11 @@ Run: python raw_test.py
 import os
 os.environ["HF_HUB_OFFLINE"] = "1"
 
-from llama_cpp import Llama
-
-MODEL = "data/models/deepseek-r1-1.5b.gguf"
+from app.engine.model_loader import ModelLoader
 
 print("Loading model...")
-llm = Llama(model_path=MODEL, n_ctx=4096, verbose=False)
-print("Model loaded.\n")
+llm = ModelLoader.get_instance()
+print(f"Model loaded: {ModelLoader.model_name()} (n_ctx={ModelLoader.n_ctx()})\n")
 
 # Build a minimal ChatML prompt, pre-seeding <think> so the model
 # immediately enters reasoning mode instead of outputting garbage.
