@@ -48,6 +48,39 @@ USER_NAME = "BridgeToken"
 TOKEN_PATH = "data/bridge_token.json"
 TOKEN_LIFETIME = 43200  # 12 hours
 
+
+def _os_keychain_locked() -> bool:
+    """
+    Best-effort, fast, non-blocking check for whether the OS keychain is in
+    a state that would make get/set/delete_password() block on an unlock
+    prompt — and therefore eat the full _call_keyring_with_timeout() budget
+    on any host with no interactive agent available to answer that prompt
+    (headless, SSH, or — as observed in practice — a desktop session whose
+    default keyring collection is simply locked with no prompter running).
+    Reading a collection's locked state is a plain D-Bus property read, not
+    an unlock attempt, so this itself never blocks.
+
+    Only meaningful for the Linux SecretService backend; every other
+    platform/backend returns False here (proceed as normal — the timeout
+    wrapper in _call_keyring_with_timeout is still the real safety net for
+    those, this is just an optimization to skip the wait when we can
+    already tell it's futile).
+    """
+    if sys.platform != "linux" or not keyring:
+        return False
+    try:
+        backend = keyring.get_keyring()
+        if type(backend).__name__ != "Keyring" or type(backend).__module__ != "keyring.backends.SecretService":
+            return False
+        import secretstorage
+        conn = secretstorage.dbus_init()
+        try:
+            return secretstorage.get_default_collection(conn).is_locked()
+        finally:
+            conn.close()
+    except Exception:
+        return False  # inconclusive -- let the normal timeout-guarded call decide
+
 # Canonical scope set — ordered from least to most privileged.
 FULL_SCOPES: list[str] = [
     "read:telemetry",
@@ -89,6 +122,9 @@ def save_cached_token(token: str):
     # 2. Standard OS Keychain fallback
     if not keyring:
         return
+    if _os_keychain_locked():
+        logger.debug("OS keychain collection is locked with no unlock prompt available; skipping (kernel keyring already handled caching).")
+        return
 
     try:
         _set_password_with_timeout(SERVICE_NAME, USER_NAME, token)
@@ -120,6 +156,9 @@ def load_cached_token() -> str | None:
 
     # 2. Try OS Keychain
     if not keyring:
+        return None
+    if _os_keychain_locked():
+        logger.debug("OS keychain collection is locked with no unlock prompt available; skipping.")
         return None
 
     try:
@@ -271,6 +310,9 @@ def _clear_keyring():
     hung SecretService/D-Bus backend can't also freeze the app on exit.
     """
     if not keyring:
+        return
+    if _os_keychain_locked():
+        logger.debug("OS keychain collection is locked with no unlock prompt available; skipping.")
         return
     try:
         _call_keyring_with_timeout(keyring.delete_password, SERVICE_NAME, USER_NAME)
