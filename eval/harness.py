@@ -22,7 +22,9 @@ Usage:
 """
 
 import json
+import multiprocessing as mp
 import os
+import queue as queue_mod
 import sys
 import time
 from dataclasses import dataclass, field, asdict
@@ -34,6 +36,45 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from eval.graders import run_grader
 from core.prompt_templates import get_template
 from core.workflows import get_workflow
+
+
+def _run_model_worker(
+    queue,
+    system_prompt: str,
+    user_prompt: str,
+    hyperparams: dict,
+    model_name: Optional[str],
+    adapter_name: Optional[str],
+) -> None:
+    """Child-process eval worker. Results are returned through queue."""
+    try:
+        from app.engine.model_loader import ModelLoader
+        from core.interaction_loop import build_prompt
+        from core.cognitive_parser import parse_thought_stream
+
+        model_path = None
+        if model_name:
+            model_path = os.path.join("data", "models", model_name)
+        llm = ModelLoader.get_instance(model_path=model_path, adapter_name=adapter_name)
+        history = [{"role": "user", "content": user_prompt}]
+        prompt = build_prompt(system_prompt, history)
+
+        start = time.time()
+        response = llm(
+            prompt,
+            max_tokens=hyperparams.get("max_tokens", 512),
+            temperature=hyperparams.get("temperature", 0.3),
+            top_p=hyperparams.get("top_p", 0.95),
+            stop=["<|im_end|>"],
+        )
+        latency = time.time() - start
+
+        raw = response["choices"][0]["text"]
+        _thought, parsed = parse_thought_stream(raw)
+        output = parsed.strip() if parsed.strip() else raw.strip()
+        queue.put({"ok": True, "output": output, "latency": latency})
+    except Exception as exc:
+        queue.put({"ok": False, "error": str(exc)})
 
 
 @dataclass
@@ -110,6 +151,7 @@ class EvalHarness:
                           requires it (context falls back to case["context"]).
         """
         self.rag = rag_pipeline
+        self._worker_target = _run_model_worker
 
     def _load_dataset(self, dataset_path: str) -> list[dict]:
         cases = []
@@ -170,6 +212,7 @@ class EvalHarness:
         """
         from app.engine.model_loader import ModelLoader
         from core.interaction_loop import build_prompt
+        from core.cognitive_parser import parse_thought_stream
 
         model_path = None
         if model_name:
@@ -189,10 +232,67 @@ class EvalHarness:
         latency = time.time() - start
 
         raw = response["choices"][0]["text"]
-        # Strip <think>...</think> from output for grading purposes
-        if "</think>" in raw:
-            raw = raw.split("</think>", 1)[1].strip()
-        return raw, latency
+        _thought, parsed = parse_thought_stream(raw)
+        output = parsed.strip() if parsed.strip() else raw.strip()
+        return output, latency
+
+    def _run_model_with_timeout(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        hyperparams: dict,
+        timeout_limit: float,
+        model_name: Optional[str] = None,
+        adapter_name: Optional[str] = None,
+    ) -> tuple[str, float]:
+        """
+        Run one eval case with a killable timeout.
+
+        Process isolation is enabled by default so a wedged llama call can be
+        terminated. Unit tests and debugging can opt out with
+        ``hyperparams["eval_process_isolation"] = False``.
+        """
+        if hyperparams.get("eval_process_isolation", True) is False:
+            return self._run_model(
+                system_prompt,
+                user_prompt,
+                hyperparams,
+                model_name,
+                adapter_name,
+            )
+
+        ctx = mp.get_context("spawn")
+        queue = ctx.Queue(maxsize=1)
+        proc = ctx.Process(
+            target=self._worker_target,
+            args=(queue, system_prompt, user_prompt, hyperparams, model_name, adapter_name),
+            daemon=True,
+        )
+        proc.start()
+        proc.join(timeout_limit)
+
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5.0)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=2.0)
+            raise TimeoutError(
+                f"Evaluation case timed out after {timeout_limit:.1f}s; "
+                "isolated worker was terminated."
+            )
+
+        try:
+            result = queue.get_nowait()
+        except queue_mod.Empty:
+            raise RuntimeError(
+                f"Evaluation worker exited with code {proc.exitcode} without returning a result."
+            )
+
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error", "Evaluation worker failed."))
+
+        return result["output"], float(result["latency"])
 
     def _grade(self, output: str, case: dict, context_chunks: list[str]) -> dict:
         grader_name = case.get("grader", "keyword_hit")
@@ -282,11 +382,6 @@ class EvalHarness:
         latencies: list[float] = []
         scores: list[float] = []
 
-        import concurrent.futures
-        # Create a thread pool with size 1 since we still want sequential eval
-        # but need a way to interrupt a hung model call.
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-
         for i, case in enumerate(cases, 1):
             case_id = case.get("id", f"case_{i:03d}")
             if progress_cb:
@@ -305,16 +400,18 @@ class EvalHarness:
             # ─────────────────────────────────────────────────────────────────
 
             try:
-                # Run model in worker thread with timeout
-                future = executor.submit(self._run_model, system_prompt, user_prompt, hp, model_name, adapter_name)
                 try:
-                    output, latency = future.result(timeout=timeout_limit)
-                except concurrent.futures.TimeoutError:
-                    # Thread hung - likely a deadlock or context overflow loop
-                    print(f" TIMEOUT ({timeout_limit:.1f}s - 3x avg)")
-                    # We must attempt to reset ModelLoader lock if it was acquired inside the thread
-                    ModelLoader.unlock_instance()
-                    raise RuntimeError(f"Evaluation case timed out after {timeout_limit:.1f}s (deadlock guard)")
+                    output, latency = self._run_model_with_timeout(
+                        system_prompt,
+                        user_prompt,
+                        hp,
+                        timeout_limit,
+                        model_name,
+                        adapter_name,
+                    )
+                except TimeoutError as timeout_exc:
+                    print(f" TIMEOUT ({timeout_limit:.1f}s - worker terminated)")
+                    raise RuntimeError(str(timeout_exc)) from timeout_exc
 
                 grade = self._grade(output, case, context_chunks)
                 error = None
@@ -368,8 +465,6 @@ class EvalHarness:
             if not error:
                 latencies.append(latency)
             scores.append(grade.get("score", 0.0))
-        
-        executor.shutdown(wait=False)
 
         total = len(results)
         passed = sum(1 for r in results if r.grade.get("passed"))

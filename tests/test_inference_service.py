@@ -178,6 +178,33 @@ def test_hyperparams_agentic_flag_selects_agentic_thread(service, monkeypatch):
     assert created == ["_Spy"]
 
 
+def test_agentic_thread_receives_model_name_override(service, monkeypatch):
+    """Agentic generation must preserve custom agent model overrides."""
+    import app.engine.inference_service as svc_mod
+
+    created_kwargs = []
+    _OrigFake = svc_mod.AgenticThread
+
+    class _Spy(_OrigFake):
+        def __init__(self, **kw):
+            created_kwargs.append(kw)
+            super().__init__(**kw)
+
+    monkeypatch.setattr(svc_mod, "AgenticThread", _Spy)
+
+    t = service.run_generation(
+        prompt="hi",
+        system_prompt="sys",
+        chat_history=[],
+        hyperparams={},
+        agentic=True,
+        model_name="custom-agent.gguf",
+    )
+    t.wait(2000)
+
+    assert created_kwargs[0]["model_name"] == "custom-agent.gguf"
+
+
 _DC = Qt.ConnectionType.DirectConnection
 
 

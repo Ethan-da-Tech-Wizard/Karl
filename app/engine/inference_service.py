@@ -116,6 +116,7 @@ class InferenceService:
                 workflow=workflow,
                 template=template,
                 adapter_name=adapter_name,
+                model_name=model_name,
             )
         else:
             thread = LLMThread(

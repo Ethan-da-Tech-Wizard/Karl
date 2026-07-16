@@ -150,6 +150,73 @@ def test_agentic_stream_generator_closes_on_cancel():
     assert llm.stream.closed
 
 
+def test_agentic_adapter_direct_answer_routes_to_chat_tokens():
+    from app.engine.agentic_thread import AgenticThread
+    from app.engine.model_loader import ModelLoader
+
+    class FakeStream:
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            yield {"choices": [{"text": "Direct answer.", "finish_reason": "stop"}]}
+
+        def close(self):
+            self.closed = True
+
+    class FakeLLM:
+        def __init__(self):
+            self.stream = FakeStream()
+
+        def __call__(self, *args, **kwargs):
+            return self.stream
+
+        def tokenize(self, data, add_bos=False):
+            return [1]
+
+    original_adapter = getattr(ModelLoader, "_active_adapter", None)
+    try:
+        ModelLoader._active_adapter = "test-adapter"
+        llm = FakeLLM()
+        thread = AgenticThread(
+            system_prompt="system",
+            initial_history=[],
+            hyperparams={"max_tokens": 8},
+        )
+        thought_tokens = []
+        chat_tokens = []
+        thread.new_thought_token.connect(thought_tokens.append)
+        thread.new_chat_token.connect(chat_tokens.append)
+
+        _raw, thought, response, first_token_time = thread._run_single_generation(
+            llm, "prompt", io.StringIO()
+        )
+
+        assert first_token_time is not None
+        assert thought == ""
+        assert response == "Direct answer."
+        assert thought_tokens == []
+        assert chat_tokens == ["Direct answer."]
+        assert llm.stream.closed
+    finally:
+        ModelLoader._active_adapter = original_adapter
+
+
+def test_agentic_repetition_guard_detects_near_duplicate_responses():
+    from app.engine.agentic_thread import AgenticThread
+
+    thread = AgenticThread(
+        system_prompt="system",
+        initial_history=[],
+        hyperparams={"max_tokens": 8},
+    )
+    previous = "This answer repeats the same planning details and conclusion. " * 3
+    current = "This answer repeats the same planning details and conclusion. " * 3
+
+    assert thread._is_repetitive_response(previous, current)
+    assert not thread._is_repetitive_response(previous, "Short but different.")
+
+
 def test_llm_thread_request_stop_sets_flag():
     from app.engine.llm_thread import LLMThread
 

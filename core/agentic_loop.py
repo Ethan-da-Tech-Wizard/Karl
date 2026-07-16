@@ -9,9 +9,6 @@ COMPLETION_SIGNALS = [
     "[DONE]",
     "[END]",
     "[STOP]",
-    "In conclusion,",
-    "To summarize,",
-    "In summary,",
 ]
 
 

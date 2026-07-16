@@ -3,6 +3,7 @@ import sys
 import json
 import tempfile
 import shutil
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -19,6 +20,11 @@ class MockLlama:
         if "CEO of Meridian" in prompt:
             return {"choices": [{"text": "<think>thinking</think>Sandra Holt is the CEO."}]}
         return {"choices": [{"text": "<think>thinking</think>unrelated response"}]}
+
+
+def _sleeping_eval_worker(queue, *args):
+    time.sleep(10)
+    queue.put({"ok": True, "output": "late", "latency": 10.0})
 
 
 def test_eval_harness_model_and_adapter_selection():
@@ -60,6 +66,7 @@ def test_eval_harness_model_and_adapter_selection():
         report = harness.run(
             dataset_path=dataset_path,
             workflow_name="grounded_answer",
+            hyperparams={"eval_process_isolation": False},
             model_name="deepseek-r1-llama-8b.gguf",
             adapter_name="llama_8b_math_greeting"
         )
@@ -126,7 +133,11 @@ def test_eval_harness_failure_curation():
             f.write(json.dumps(case) + "\n")
             
         harness = EvalHarness()
-        report = harness.run(dataset_path=dataset_path, workflow_name="general_chat")
+        report = harness.run(
+            dataset_path=dataset_path,
+            workflow_name="general_chat",
+            hyperparams={"eval_process_isolation": False},
+        )
         
         # Verify case failed
         assert report.total == 1
@@ -163,6 +174,28 @@ def test_eval_harness_failure_curation():
         ModelLoader.n_ctx = orig_n_ctx
         tc.CURATED_PATH = orig_curated_path
         shutil.rmtree(temp_dir)
+
+
+def test_eval_harness_process_timeout_terminates_worker():
+    harness = EvalHarness()
+    harness._worker_target = _sleeping_eval_worker
+
+    start = time.perf_counter()
+    try:
+        try:
+            harness._run_model_with_timeout(
+                system_prompt="system",
+                user_prompt="user",
+                hyperparams={"max_tokens": 1},
+                timeout_limit=0.1,
+            )
+            raise AssertionError("Expected timeout")
+        except TimeoutError as exc:
+            assert "terminated" in str(exc)
+    finally:
+        elapsed = time.perf_counter() - start
+
+    assert elapsed < 3.0
 
 
 if __name__ == "__main__":

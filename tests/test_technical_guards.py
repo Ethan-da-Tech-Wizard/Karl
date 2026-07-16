@@ -127,6 +127,37 @@ class TestTechnicalGuards(unittest.TestCase):
         self.assertEqual(kept[-1]["content"], "recent")
         self.assertNotIn("old" * 100, [item["content"] for item in kept])
 
+    def test_llm_final_prompt_budget_drops_oversized_seed(self):
+        class TokenDenseMock:
+            def tokenize(self, text_bytes, add_bos=False):
+                return [0] * len(text_bytes.decode("utf-8"))
+
+        original_context_limit = ModelLoader.context_limit
+        original_model_name = ModelLoader.model_name
+        ModelLoader.context_limit = lambda: 500
+        ModelLoader.model_name = lambda: "qwen-test.gguf"
+        try:
+            thread = LLMThread(
+                system_prompt="system",
+                chat_history=[],
+                hyperparams={"max_tokens": 128},
+            )
+            prompt, history, _system, tokens, budget = thread._build_prompt_with_context_budget(
+                TokenDenseMock(),
+                "system",
+                [
+                    {"role": "user", "content": "seed " * 500},
+                    {"role": "user", "content": "recent"},
+                ],
+            )
+        finally:
+            ModelLoader.context_limit = original_context_limit
+            ModelLoader.model_name = original_model_name
+
+        self.assertLessEqual(tokens, budget)
+        self.assertIn("recent", prompt)
+        self.assertEqual([item["content"] for item in history], ["recent"])
+
     def test_orchestrator_rejects_unsafe_task_paths(self):
         orchestrator = SwarmOrchestratorThread(
             workspace_path=self.workspace_path,
