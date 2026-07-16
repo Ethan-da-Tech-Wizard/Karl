@@ -85,6 +85,7 @@ class WorkbenchWorkspace(QMainWindow):
         self.chat_history = SessionTree()
         self._thread = None
         self._active_threads: set = set()
+        self._model_load_thread = None
         self._last_response = ""
         self._last_thought = ""
         self._hyperparams = {
@@ -1261,6 +1262,9 @@ class WorkbenchWorkspace(QMainWindow):
         toast.show_toast()
 
     def _on_reload_failed(self, label: str, tb_str: str):
+        if QApplication.instance() and QApplication.instance().property("is_test"):
+            logger.warning(f"Hot-Reload Failed in test: {label}\n{tb_str}")
+            return
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Critical)
         msg.setWindowTitle("Hot-Reload Failed")
@@ -1600,12 +1604,17 @@ class WorkbenchWorkspace(QMainWindow):
             self._update_header_model_status()
             return
         
-        from PyQt6.QtWidgets import QApplication
         import os
+        from app.engine.model_loader import ModelLoader
+        if ModelLoader.is_instance_locked():
+            self._chat_view.append_system_note(
+                "Cannot switch model while inference is active. Stop the current generation first."
+            )
+            return
+        if self._model_load_thread and self._model_load_thread.isRunning():
+            self._chat_view.append_system_note("A model load is already running.")
+            return
 
-        # Disable inputs temporarily during model swap. The model combos are
-        # disabled explicitly so a second selection cannot re-enter this
-        # method while processEvents pumps the queue mid-load.
         self._set_busy(True)
         swap_controls = [
             c for c in (
@@ -1618,41 +1627,44 @@ class WorkbenchWorkspace(QMainWindow):
             control.setEnabled(False)
         loading_text = f"Loading {filename} (adapter: {adapter_name})..." if adapter_name else f"Loading {filename}..."
         self.status_changed.emit(loading_text, True)
-        QApplication.processEvents()
-        
-        try:
-            from app.engine.model_loader import ModelLoader
-            ModelLoader.reset_instance()
-            # Force load the new model with adapter
-            ModelLoader.get_instance(model_path=os.path.join("data", "models", filename), adapter_name=adapter_name)
-            
-            # Save the active model to active_model.json
-            from app.engine import config_store
-            if not config_store.set_active_model(filename, adapter_name):
-                self._chat_view.append_system_note(
-                    "[Warning] Could not persist data/active_model.json — "
-                    "this selection will not survive a restart."
-                )
 
-            self.state.model_name = filename
-            self.state.adapter_name = adapter_name
-            
-            self.model_changed.emit(filename)
-            self.adapter_changed.emit(adapter_name or "")
+        from app.engine.model_load_thread import ModelLoadThread
+        thread = ModelLoadThread(
+            os.path.join("data", "models", filename),
+            adapter_name=adapter_name,
+        )
+
+        def on_loaded(loaded_filename: str, loaded_adapter: str | None, _draft_filename):
+            self.state.model_name = loaded_filename
+            self.state.adapter_name = loaded_adapter
+            self.model_changed.emit(loaded_filename)
+            self.adapter_changed.emit(loaded_adapter or "")
             self._update_model_pill()
             self._refresh_model_combo()
             self._update_expert_strip()
-            
-            note = f"— Active model switched to: {filename} (adapter: {adapter_name or 'none'}) —"
+            note = f"— Active model switched to: {loaded_filename} (adapter: {loaded_adapter or 'none'}) —"
             self._chat_view.append_system_note(note)
-        except Exception as e:
-            self._chat_view.append_system_note(f"[Error switching model: {str(e)}]")
-            self._update_header_model_status(error=str(e))
-        finally:
+
+        def on_error(msg: str):
+            self._chat_view.append_system_note(f"[Error switching model: {msg}]")
+            self._update_header_model_status(error=msg)
+
+        def on_finished():
             for control in swap_controls:
                 control.setEnabled(True)
             self._set_busy(False)
             self.status_changed.emit("idle", False)
+            self._active_threads.discard(thread)
+            if self._model_load_thread is thread:
+                self._model_load_thread = None
+
+        thread.loaded.connect(on_loaded)
+        thread.error.connect(on_error)
+        thread.finished.connect(on_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._active_threads.add(thread)
+        self._model_load_thread = thread
+        thread.start()
 
     def _update_model_pill(self):
         model = self.state.model_name or "no model"
@@ -1980,6 +1992,8 @@ class WorkbenchWorkspace(QMainWindow):
 
     def on_close(self):
         self._save_current_session()
+        if self._model_load_thread is not None and self._model_load_thread.isRunning():
+            self._model_load_thread.wait()
 
     def update_theme(self):
         theme_colors = get_theme_colors(self.state)
@@ -2350,6 +2364,33 @@ class WorkbenchWorkspace(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to delete file: {e}")
 
     # ── public API for main_window ────────────────────────────────────────────
+
+    def new_session(self):
+        self._new_session()
+
+    def save_current_session(self):
+        self._save_current_session()
+
+    def toggle_rag_pipeline(self):
+        self._rag_check.toggle()
+
+    def toggle_agentic_loop(self):
+        self._loop_check.toggle()
+
+    def toggle_all_huds(self):
+        self._toggle_all_huds()
+
+    def toggle_reasoning_panel(self):
+        self._toggle_reasoning()
+
+    def toggle_sessions_panel(self):
+        self._toggle_sessions()
+
+    def toggle_rag_panel(self):
+        self._toggle_rag_hud()
+
+    def toggle_context_panel(self):
+        self._toggle_context_hud()
 
     def set_system_prompt(self, prompt: str):
         self._system_prompt = prompt

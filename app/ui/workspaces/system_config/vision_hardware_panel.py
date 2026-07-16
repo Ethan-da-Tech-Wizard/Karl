@@ -388,6 +388,18 @@ class VisionHardwarePanelMixin:
             free_gb = free / 1_073_741_824
             total_gb = total / 1_073_741_824
             self._disk_progress.setFormat(f"{free_gb:.1f} GB free ({free_percent:.1f}%)")
+
+            # Update circuit breaker status label if it exists
+            if hasattr(self, "_cb_status_lbl") and self._cb_status_lbl is not None:
+                from app.engine.model_loader import ModelLoader
+                state = ModelLoader.get_circuit_breaker_state()
+                if state == "COOLDOWN":
+                    self._cb_status_lbl.setText("<span style='color:#FF5C7A; font-weight:bold;'>Circuit Breaker: COOLDOWN</span>")
+                elif state == "HALF_OPEN":
+                    self._cb_status_lbl.setText("<span style='color:#FFD800; font-weight:bold;'>Circuit Breaker: HALF_OPEN</span>")
+                else:
+                    self._cb_status_lbl.setText("<span style='color:#2DD4A0;'>Circuit Breaker: CLOSED</span>")
+                self._cb_status_lbl.setTextFormat(Qt.TextFormat.RichText)
         except Exception as e:
             logger.warning(f"Error updating live hardware meters: {e}")
 

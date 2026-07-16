@@ -285,28 +285,37 @@ class RegistryPanelMixin:
                 "Stop the current generation first.",
             )
             return
-        ModelLoader.reset_instance()
-        try:
-            path = os.path.join("data", "models", filename)
-            ModelLoader.get_instance(model_path=path)
-            self.state.model_name = filename
 
-            from app.engine import config_store
-            if not config_store.set_active_model(filename):
-                raise OSError("Failed to persist data/active_model.json")
+        path = os.path.join("data", "models", filename)
+        self._progress_panel.setVisible(True)
+        self._download_status_lbl.setText(f"Activating {filename}...")
+        self._download_bar.setRange(0, 0)
+        self._set_ui_enabled_for_download(False)
 
-            self._scan_models(force=True)
-            self._populate_registry()
-            
-            self._model_path_input.setText(path)
-            self._run_model_preflight_checks()
-            
+        def finish_activation_ui():
+            self._progress_panel.setVisible(False)
+            self._download_bar.setRange(0, 100)
+            self._download_bar.setValue(0)
+            self._set_ui_enabled_for_download(True)
+
+        def on_loaded(_filename, _adapter, _draft):
+            finish_activation_ui()
             QMessageBox.information(
                 self, "Model Activated",
                 f"Model '{filename}' has been activated successfully!"
             )
-        except Exception as e:
-            QMessageBox.critical(self, "Activation Error", f"Failed to activate model: {e}")
+
+        started = self._start_model_load(
+            path,
+            status_label=getattr(self, "_model_status", None),
+            on_loaded=on_loaded,
+            on_error=lambda _msg: finish_activation_ui(),
+            on_finished=finish_activation_ui,
+        )
+        if not started:
+            self._progress_panel.setVisible(False)
+            self._download_bar.setRange(0, 100)
+            self._set_ui_enabled_for_download(True)
 
 
     def _start_download(self, url: str, filename: str):
@@ -382,4 +391,3 @@ class RegistryPanelMixin:
         self._download_thread = None
 
     # ── defaults tab ──────────────────────────────────────────────────────────
-

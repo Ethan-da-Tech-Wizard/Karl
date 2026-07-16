@@ -435,6 +435,37 @@ class _FlywheelDashboardLoader(QThread):
         self.loaded.emit(stats, failure_pairs, training_history, quant_data)
 
 
+class _LogDecryptThread(QThread):
+    loaded = pyqtSignal(list)
+    unauthorized = pyqtSignal()
+
+    def __init__(self, token_text: str, archive_paths: list[str]):
+        super().__init__()
+        self.token_text = token_text
+        self.archive_paths = list(archive_paths)
+
+    def run(self):
+        from app.utils.trace_logger import TraceLogger
+
+        all_entries: list[dict] = []
+        auth_ok = False
+        for path in self.archive_paths:
+            try:
+                entries = TraceLogger.decrypt_in_memory(self.token_text, path)
+                all_entries.extend(entries)
+                auth_ok = True
+            except ValueError:
+                self.unauthorized.emit()
+                return
+            except Exception as e:
+                logger.warning("Could not decrypt %s: %s", path, e)
+
+        if not auth_ok:
+            self.unauthorized.emit()
+            return
+        self.loaded.emit(all_entries)
+
+
 # ── Flywheel Studio Workspace Widget ─────────────────────────────────────────
 
 class FlywheelStudioWorkspace(QWidget):
@@ -443,6 +474,7 @@ class FlywheelStudioWorkspace(QWidget):
         self.state = state
         self.setObjectName("workspace-root")
         self._active_loader = None
+        self._log_decrypt_thread = None
         self._stats_data = {}
         self._failure_pairs = []
         self._training_history = []
@@ -911,10 +943,10 @@ class FlywheelStudioWorkspace(QWidget):
         self._log_token_input.returnPressed.connect(self._on_authorize_logs)
         ac_lay.addWidget(self._log_token_input)
 
-        auth_btn = QPushButton("Authorize & Load Logs")
-        auth_btn.setObjectName("btn-primary")
-        auth_btn.clicked.connect(self._on_authorize_logs)
-        ac_lay.addWidget(auth_btn)
+        self._log_auth_btn = QPushButton("Authorize & Load Logs")
+        self._log_auth_btn.setObjectName("btn-primary")
+        self._log_auth_btn.clicked.connect(self._on_authorize_logs)
+        ac_lay.addWidget(self._log_auth_btn)
 
         self._log_auth_error = QLabel("Authorization Failed: Invalid token.")
         self._log_auth_error.setStyleSheet("color: #FF5C7A; font-weight: bold;")
@@ -1005,7 +1037,8 @@ class FlywheelStudioWorkspace(QWidget):
         self._do_authorize_with_token(token_text, manual=True)
 
     def _do_authorize_with_token(self, token_text: str, manual: bool = False) -> None:
-        from app.utils.trace_logger import TraceLogger
+        if self._log_decrypt_thread is not None and self._log_decrypt_thread.isRunning():
+            return
 
         archive_dir = "data/logs/archive"
         enc_files = sorted(
@@ -1020,32 +1053,41 @@ class FlywheelStudioWorkspace(QWidget):
                 self._log_auth_error.setVisible(True)
             return
 
-        all_entries: list[dict] = []
-        auth_ok = False
-        for path in enc_files:
-            try:
-                entries = TraceLogger.decrypt_in_memory(token_text, path)
-                all_entries.extend(entries)
-                auth_ok = True
-            except ValueError:
-                # Wrong token — stop immediately
-                break
-            except Exception as e:
-                logger.warning("Could not decrypt %s: %s", path, e)
+        self._log_auth_error.setVisible(False)
+        if manual:
+            self._log_auth_error.setText("Decrypting archives...")
+            self._log_auth_error.setVisible(True)
+        self._log_token_input.setEnabled(False)
+        self._log_auth_btn.setEnabled(False)
 
-        if not auth_ok:
+        thread = _LogDecryptThread(token_text, enc_files)
+
+        def on_loaded(entries: list):
+            if manual:
+                save_cached_token(token_text)
+            self._log_auth_error.setVisible(False)
+            self._populate_log_dashboard(entries)
+            self._log_inspector_stack.setCurrentIndex(1)
+
+        def on_unauthorized():
             if manual:
                 self._log_auth_error.setText("Authorization Failed: Invalid token.")
                 self._log_auth_error.setVisible(True)
-            return
+            else:
+                self._log_auth_error.setVisible(False)
 
-        # If successful and manual, cache it
-        if manual:
-            save_cached_token(token_text)
+        def on_finished():
+            self._log_token_input.setEnabled(True)
+            self._log_auth_btn.setEnabled(True)
+            if self._log_decrypt_thread is thread:
+                self._log_decrypt_thread = None
 
-        self._log_auth_error.setVisible(False)
-        self._populate_log_dashboard(all_entries)
-        self._log_inspector_stack.setCurrentIndex(1)
+        thread.loaded.connect(on_loaded)
+        thread.unauthorized.connect(on_unauthorized)
+        thread.finished.connect(on_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._log_decrypt_thread = thread
+        thread.start()
 
     def _on_lock_logs(self) -> None:
         self._log_trace_list.clear()

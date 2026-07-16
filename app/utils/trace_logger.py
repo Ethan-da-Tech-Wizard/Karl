@@ -17,6 +17,13 @@ logger = logging.getLogger("karl.trace_logger")
 
 _MAX_BYTES = 50 * 1024 * 1024  # 50 MB per file before rotation
 
+# PBKDF2-HMAC-SHA256 iteration counts for the archive encryption key.
+# New archives always use the stronger count; decrypt paths also try the
+# older, weaker count so archives written before this hardening pass remain
+# readable.
+_PBKDF2_ITERATIONS = 600_000
+_LEGACY_PBKDF2_ITERATIONS = 100_000
+
 # ── libc page locking ────────────────────────────────────────────────────────
 _libc = None
 if sys.platform != "win32":
@@ -91,37 +98,62 @@ class TraceLogger:
             return 10 * 1024 * 1024
 
     def _get_encryption_key(self) -> bytes:
-        """Derives a Fernet-compatible encryption key from bridge token and physical hardware UUID."""
-        try:
-            # 1. Load bridge token
-            token = "karl-default-secret"
-            token_path = "data/bridge_token.json"
-            if os.path.exists(token_path):
-                with open(token_path, "r") as f:
-                    token_data = json.load(f)
-                    token = token_data.get("token", token)
-            
-            # 2. Get Machine-Locked Salt (Motherboard UUID)
-            from core.hardware_scout import get_hardware_profile
-            profile = get_hardware_profile()
-            hardware_uuid = profile.get("hardware_uuid", "karl-locked-host-salt")
-            
-            # 3. Derive key using PBKDF2
-            k = hashlib.pbkdf2_hmac(
-                'sha256', 
-                token.encode(), 
-                hardware_uuid.encode(), 
-                100000
+        """
+        Derives a Fernet-compatible encryption key from the bridge token and
+        the machine-locked hardware UUID salt.
+
+        Raises RuntimeError rather than falling back to any hardcoded
+        password/salt/key: a static fallback baked into the source is public
+        by definition, so silently downgrading to it would make every
+        archive it protects trivially decryptable by anyone who has read
+        this file. Callers (see _archive_log) must treat this as "cannot
+        encrypt right now" and refuse to archive, not paper over it.
+        """
+        token_path = "data/bridge_token.json"
+        if not os.path.exists(token_path):
+            raise RuntimeError(
+                f"No bridge token found at {token_path} — cannot derive a "
+                "trace-log encryption key. Start the WebSocket bridge at "
+                "least once (it provisions the token) before archiving logs."
             )
-            # Fernet keys must be 32 url-safe base64-encoded bytes
-            return base64.urlsafe_b64encode(k)
-        except Exception as e:
-            logger.error(f"Failed to derive encryption key: {e}")
-            return base64.urlsafe_b64encode(b"karl-emergency-fallback-key-32b!")
+        with open(token_path, "r") as f:
+            token_data = json.load(f)
+        token = token_data.get("token")
+        if not token:
+            raise RuntimeError(f"{token_path} does not contain a usable bridge token.")
+
+        # Machine-locked salt (motherboard UUID / machine-id derived).
+        from core.hardware_scout import get_hardware_profile
+        profile = get_hardware_profile()
+        hardware_uuid = profile.get("hardware_uuid")
+        if not hardware_uuid:
+            raise RuntimeError(
+                "Could not determine a hardware UUID salt for key derivation."
+            )
+
+        k = hashlib.pbkdf2_hmac(
+            'sha256',
+            token.encode(),
+            hardware_uuid.encode(),
+            _PBKDF2_ITERATIONS,
+        )
+        # Fernet keys must be 32 url-safe base64-encoded bytes
+        return base64.urlsafe_b64encode(k)
 
     @staticmethod
     def _zero_bytes(ba: bytearray) -> None:
-        """Overwrite every byte of *ba* with 0x00 in-place (cryptographic memory sanitization)."""
+        """Overwrite every byte of *ba* with 0x00 in-place (cryptographic memory sanitization).
+
+        This only scrubs the mutable bytearray passed in. It does NOT retroactively
+        scrub the immutable `bytes` objects that fed into it upstream (e.g. the
+        token/hardware_uuid encodes, the raw PBKDF2 digest, and the base64-encoded
+        key in _get_encryption_key()) — CPython gives no way to zero an immutable
+        object's backing memory, so those linger as ordinary garbage until the
+        allocator happens to reuse that heap slot. mlockall() in _secure_mem_lock()
+        prevents those pages from being swapped to disk while locked, but it is not
+        equivalent to scrubbing them. Treat this as best-effort, not a guarantee
+        that no copy of the key material remains in process memory.
+        """
         for i in range(len(ba)):
             ba[i] = 0
 
@@ -244,7 +276,18 @@ class TraceLogger:
             # Fallback to standard Gzip if cryptography is missing
             self._archive_log_plaintext(file_path)
         except Exception as e:
-            logger.error(f"Failed to encrypt archive log file {file_path}: {e}")
+            # Deliberately do NOT fall back to plaintext or a weaker key here:
+            # this branch is reached when _get_encryption_key() refuses to
+            # derive a key (see its docstring). The source file is left in
+            # place, unarchived — it stays as an ordinary plaintext trace log
+            # under log_dir (no worse than before archival was attempted) and
+            # will be retried on the next rotation, rather than silently
+            # protected by a key an attacker could trivially reproduce.
+            logger.critical(
+                "Could not encrypt-archive %s: %s. Leaving it unarchived under "
+                "%s until the key can be derived (see _get_encryption_key).",
+                file_path, e, self.log_dir,
+            )
 
     def _archive_log_plaintext(self, file_path: str):
         """Standard Gzip archival fallback."""
@@ -410,26 +453,38 @@ class TraceLogger:
             # 1. Derive key from PROVIDED token and the SAME motherboard-UUID salt
             # used by _get_encryption_key() at archive time. This must match
             # exactly, or every archive encrypted by _archive_log() becomes
-            # permanently undecryptable.
+            # permanently undecryptable. No fallback salt is used here: a
+            # missing hardware UUID means the key can't possibly match what
+            # was used at archive time (that path now also refuses to use a
+            # fallback — see _get_encryption_key), so guessing would just
+            # waste time before failing anyway.
             profile = get_hardware_profile()
-            hardware_uuid = profile.get("hardware_uuid", "karl-locked-host-salt")
+            hardware_uuid = profile.get("hardware_uuid")
+            if not hardware_uuid:
+                raise ValueError("Could not determine a hardware UUID salt for key derivation.")
 
-            k = hashlib.pbkdf2_hmac('sha256', token.encode(), hardware_uuid.encode(), 100000)
-            key = base64.urlsafe_b64encode(k)
-            
-            # 2. Decrypt
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"Archive not found: {file_path}")
-                
+
             with open(file_path, 'rb') as f_in:
                 encrypted_data = f_in.read()
-            
-            fernet = Fernet(key)
-            try:
-                gzipped_data = fernet.decrypt(encrypted_data)
-            except Exception:
-                raise ValueError("Invalid bridge token or hardware profile mismatch.")
-            
+
+            # 2. Decrypt — try the current iteration count first, then the
+            # legacy (pre-hardening) count so archives written before the
+            # PBKDF2 iteration bump remain readable.
+            gzipped_data = None
+            last_exc: Exception | None = None
+            for iterations in (_PBKDF2_ITERATIONS, _LEGACY_PBKDF2_ITERATIONS):
+                k = hashlib.pbkdf2_hmac('sha256', token.encode(), hardware_uuid.encode(), iterations)
+                key = base64.urlsafe_b64encode(k)
+                try:
+                    gzipped_data = Fernet(key).decrypt(encrypted_data)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+            if gzipped_data is None:
+                raise ValueError("Invalid bridge token or hardware profile mismatch.") from last_exc
+
             # 3. Decompress and Parse
             decompressed = gzip.decompress(gzipped_data).decode('utf-8')
             records = []

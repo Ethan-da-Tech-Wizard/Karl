@@ -87,6 +87,59 @@ class _IngestThread(QThread):
             self.error.emit(str(e))
 
 
+class _RagOperationThread(QThread):
+    done = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, rag, operation: str, argument: str | None = None):
+        super().__init__()
+        self.rag = rag
+        self.operation = operation
+        self.argument = argument
+
+    def run(self):
+        try:
+            if self.operation == "preload":
+                self.rag.preload_encoder()
+                self.done.emit("Encoder ready.")
+            elif self.operation == "remove_source":
+                self.rag.remove_source(self.argument or "")
+                self.done.emit(f"Removed source: {self.argument}")
+            elif self.operation == "rebuild":
+                self.rag.rebuild_index()
+                self.done.emit("Index rebuilt successfully.")
+            elif self.operation == "clear":
+                self.rag.clear_index()
+                self.done.emit("Index cleared.")
+            else:
+                raise ValueError(f"unknown RAG operation: {self.operation}")
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class _SearchThread(QThread):
+    done = pyqtSignal(str, list)
+    error = pyqtSignal(str)
+
+    def __init__(self, rag, query: str, top_k: int, mode: str):
+        super().__init__()
+        self.rag = rag
+        self.query = query
+        self.top_k = top_k
+        self.mode = mode
+
+    def run(self):
+        try:
+            results = self.rag.retrieve_with_metadata(
+                self.query,
+                top_k=self.top_k,
+                mode=self.mode,
+            )
+            self.done.emit(self.query, results)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class VectorProjectionWidget(QFrame):
     """Interactive 2D projection canvas for query/document vector relationships."""
 
@@ -450,6 +503,8 @@ class KnowledgeBaseWorkspace(QWidget):
         self.setAcceptDrops(True)
         self._load_rag_config()
         self._active_threads = set()
+        self._rag_operation_thread = None
+        self._search_thread = None
         self._ingest_queue = []
         self._tfidf = TfidfEmbedder()
         self._build_ui()
@@ -570,11 +625,11 @@ class KnowledgeBaseWorkspace(QWidget):
         self._rebuild_btn.clicked.connect(self._rebuild_index)
         ll.addWidget(self._rebuild_btn)
 
-        clear_btn = QPushButton("clear database")
-        clear_btn.setObjectName("btn-danger")
-        clear_btn.setToolTip("Wipe the vector database index and all ingested document text")
-        clear_btn.clicked.connect(self._clear_index)
-        ll.addWidget(clear_btn)
+        self._clear_btn = QPushButton("clear database")
+        self._clear_btn.setObjectName("btn-danger")
+        self._clear_btn.setToolTip("Wipe the vector database index and all ingested document text")
+        self._clear_btn.clicked.connect(self._clear_index)
+        ll.addWidget(self._clear_btn)
 
         splitter.addWidget(left)
 
@@ -738,10 +793,10 @@ class KnowledgeBaseWorkspace(QWidget):
         self._search_input.returnPressed.connect(self._run_search)
         sr.addWidget(self._search_input, 1)
 
-        search_btn = QPushButton("Search Index")
-        search_btn.setObjectName("btn-primary")
-        search_btn.clicked.connect(self._run_search)
-        sr.addWidget(search_btn)
+        self._search_btn = QPushButton("Search Index")
+        self._search_btn.setObjectName("btn-primary")
+        self._search_btn.clicked.connect(self._run_search)
+        sr.addWidget(self._search_btn)
 
         self._send_to_workbench_btn = QPushButton("Send to Workbench")
         self._send_to_workbench_btn.setObjectName("btn-ghost")
@@ -772,13 +827,12 @@ class KnowledgeBaseWorkspace(QWidget):
     def _preload_encoder(self):
         self._model_status_lbl.setText("Encoder: Loading...")
         self._preload_btn.setEnabled(False)
-        from PyQt6.QtWidgets import QApplication
-        QApplication.processEvents()
-        try:
-            self.state.rag.preload_encoder()
-            self._update_encoder_status()
-        except Exception as e:
-            self._model_status_lbl.setText(f"Encoder Error: {e}")
+        self._start_rag_operation(
+            "preload",
+            status_text="Loading encoder...",
+            done_cb=lambda _msg: self._update_encoder_status(),
+            error_cb=lambda msg: self._model_status_lbl.setText(f"Encoder Error: {msg}"),
+        )
 
     def _update_health_lbl(self):
         index_file = self.state.rag.INDEX_FILE
@@ -912,6 +966,68 @@ class KnowledgeBaseWorkspace(QWidget):
         self._ingest_thread.error.connect(on_error)
         self._ingest_thread.start()
 
+    def _set_index_controls_enabled(self, enabled: bool):
+        for control in (
+            getattr(self, "_remove_btn", None),
+            getattr(self, "_rebuild_btn", None),
+            getattr(self, "_clear_btn", None),
+            getattr(self, "_preload_btn", None),
+        ):
+            if control is not None:
+                control.setEnabled(enabled)
+
+    def _start_rag_operation(
+        self,
+        operation: str,
+        argument: str | None = None,
+        *,
+        status_text: str,
+        done_cb=None,
+        error_cb=None,
+    ):
+        if self._rag_operation_thread is not None and self._rag_operation_thread.isRunning():
+            self._ingest_status.setText("Another index operation is already running.")
+            return False
+
+        self._ingest_status.setText(status_text)
+        self._progress.setVisible(True)
+        self._progress.setRange(0, 0)
+        self._set_index_controls_enabled(False)
+
+        thread = _RagOperationThread(self.state.rag, operation, argument)
+
+        def on_done(msg: str):
+            if done_cb is not None:
+                done_cb(msg)
+            else:
+                self._refresh_sources()
+                self._update_encoder_status()
+                self._ingest_status.setText(msg)
+
+        def on_error(msg: str):
+            if error_cb is not None:
+                error_cb(msg)
+            else:
+                self._ingest_status.setText(f"Index operation error: {msg}")
+
+        def on_finished():
+            self._progress.setVisible(False)
+            self._progress.setRange(0, 100)
+            self._set_index_controls_enabled(True)
+            self._update_encoder_status()
+            self._active_threads.discard(thread)
+            if self._rag_operation_thread is thread:
+                self._rag_operation_thread = None
+
+        thread.done.connect(on_done)
+        thread.error.connect(on_error)
+        thread.finished.connect(on_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._active_threads.add(thread)
+        self._rag_operation_thread = thread
+        thread.start()
+        return True
+
     def _remove_selected_source(self):
         curr_source = self._source_list.currentItem()
         if not curr_source:
@@ -925,10 +1041,17 @@ class KnowledgeBaseWorkspace(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self.state.rag.remove_source(source_name)
-            self._refresh_sources()
-            self._source_inspector.clear()
-            self._search_results.clear()
+            self._start_rag_operation(
+                "remove_source",
+                source_name,
+                status_text=f"Removing {source_name}...",
+                done_cb=lambda msg: (
+                    self._refresh_sources(),
+                    self._source_inspector.clear(),
+                    self._search_results.clear(),
+                    self._ingest_status.setText(msg),
+                ),
+            )
 
     def _rebuild_index(self):
         reply = QMessageBox.question(
@@ -937,22 +1060,22 @@ class KnowledgeBaseWorkspace(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._ingest_status.setText("Rebuilding index...")
-            self._progress.setVisible(True)
-            # Disable the trigger so a second click cannot re-enter while
-            # processEvents pumps the queue during the rebuild.
-            self._rebuild_btn.setEnabled(False)
-            from PyQt6.QtWidgets import QApplication
-            QApplication.processEvents()
-            try:
-                self.state.rag.rebuild_index()
-                self._refresh_sources()
-                self._ingest_status.setText("Index rebuilt successfully.")
-            except Exception as e:
-                self._ingest_status.setText(f"Rebuild error: {e}")
-            finally:
-                self._progress.setVisible(False)
-                self._rebuild_btn.setEnabled(True)
+            self._start_rag_operation(
+                "rebuild",
+                status_text="Rebuilding index...",
+                done_cb=lambda msg: (
+                    self._refresh_sources(),
+                    self._update_encoder_status(),
+                    self._ingest_status.setText(msg),
+                ),
+            )
+
+    def open_ingest_dialog(self):
+        self._tabs.setCurrentIndex(1)
+        self._ingest_file()
+
+    def rebuild_index(self):
+        self._rebuild_index()
 
     def _send_query_to_workbench(self):
         query = self._search_input.text().strip()
@@ -969,10 +1092,48 @@ class KnowledgeBaseWorkspace(QWidget):
         if self.state.rag.total_chunks == 0:
             self._search_results.setHtml("<div style='color:#F05050;'>Knowledge base is empty.</div>")
             return
+        if self._search_thread is not None and self._search_thread.isRunning():
+            return
 
         top_k = self._topk_spin.value()
         mode = getattr(self.state, "rag_mode", "dense")
-        results = self.state.rag.retrieve_with_metadata(query, top_k=top_k, mode=mode)
+        self._search_results.setHtml("<div style='color:#9090A8;'>Searching index...</div>")
+        self._search_btn.setEnabled(False)
+        self._search_input.setEnabled(False)
+
+        thread = _SearchThread(self.state.rag, query, top_k, mode)
+
+        def on_done(done_query: str, results: list):
+            self._render_search_results(done_query, results)
+
+        def on_error(msg: str):
+            self._search_results.setHtml(
+                f"<div style='color:#F05050;'>Search error: {html.escape(msg)}</div>"
+            )
+
+        def on_finished():
+            self._search_btn.setEnabled(True)
+            self._search_input.setEnabled(True)
+            self._active_threads.discard(thread)
+            if self._search_thread is thread:
+                self._search_thread = None
+
+        thread.done.connect(on_done)
+        thread.error.connect(on_error)
+        thread.finished.connect(on_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._active_threads.add(thread)
+        self._search_thread = thread
+        thread.start()
+
+    def _render_search_results(self, query: str, results: list):
+        from app.ui.themes import get_theme_colors
+        colors = get_theme_colors(self.state)
+        accent = colors.get("accent", "#00C2FF")
+        text_hi = colors.get("text_hi", "#ECECF5")
+        text_mid = colors.get("text_mid", "#9090A8")
+        bg_surface = colors.get("bg_surface", "#141424")
+        border = colors.get("border", "#28283F")
 
         threshold = self._threshold_spin.value()
         if threshold > 0:
@@ -985,8 +1146,8 @@ class KnowledgeBaseWorkspace(QWidget):
             return
 
         lines = [
-            f"<div style='font-size:11pt;color:#00C2FF;font-weight:bold;margin-bottom:4px;'>Search Results for: <i>{html.escape(query)}</i></div>"
-            f"<div style='font-size:9pt;color:#9090A8;margin-bottom:12px;'>Found {len(results)} chunks:</div>"
+            f"<div style='font-size:11pt;color:{accent};font-weight:bold;margin-bottom:4px;'>Search Results for: <i>{html.escape(query)}</i></div>"
+            f"<div style='font-size:9pt;color:{text_mid};margin-bottom:12px;'>Found {len(results)} chunks:</div>"
         ]
         for idx, r in enumerate(results):
             dist = r["distance"]
@@ -1001,19 +1162,19 @@ class KnowledgeBaseWorkspace(QWidget):
                 f"<div style='margin-top:8px;background:#1e1e30;border-radius:3px;height:6px;width:100%;overflow:hidden;'>"
                 f"<div style='background:{dist_color};height:100%;width:{pct:.1f}%;border-radius:3px;'></div>"
                 f"</div>"
-                f"<div style='font-size:7.5pt;color:#9090A8;margin-top:2px;'>Distance score relative to threshold: {pct:.1f}%</div>"
+                f"<div style='font-size:7.5pt;color:{text_mid};margin-top:2px;'>Distance score relative to threshold: {pct:.1f}%</div>"
             )
 
             lines.append(
-                f"<div style='background:#141424;border:1px solid #28283f;border-radius:6px;padding:12px;margin-bottom:12px;'>"
-                f"<div style='font-size:8.5pt;color:#9090A8;margin-bottom:6px;font-weight:bold;'>"
-                f"<span style='color:#00C2FF;'>📄 {html.escape(r['source_file'])}</span>"
+                f"<div style='background:{bg_surface};border:1px solid {border};border-radius:6px;padding:12px;margin-bottom:12px;'>"
+                f"<div style='font-size:8.5pt;color:{text_mid};margin-bottom:6px;font-weight:bold;'>"
+                f"<span style='color:{accent};'>📄 {html.escape(r['source_file'])}</span>"
                 f" &nbsp;&middot;&nbsp; <span>Chunk {r['chunk_id']}</span>"
                 f" &nbsp;&middot;&nbsp; <span style='background:rgba(240,176,48,0.06); border:1px solid {dist_color}; border-radius:3px; padding:1px 5px; color:{dist_color};'>dist: {dist:.4f}</span>"
-                f" &nbsp;&middot;&nbsp; <span style='background:rgba(0,194,255,0.06); border:1px solid #00C2FF; border-radius:3px; padding:1px 5px; color:#00C2FF;'>Rank: {rank}</span>"
-                f" <a href='copy:{r['chunk_id']}' style='color:#00C2FF;text-decoration:none;font-weight:bold;float:right;background:#1A1A2F;border:1px solid #00C2FF;border-radius:3px;padding:1px 6px;font-size:7.5pt;'>Copy chunk</a>"
+                f" &nbsp;&middot;&nbsp; <span style='background:rgba(0,194,255,0.06); border:1px solid {accent}; border-radius:3px; padding:1px 5px; color:{accent};'>Rank: {rank}</span>"
+                f" <a href='copy:{r['chunk_id']}' style='color:{accent};text-decoration:none;font-weight:bold;float:right;background:#1A1A2F;border:1px solid {accent};border-radius:3px;padding:1px 6px;font-size:7.5pt;'>Copy chunk</a>"
                 f"</div>"
-                f"<div style='font-size:9.5pt;color:#ECECF5;white-space:pre-wrap;line-height:1.5;'>{html.escape(r['text'])}</div>"
+                f"<div style='font-size:9.5pt;color:{text_hi};white-space:pre-wrap;line-height:1.5;'>{html.escape(r['text'])}</div>"
                 f"{bar_html}"
                 f"</div>"
             )
@@ -1042,11 +1203,16 @@ class KnowledgeBaseWorkspace(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self.state.rag.clear_index()
-            self._refresh_sources()
-            self._search_results.clear()
-            self._source_inspector.clear()
-            self._ingest_status.setText("index cleared")
+            self._start_rag_operation(
+                "clear",
+                status_text="Clearing index...",
+                done_cb=lambda msg: (
+                    self._refresh_sources(),
+                    self._search_results.clear(),
+                    self._source_inspector.clear(),
+                    self._ingest_status.setText(msg.lower()),
+                ),
+            )
 
     def _load_rag_config(self):
         import json

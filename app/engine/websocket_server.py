@@ -37,6 +37,33 @@ from app.utils.correlation_logger import new_correlation_id, set_correlation_id
 
 logger = logging.getLogger("karl.websocket")
 
+# Adapter/artifact names are used to build filesystem paths under data/adapters/
+# (see auto_train.py, model_loader.py). Restrict to a safe charset so a
+# malicious "adapter_name" RPC param can't path-traverse outside that
+# directory (e.g. "../../../etc/cron.d/x").
+_SAFE_ADAPTER_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+
+
+class TokenBucket:
+    """Thread-safe Token Bucket rate limiter."""
+    def __init__(self, capacity: float, fill_rate: float):
+        self.capacity = capacity
+        self.fill_rate = fill_rate
+        self.tokens = capacity
+        self.last_update = time.time()
+        self._lock = threading.Lock()
+
+    def consume(self, amount: float = 1.0) -> bool:
+        with self._lock:
+            now = time.time()
+            elapsed = now - self.last_update
+            self.last_update = now
+            self.tokens = min(self.capacity, self.tokens + elapsed * self.fill_rate)
+            if self.tokens >= amount:
+                self.tokens -= amount
+                return True
+            return False
+
 
 class WebSocketServerManager:
     """Secure JSON-RPC 2.0 WebSocket bridge for editor integrations."""
@@ -83,7 +110,9 @@ class WebSocketServerManager:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.loop_thread: Optional[threading.Thread] = None
         self.orchestrator: Optional[SwarmOrchestratorThread] = None
+        self.orchestrator_owner = None
         self.chat_thread = None
+        self.chat_thread_owner = None
         self.mini_train_thread = None
         self._lease_audit_task: asyncio.Task | None = None
         # Guards orchestrator/chat_thread hand-off: the asyncio handler
@@ -127,6 +156,14 @@ class WebSocketServerManager:
         "submit_task":        "admin:execute",
         "submit_chat":        "admin:execute",
         "swarm_inject_guidance": "admin:execute",
+        "set_active_model":   "admin:execute",
+        "save_prompt_pair":   "admin:execute",
+        "delete_prompt_pair": "admin:execute",
+        "start_auto_train":   "admin:execute",
+        "create_custom_agent": "admin:execute",
+        "start_mini_train":   "admin:execute",
+        "stop_task":          "admin:execute",
+        "fit_vectorizer":     "write:kb",
     }
     _SSL_CERT_PATH = "data/ssl/localhost.crt"
     _SSL_KEY_PATH = "data/ssl/localhost.key"
@@ -198,7 +235,7 @@ class WebSocketServerManager:
             self._token_created_at = time.time()
             self._token_store = {env_token: list(self._FULL_SCOPES)}
             self._persist_token_store()
-            save_cached_token(self.bridge_token)
+            self._save_token_safe(self.bridge_token)
         elif os.path.exists(self._TOKEN_PATH):
             try:
                 with open(self._TOKEN_PATH, "r", encoding="utf-8") as f:
@@ -221,22 +258,54 @@ class WebSocketServerManager:
                 if time.time() - self._token_created_at > self._TOKEN_LIFETIME or not self.bridge_token:
                     self._rotate_token()
                 else:
-                    save_cached_token(self.bridge_token)
+                    self._save_token_safe(self.bridge_token)
             except Exception:
                 self._rotate_token()
         else:
             self._rotate_token()
 
-        # Sensitive directories that should never be targeted by agents or RAG
+        # Sensitive directories that should never be targeted by agents or RAG.
+        #
+        # This is a blocklist, not an allowlist: paths outside it (e.g. a
+        # mounted USB drive under /media, or /tmp scratch space) are
+        # permitted by design, so this list needs to name every sensitive
+        # directory explicitly rather than relying on a catch-all. Note "/"
+        # itself only blocks the literal path "/" (via the `==` branch in
+        # _is_safe_path below) — a bare "/" entry can't act as "block every
+        # path under it" because real_path.startswith(real_blocked + os.sep)
+        # would require the path to start with "//", which no normalized
+        # absolute path does. List concrete directories instead of relying
+        # on that.
         self.blocked_paths = {
-            "/", "/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin",
-            "/var", "/boot", "/dev", "/proc", "/sys", "/root"
+            "/", "/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/lib",
+            "/usr/local", "/var", "/boot", "/dev", "/proc", "/sys", "/root",
+            "/opt", "/srv", "/lib", "/lib64",
         }
         user_home = os.path.expanduser("~")
         self.blocked_paths.add(user_home)
         self.blocked_paths.add(os.path.join(user_home, "Desktop"))
         self.blocked_paths.add(os.path.join(user_home, "Documents"))
         self.blocked_paths.add(os.path.join(user_home, "Downloads"))
+
+        # Block every other local user's home directory too, not just this
+        # process's own $HOME — on a shared/multi-user host, ingest_path
+        # previously had no protection against reading another user's files.
+        try:
+            homes_root = os.path.dirname(user_home) or "/home"
+            if os.path.isdir(homes_root):
+                for entry in os.listdir(homes_root):
+                    candidate = os.path.join(homes_root, entry)
+                    if os.path.isdir(candidate) and candidate != user_home:
+                        self.blocked_paths.add(candidate)
+        except OSError:
+            pass
+
+    def _save_token_safe(self, token: str) -> None:
+        """Saves the token to the OS keychain safely without blocking the event loop."""
+        if hasattr(self, "loop") and self.loop and self.loop.is_running():
+            self.loop.run_in_executor(None, save_cached_token, token)
+        else:
+            save_cached_token(token)
 
     def _generate_token(self) -> str:
         return uuid.uuid4().hex
@@ -255,13 +324,21 @@ class WebSocketServerManager:
         self._token_created_at = time.time()
         self._token_store[self.bridge_token] = list(self._FULL_SCOPES)
         self._persist_token_store()
-        save_cached_token(self.bridge_token)
+        self._save_token_safe(self.bridge_token)
 
     def _persist_token_store(self) -> None:
-        """Write the in-memory token store to data/bridge_token.json."""
+        """Write the in-memory token store to data/bridge_token.json.
+
+        Bearer tokens (including the admin:execute-scoped bridge token) are
+        stored here in plaintext, so the file is created owner-only (0600)
+        rather than relying on the process umask — a world-readable token
+        store lets any other local user connect to the RPC bridge with full
+        admin scope.
+        """
         try:
             os.makedirs("data", exist_ok=True)
-            with open(self._TOKEN_PATH, "w", encoding="utf-8") as f:
+            fd = os.open(self._TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "token": self.bridge_token,
@@ -271,6 +348,7 @@ class WebSocketServerManager:
                     f,
                     indent=2,
                 )
+            os.chmod(self._TOKEN_PATH, 0o600)
         except Exception as exc:
             logger.warning("Could not persist token store: %s", exc)
 
@@ -983,13 +1061,16 @@ class WebSocketServerManager:
         while True:
             await asyncio.sleep(self._LEASE_AUDIT_INTERVAL)
             now = time.time()
+            with self._clients_lock:
+                metadata_items = list(self.client_metadata.items())
             expired = [
                 ws
-                for ws, meta in list(self.client_metadata.items())
+                for ws, meta in metadata_items
                 if now - meta.get("session_start", now) > self._TOKEN_LIFETIME
             ]
             for ws in expired:
-                cid = self.client_metadata.get(ws, {}).get("id", "?")
+                with self._clients_lock:
+                    cid = self.client_metadata.get(ws, {}).get("id", "?")
                 logger.info("Session lease expired for client %s — closing 4002.", cid)
                 try:
                     await ws.close(self._CLOSE_CODE_LEASE_EXPIRED, "Session lease expired")
@@ -998,7 +1079,8 @@ class WebSocketServerManager:
 
     async def _close_all_clients(self, code: int, reason: str) -> None:
         """Close every active WebSocket connection with *code* and *reason*."""
-        clients = list(self.clients)
+        with self._clients_lock:
+            clients = list(self.clients)
         if clients:
             await asyncio.gather(
                 *[ws.close(code, reason) for ws in clients],
@@ -1154,12 +1236,14 @@ class WebSocketServerManager:
                 if self.orchestrator and self.orchestrator.isRunning():
                     self.orchestrator.request_stop()
                     self.orchestrator.wait()
+                self.orchestrator_owner = None
 
                 # Stop chat thread if running
                 if self.chat_thread and self.chat_thread.isRunning():
                     if hasattr(self.chat_thread, "request_stop"):
                         self.chat_thread.request_stop()
                     self.chat_thread.wait()
+                self.chat_thread_owner = None
 
                 # Stop mini train thread if running
                 if hasattr(self, "mini_train_thread") and self.mini_train_thread and self.mini_train_thread.isRunning():
@@ -1243,19 +1327,46 @@ class WebSocketServerManager:
         except Exception:
             pass
 
-        self.clients.add(websocket)
-        self.client_metadata[websocket] = {
-            "id": client_id,
-            "ip": ip,
-            "connected_at": datetime.now(timezone.utc).isoformat(),
-            "session_start": time.time(),  # reset by refresh_token to extend lease
-            "authenticated": True,
-            "scopes": token_scopes,         # RBAC scope list for this connection
-        }
-        self.client_histories[websocket] = []
+        with self._clients_lock:
+            self.clients.add(websocket)
+            self.client_metadata[websocket] = {
+                "id": client_id,
+                "ip": ip,
+                "connected_at": datetime.now(timezone.utc).isoformat(),
+                "session_start": time.time(),  # reset by refresh_token to extend lease
+                "authenticated": True,
+                "scopes": token_scopes,         # RBAC scope list for this connection
+                "rate_limit_global": TokenBucket(capacity=20.0, fill_rate=10.0),
+                "rate_limit_heavy": TokenBucket(capacity=3.0, fill_rate=0.5),
+            }
+            self.client_histories[websocket] = []
         logger.info(f"Client connected: {websocket.remote_address} (ID: {client_id})")
         try:
             async for message in websocket:
+                # Rate Limiting DoS Protection (checked first before parsing to prevent parser exhaustion)
+                with self._clients_lock:
+                    client_meta = self.client_metadata.get(websocket)
+                
+                if client_meta:
+                    global_limiter = client_meta.get("rate_limit_global")
+                    if global_limiter and not global_limiter.consume():
+                        # Try a lightweight peek to extract req_id if valid JSON-RPC
+                        req_id = None
+                        try:
+                            if message.strip().startswith("{"):
+                                temp = json.loads(message)
+                                if isinstance(temp, dict):
+                                    req_id = temp.get("id")
+                        except Exception:
+                            pass
+                        await self._send_rpc_error(
+                            websocket,
+                            -32005,
+                            req_id,
+                            message="Too Many Requests: global rate limit exceeded."
+                        )
+                        continue
+
                 data, rpc_error = self._parse_json_rpc_request(message)
                 if rpc_error is not None:
                     await websocket.send(json.dumps(rpc_error))
@@ -1265,6 +1376,23 @@ class WebSocketServerManager:
                 params = data.get("params", {})
                 req_id = data.get("id")
                 token = params.get("token")
+
+                # Heavy Method Rate Limiting
+                if client_meta:
+                    heavy_limiter = client_meta.get("rate_limit_heavy")
+                    heavy_methods = {
+                        "submit_chat", "submit_task", "set_active_model",
+                        "ingest_path", "start_auto_train", "start_mini_train"
+                    }
+                    if method in heavy_methods:
+                        if heavy_limiter and not heavy_limiter.consume():
+                            await self._send_rpc_error(
+                                websocket,
+                                -32005,
+                                req_id,
+                                message=f"Too Many Requests: rate limit exceeded for heavy method '{method}'."
+                            )
+                            continue
 
                 # Bind a per-frame correlation ID so every log line emitted
                 # during this request is tagged with the client and request ID.
@@ -1277,7 +1405,8 @@ class WebSocketServerManager:
                     await self._send_rpc_error(websocket, -32602, req_id, data=params_error)
                     continue
 
-                client_meta = self.client_metadata.get(websocket, {})
+                with self._clients_lock:
+                    client_meta = self.client_metadata.get(websocket, {})
 
                 if method == "authenticate":
                     # This method is now redundant for clients who passed handshake
@@ -1470,6 +1599,7 @@ class WebSocketServerManager:
                                 test_command=test_command,
                                 hyperparams=hyperparams
                             )
+                            self.orchestrator_owner = websocket
 
                             # Bind PyQt signals with DirectConnection to bypass thread event loop queues
                             self.orchestrator.status_update.connect(
@@ -1699,6 +1829,7 @@ class WebSocketServerManager:
 
                         with self._threads_lock:
                             self.chat_thread = chat_thread
+                            self.chat_thread_owner = websocket
                         await websocket.send(json.dumps({
                             "jsonrpc": "2.0",
                             "id": req_id,
@@ -1866,9 +1997,20 @@ class WebSocketServerManager:
                             }))
                             continue
 
+                        if not _SAFE_ADAPTER_NAME_RE.match(adapter_name):
+                            await websocket.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32602,
+                                    "message": "Invalid params: adapter_name must match ^[A-Za-z0-9_-]{1,64}$."
+                                }
+                            }))
+                            continue
+
                         import subprocess
                         import sys
-                        
+
                         def run_auto_train():
                             cmd = [
                                 sys.executable,
@@ -2086,15 +2228,31 @@ class WebSocketServerManager:
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
-            self.clients.discard(websocket)
-            self.client_metadata.pop(websocket, None)
-            self.client_histories.pop(websocket, None)
+            with self._threads_lock:
+                if getattr(self, "orchestrator_owner", None) == websocket:
+                    if self.orchestrator and self.orchestrator.isRunning():
+                        logger.info("Client disconnected: stopping active orchestrator task.")
+                        self.orchestrator.request_stop()
+                    self.orchestrator_owner = None
+                if getattr(self, "chat_thread_owner", None) == websocket:
+                    if self.chat_thread and self.chat_thread.isRunning():
+                        logger.info("Client disconnected: stopping active chat generation.")
+                        if hasattr(self.chat_thread, "request_stop"):
+                            self.chat_thread.request_stop()
+                    self.chat_thread_owner = None
+
+            with self._clients_lock:
+                self.clients.discard(websocket)
+                self.client_metadata.pop(websocket, None)
+                self.client_histories.pop(websocket, None)
             logger.info(f"Client disconnected: {websocket.remote_address}")
 
     def get_client_info(self) -> list[dict]:
         """Return metadata for all connected clients. Thread-safe snapshot."""
         info = []
-        for ws, meta in list(self.client_metadata.items()):
+        with self._clients_lock:
+            metadata_items = list(self.client_metadata.items())
+        for ws, meta in metadata_items:
             latency = -1.0
             try:
                 # websockets.connection.latency is in seconds

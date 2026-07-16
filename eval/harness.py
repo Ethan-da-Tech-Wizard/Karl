@@ -70,7 +70,7 @@ def _run_model_worker(
         latency = time.time() - start
 
         raw = response["choices"][0]["text"]
-        _thought, parsed = parse_thought_stream(raw)
+        _thought, parsed = parse_thought_stream(raw, start_in_thought=prompt.rstrip().endswith("<think>"))
         output = parsed.strip() if parsed.strip() else raw.strip()
         queue.put({"ok": True, "output": output, "latency": latency})
     except Exception as exc:
@@ -232,7 +232,7 @@ class EvalHarness:
         latency = time.time() - start
 
         raw = response["choices"][0]["text"]
-        _thought, parsed = parse_thought_stream(raw)
+        _thought, parsed = parse_thought_stream(raw, start_in_thought=prompt.rstrip().endswith("<think>"))
         output = parsed.strip() if parsed.strip() else raw.strip()
         return output, latency
 

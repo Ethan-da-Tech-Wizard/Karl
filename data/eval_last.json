@@ -3,7 +3,7 @@
   "avg_score": 0.0,
   "dataset": "dataset.jsonl",
   "workflow": "general_chat",
-  "timestamp": "2026-07-16T04:04:11.126756+00:00",
+  "timestamp": "2026-07-16T15:23:20.370909+00:00",
   "cases_run": 1,
   "passed": 0
 }

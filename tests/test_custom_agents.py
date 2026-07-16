@@ -50,13 +50,17 @@ class TestCustomAgents(unittest.TestCase):
         if not self._dummy_model_existed:
             open(self._dummy_model, "wb").close()
 
-        if _running_under_bwrap():
-            return
+        test_method_name = self.id().split('.')[-1]
+        needs_server = test_method_name in (
+            "test_json_rpc_validation_and_listing",
+            "test_websocket_chat_custom_agent_routing"
+        )
 
-        self.app = QCoreApplication.instance() or QCoreApplication(sys.argv)
-        self.port = 8082
-        self.manager = WebSocketServerManager.get_instance(port=self.port)
-        self.manager.started_event.wait(timeout=5.0)
+        if needs_server and not _running_under_bwrap():
+            self.app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+            self.port = 8082
+            self.manager = WebSocketServerManager.get_instance(port=self.port)
+            self.manager.started_event.wait(timeout=5.0)
 
     def tearDown(self):
         # Remove dummy test assets if we created them
@@ -79,7 +83,12 @@ class TestCustomAgents(unittest.TestCase):
 
         reload_profiles()
 
-        if not _running_under_bwrap():
+        test_method_name = self.id().split('.')[-1]
+        needs_server = test_method_name in (
+            "test_json_rpc_validation_and_listing",
+            "test_websocket_chat_custom_agent_routing"
+        )
+        if needs_server and not _running_under_bwrap():
             WebSocketServerManager.reset_instance()
 
     def _get_uri(self):

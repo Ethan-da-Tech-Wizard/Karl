@@ -44,6 +44,7 @@ def make_manager():
     manager.mini_train_thread = None
     manager.kb_ingest_thread = None
     manager._threads_lock = threading.Lock()
+    manager._clients_lock = threading.Lock()
     manager._validate_token = lambda token: True
     return manager
 
@@ -104,3 +105,59 @@ def test_handler_exception_returns_internal_error():
     ))
     assert_rpc_error(response, -32603, 13)
     assert response["error"]["data"] == "boom"
+
+
+def test_global_rate_limiter_exceeded():
+    manager = make_manager()
+    manager._list_models = lambda: {"models": []}
+
+    # Global rate limit is capacity=20.0
+    requests = [
+        json.dumps({"jsonrpc": "2.0", "id": i, "method": "list_models"})
+        for i in range(22)
+    ]
+    websocket = MockWebSocket(requests)
+    
+    asyncio.run(manager._handler(websocket, path="/?token=test-token"))
+    
+    assert len(websocket.sent) == 22
+    for i in range(20):
+        resp = json.loads(websocket.sent[i])
+        if "error" in resp:
+            assert resp["error"]["code"] != -32005
+    
+    for i in range(20, 22):
+        resp = json.loads(websocket.sent[i])
+        assert_rpc_error(resp, -32005, i)
+        assert "global rate limit exceeded" in resp["error"]["message"]
+
+
+def test_heavy_rate_limiter_exceeded():
+    manager = make_manager()
+    # Mock set_active_model which is a heavy method
+    manager._set_active_model = lambda filename, adapter=None: {"active": {}}
+
+    # Heavy limit capacity=3.0
+    requests = [
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": i,
+            "method": "set_active_model",
+            "params": {"filename": "model.gguf"}
+        })
+        for i in range(5)
+    ]
+    websocket = MockWebSocket(requests)
+    
+    asyncio.run(manager._handler(websocket, path="/?token=test-token"))
+    
+    assert len(websocket.sent) == 5
+    for i in range(3):
+        resp = json.loads(websocket.sent[i])
+        if "error" in resp:
+            assert resp["error"]["code"] != -32005
+    
+    for i in range(3, 5):
+        resp = json.loads(websocket.sent[i])
+        assert_rpc_error(resp, -32005, i)
+        assert "rate limit exceeded for heavy method" in resp["error"]["message"]

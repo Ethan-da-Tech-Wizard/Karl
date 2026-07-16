@@ -99,30 +99,65 @@ class MainWindow(QMainWindow):
         
         # New session
         self._new_session_shortcut = QShortcut(QKeySequence("Ctrl+Shift+N"), self)
-        self._new_session_shortcut.activated.connect(self._workbench._new_session)
+        self._new_session_shortcut.activated.connect(self.start_new_workbench_session)
         
         # Save session snapshot
         self._save_session_shortcut = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
-        self._save_session_shortcut.activated.connect(self._workbench._save_current_session)
+        self._save_session_shortcut.activated.connect(self.save_workbench_session)
 
         # Heavenscape HUD Toggle Shortcuts
         self._hud_toggle_all_shortcut = QShortcut(QKeySequence("Ctrl+H"), self)
-        self._hud_toggle_all_shortcut.activated.connect(self._workbench._toggle_all_huds)
+        self._hud_toggle_all_shortcut.activated.connect(self._workbench.toggle_all_huds)
 
         self._hud_reasoning_shortcut = QShortcut(QKeySequence("Ctrl+Shift+R"), self)
-        self._hud_reasoning_shortcut.activated.connect(self._workbench._toggle_reasoning)
+        self._hud_reasoning_shortcut.activated.connect(self._workbench.toggle_reasoning_panel)
 
         self._hud_sessions_shortcut = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
-        self._hud_sessions_shortcut.activated.connect(self._workbench._toggle_sessions)
+        self._hud_sessions_shortcut.activated.connect(self._workbench.toggle_sessions_panel)
 
         self._hud_rag_shortcut = QShortcut(QKeySequence("Ctrl+Shift+G"), self)
-        self._hud_rag_shortcut.activated.connect(self._workbench._toggle_rag_hud)
+        self._hud_rag_shortcut.activated.connect(self._workbench.toggle_rag_panel)
 
         self._hud_context_shortcut = QShortcut(QKeySequence("Ctrl+Shift+B"), self)
-        self._hud_context_shortcut.activated.connect(self._workbench._toggle_context_hud)
+        self._hud_context_shortcut.activated.connect(self._workbench.toggle_context_panel)
 
     def _make_workspace_switcher(self, idx):
-        return lambda: self._sidebar.select(idx)
+        return lambda: self.switch_workspace(idx)
+
+    def switch_workspace(self, index: int) -> None:
+        self._sidebar.select(index)
+
+    def start_new_workbench_session(self) -> None:
+        self.switch_workspace(0)
+        self._workbench.new_session()
+
+    def save_workbench_session(self) -> None:
+        self.switch_workspace(0)
+        self._workbench.save_current_session()
+
+    def toggle_workbench_rag(self) -> None:
+        self.switch_workspace(0)
+        self._workbench.toggle_rag_pipeline()
+
+    def toggle_workbench_agentic_loop(self) -> None:
+        self.switch_workspace(0)
+        self._workbench.toggle_agentic_loop()
+
+    def open_knowledge_ingest(self) -> None:
+        self.switch_workspace(2)
+        self._knowledge_base.open_ingest_dialog()
+
+    def rebuild_knowledge_index(self) -> None:
+        self.switch_workspace(2)
+        self._knowledge_base.rebuild_index()
+
+    def run_eval_suite(self) -> None:
+        self.switch_workspace(5)
+        self._eval.run_suite()
+
+    def open_system_defaults(self) -> None:
+        self.switch_workspace(7)
+        self._system.show_defaults_tab()
 
     def _open_command_palette(self):
         from app.ui.widgets.command_palette import CommandPalette
@@ -133,6 +168,24 @@ class MainWindow(QMainWindow):
         current_widget = self._stack.currentWidget()
         if not current_widget:
             return
+        focus_primary = getattr(current_widget, "focus_primary_input", None)
+        if callable(focus_primary) and focus_primary():
+            return
+        for attr in (
+            "_input",
+            "_user_edit",
+            "_analysis_prompt",
+            "_search_input",
+            "_objective_input",
+            "_adapter_name_input",
+            "_dataset_path",
+            "_model_path_input",
+            "_log_token_input",
+        ):
+            inp = getattr(current_widget, attr, None)
+            if inp is not None and inp.isVisible() and inp.isEnabled():
+                inp.setFocus()
+                return
         from PyQt6.QtWidgets import QLineEdit, QTextEdit
         inputs = current_widget.findChildren((QLineEdit, QTextEdit))
         for inp in inputs:
@@ -203,6 +256,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self):
         self._sidebar.workspace_changed.connect(self._stack.setCurrentIndex)
+        self._stack.currentChanged.connect(lambda _idx: QTimer.singleShot(0, self._focus_active_input))
         self._workbench.status_changed.connect(self._on_status_changed)
         self._workbench.model_changed.connect(self._status_bar.set_model)
         self._workbench.adapter_changed.connect(self._status_bar.set_adapter)
@@ -252,6 +306,14 @@ class MainWindow(QMainWindow):
             self._state.memory.clear_autosave_checkpoint()
             return
         if not checkpoint:
+            return
+
+        from PyQt6.QtCore import QCoreApplication
+        if QCoreApplication.instance() and QCoreApplication.instance().property("is_test"):
+            try:
+                self._restore_autosave_checkpoint(checkpoint)
+            finally:
+                self._state.memory.clear_autosave_checkpoint()
             return
 
         timestamp = checkpoint.get("timestamp") or checkpoint.get("updated_time", "unknown time")
@@ -381,7 +443,7 @@ class MainWindow(QMainWindow):
             self._status_bar.set_adapter(value)
 
     def _open_appearance_controls(self):
-        self._sidebar.select(7)
+        self.switch_workspace(7)
         if hasattr(self._system, "show_theme_tab"):
             self._system.show_theme_tab()
 
@@ -507,6 +569,9 @@ class MainWindow(QMainWindow):
         # does not tear down Qt objects under a running thread.
         if self._model_init_thread is not None and self._model_init_thread.isRunning():
             self._model_init_thread.wait()
+        system_model_thread = getattr(self._system, "_model_load_thread", None)
+        if system_model_thread is not None and system_model_thread.isRunning():
+            system_model_thread.wait()
 
         # Safely shut down the WebSocket server connection bridge on exit
         from app.engine.websocket_server import WebSocketServerManager

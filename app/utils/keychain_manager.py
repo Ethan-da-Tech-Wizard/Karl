@@ -8,7 +8,13 @@ import sys
 logger = logging.getLogger("karl.keychain")
 
 try:
-    import keyring
+    if os.environ.get("KARL_NO_KEYRING") == "1":
+        keyring = None
+    elif sys.platform == "linux" and not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        logger.info("D-Bus session address not found. Disabling OS keychain fallback.")
+        keyring = None
+    else:
+        import keyring
 except ImportError:
     keyring = None
 
@@ -28,9 +34,11 @@ if sys.platform == "linux":
             _libkeyutils = None
 
 # ── x86_64 syscall numbers & keyctl subcommand constants ─────────────────────
-_SYS_ADD_KEY        = 248          # add_key(2)  — x86_64 Linux ABI
-_SYS_KEYCTL         = 250          # keyctl(2)   — x86_64 Linux ABI
+_SYS_ADD_KEY        = 248          # add_key(2)      — x86_64 Linux ABI
+_SYS_REQUEST_KEY    = 249          # request_key(2)  — x86_64 Linux ABI
+_SYS_KEYCTL         = 250          # keyctl(2)       — x86_64 Linux ABI
 _KEYCTL_REVOKE      = ctypes.c_long(3)   # keyctl subcommand: destroy a key
+_KEYCTL_READ        = ctypes.c_long(11)  # keyctl subcommand: read key payload
 _KEYCTL_SET_TIMEOUT = ctypes.c_long(15)  # keyctl subcommand: set expiry
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,19 +67,19 @@ ROLE_SCOPES: dict[str, list[str]] = {
 
 def save_cached_token(token: str):
     """Stores the bridge token securely in the Kernel Keyring (Linux) or OS keychain."""
-    
-    # 1. Try Linux Kernel Keyring first
-    if _libkeyutils:
+
+    # 1. Try Linux Kernel Keyring first — via the hardened helper below, which
+    # declares argtypes/restype explicitly (see its docstring) rather than
+    # letting ctypes guess the C ABI.
+    if sys.platform == "linux":
         try:
-            # add_key(type, description, payload, plen, keyring)
-            res = _libkeyutils.add_key(
-                b"user", 
-                b"karl_token", 
-                token.encode(), 
-                len(token), 
-                _KEY_SPEC_SESSION_KEYRING
+            key_id = _add_key_kernel(
+                key_type=b"user",
+                description=b"karl_token",
+                payload=token.encode(),
+                keyring=_KEY_SPEC_SESSION_KEYRING,
             )
-            if res != -1:
+            if key_id >= 0:
                 logger.info("Bridge token cached in Linux Kernel Keyring.")
                 # We still save to user-space keyring as a persistent fallback
                 # if the session keyring is volatile (depends on PAM config)
@@ -95,31 +103,18 @@ def load_cached_token() -> str | None:
     Checks Kernel Keyring (Linux) first, then falls back to OS Keychain.
     """
     
-    # 1. Try Linux Kernel Keyring
-    if _libkeyutils:
+    # 1. Try Linux Kernel Keyring — via the hardened helpers, which declare
+    # argtypes/restype explicitly rather than letting ctypes guess the ABI.
+    if sys.platform == "linux":
         try:
-            # request_key(type, description, callout_info, keyring)
-            key_id = _libkeyutils.request_key(
-                b"user", 
-                b"karl_token", 
-                None, 
-                _KEY_SPEC_SESSION_KEYRING
-            )
-            if key_id != -1:
-                # keyctl_read(key, buffer, buflen)
-                # First call with None buffer returns actual length
-                needed = _libkeyutils.keyctl_read(key_id, None, 0)
-                if needed > 0:
-                    buf = ctypes.create_string_buffer(needed)
-                    read = _libkeyutils.keyctl_read(key_id, buf, needed)
-                    if read != -1:
-                        token = buf.value.decode('utf-8')
-                        # Active-zero the mutable buffer to purge key material from process memory
-                        ctypes.memset(buf, 0, needed)
-                        
-                        if _verify_token(token):
-                            logger.info("Auth: Using token from Linux Kernel Keyring.")
-                            return token
+            key_id = _request_key_kernel(b"user", b"karl_token", _KEY_SPEC_SESSION_KEYRING)
+            if key_id >= 0:
+                payload = _keyctl_read_kernel(key_id)
+                if payload:
+                    token = payload.decode('utf-8')
+                    if _verify_token(token):
+                        logger.info("Auth: Using token from Linux Kernel Keyring.")
+                        return token
         except Exception as e:
             logger.debug(f"Kernel keyring retrieval failed: {e}")
 
@@ -139,18 +134,12 @@ def load_cached_token() -> str | None:
 
 def revoke_tokens():
     """Purges the bridge token from the kernel keyring and OS keychain."""
-    # 1. Kernel Keyring
-    if _libkeyutils:
+    # 1. Kernel Keyring — via the hardened helpers (see save_cached_token).
+    if sys.platform == "linux":
         try:
-            key_id = _libkeyutils.request_key(
-                b"user", 
-                b"karl_token", 
-                None, 
-                _KEY_SPEC_SESSION_KEYRING
-            )
-            if key_id != -1:
-                # keyctl_revoke or keyctl_unlink
-                _libkeyutils.keyctl_revoke(key_id)
+            key_id = _request_key_kernel(b"user", b"karl_token", _KEY_SPEC_SESSION_KEYRING)
+            if key_id >= 0:
+                _keyctl_revoke_key(key_id)
                 logger.debug("Bridge token revoked from Kernel Keyring.")
         except Exception:
             pass
@@ -206,8 +195,14 @@ def add_scoped_token(token: str, scopes: list[str], token_path: str = TOKEN_PATH
             "created_at": data.get("created_at", time.time()),
         }
     data["tokens"][token] = list(scopes)
-    with open(token_path, "w", encoding="utf-8") as f:
+    # Bearer tokens (including admin:execute-scoped ones) are stored here in
+    # plaintext, so restrict the file to the owner before any content is
+    # written — os.open with an explicit mode avoids a window where a
+    # default-umask file briefly exists before a later chmod() would apply.
+    fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+    os.chmod(token_path, 0o600)
     logger.info("Scoped token registered: scopes=%s path=%s", scopes, token_path)
 
 
@@ -273,6 +268,91 @@ def _add_key_kernel(
     ]
     sc.restype = ctypes.c_long
     return int(sc(_SYS_ADD_KEY, key_type, description, payload, plen, ring))
+
+
+def _request_key_kernel(key_type: bytes, description: bytes, keyring: int) -> int:
+    """
+    Call request_key() via libkeyutils (preferred) or the raw x86_64 syscall
+    (249). All argtypes and restype are declared before invocation, same as
+    _add_key_kernel above. Returns the key_serial_t (>= 0) on success, or a
+    negative value if the key wasn't found / the call failed.
+    """
+    ring = ctypes.c_int32(keyring)
+
+    if _libkeyutils is not None:
+        fn = _libkeyutils.request_key
+        fn.argtypes = [
+            ctypes.c_char_p,   # const char *type
+            ctypes.c_char_p,   # const char *description
+            ctypes.c_char_p,   # const char *callout_info (NULL here)
+            ctypes.c_int32,    # key_serial_t dest_keyring
+        ]
+        fn.restype = ctypes.c_int32
+        return int(fn(key_type, description, None, ring))
+
+    if sys.platform != "linux":
+        return -1
+    libc = ctypes.CDLL(None, use_errno=True)
+    sc = libc.syscall
+    sc.argtypes = [
+        ctypes.c_long,     # syscall number
+        ctypes.c_char_p,   # type
+        ctypes.c_char_p,   # description
+        ctypes.c_char_p,   # callout_info
+        ctypes.c_int32,    # dest_keyring
+    ]
+    sc.restype = ctypes.c_long
+    return int(sc(_SYS_REQUEST_KEY, key_type, description, None, ring))
+
+
+def _keyctl_read_kernel(key_id: int) -> bytes | None:
+    """
+    Read the payload of *key_id* via keyctl_read (libkeyutils) or the keyctl
+    syscall (250, subcommand KEYCTL_READ = 11), with argtypes/restype
+    declared before every call. Returns the raw payload bytes, or None if
+    the key is empty/unreadable. The backing ctypes buffer is zeroed before
+    this function returns (best-effort — see _zero_bytes usage elsewhere for
+    why the returned Python bytes object itself can't be scrubbed).
+    """
+    kid = ctypes.c_int32(key_id)
+
+    if _libkeyutils is not None:
+        fn = _libkeyutils.keyctl_read
+        fn.argtypes = [ctypes.c_int32, ctypes.c_char_p, ctypes.c_size_t]
+        fn.restype = ctypes.c_long
+        needed = int(fn(kid, None, 0))
+        if needed <= 0:
+            return None
+        buf = ctypes.create_string_buffer(needed)
+        read = int(fn(kid, buf, ctypes.c_size_t(needed)))
+        if read < 0:
+            return None
+        data = buf.raw[:read]
+        ctypes.memset(buf, 0, needed)
+        return data
+
+    if sys.platform != "linux":
+        return None
+    libc = ctypes.CDLL(None, use_errno=True)
+    sc = libc.syscall
+    sc.argtypes = [
+        ctypes.c_long,    # syscall number
+        ctypes.c_long,    # KEYCTL_READ
+        ctypes.c_int32,   # key_id
+        ctypes.c_char_p,  # buffer
+        ctypes.c_size_t,  # buflen
+    ]
+    sc.restype = ctypes.c_long
+    needed = int(sc(_SYS_KEYCTL, _KEYCTL_READ, kid, None, 0))
+    if needed <= 0:
+        return None
+    buf = ctypes.create_string_buffer(needed)
+    read = int(sc(_SYS_KEYCTL, _KEYCTL_READ, kid, buf, ctypes.c_size_t(needed)))
+    if read < 0:
+        return None
+    data = buf.raw[:read]
+    ctypes.memset(buf, 0, needed)
+    return data
 
 
 def _keyctl_timeout(key_id: int, timeout_seconds: int) -> None:

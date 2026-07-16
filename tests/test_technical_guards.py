@@ -237,8 +237,24 @@ class TestTechnicalGuards(unittest.TestCase):
         orchestrator.finished_swarm.connect(lambda success, summary: signals.update({"finished": (success, summary)}))
         orchestrator.edits_proposed.connect(lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals]))
 
-        # Run orchestrator
-        orchestrator.run()
+        # Start orchestrator in its own thread to avoid deadlocks
+        orchestrator.start()
+
+        # Spin event loop while thread runs
+        import time
+        start_time = time.time()
+        while orchestrator.isRunning():
+            app.processEvents()
+            time.sleep(0.02)
+            if time.time() - start_time > 15.0:  # 15s safety timeout
+                orchestrator.request_stop()
+                orchestrator.wait()
+                break
+
+        # Process any remaining events in the queue after the thread terminates
+        for _ in range(10):
+            app.processEvents()
+            time.sleep(0.01)
 
         # The first attempt should have triggered the AST syntax guard and been blocked
         # The second attempt (fixed) should pass and succeed

@@ -49,6 +49,7 @@ class SystemConfigWorkspace(
         self.state = state
         self._download_thread = None
         self._quantizer_thread: QuantizerThread | None = None
+        self._model_load_thread = None
         self._active_threads = set()
         self._active_custom_accent = None
         self._cached_models_list = None
@@ -133,6 +134,10 @@ class SystemConfigWorkspace(
         if hasattr(self, "_tabs") and hasattr(self, "_theme_tab"):
             self._sync_appearance_controls_from_state()
             self._tabs.setCurrentWidget(self._theme_tab)
+
+    def show_defaults_tab(self):
+        if hasattr(self, "_tabs"):
+            self._tabs.setCurrentIndex(2)
 
     # ── model tab ─────────────────────────────────────────────────────────────
 

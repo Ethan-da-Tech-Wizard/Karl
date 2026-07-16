@@ -12,6 +12,7 @@ A unified, easy-to-understand end-to-end pipeline that:
 """
 
 import os
+import re
 import sys
 import json
 import uuid
@@ -27,6 +28,12 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("karl.auto_train")
+
+# adapter_name is used verbatim to build filesystem paths under ADAPTERS_DIR
+# (see train_adapter/convert_adapter_to_gguf below). Restrict the charset so
+# a caller (e.g. the WebSocket start_auto_train RPC) can't path-traverse out
+# of data/adapters/ via "../" sequences.
+_SAFE_ADAPTER_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
 # Project paths
 ROOT_DIR = Path(__file__).resolve().parent
@@ -48,6 +55,7 @@ try:
     from core.cognitive_parser import parse_thought_stream
     from data.flywheel.executor_sandbox import SafePythonSandbox
     from core.interaction_loop import build_prompt
+    from core.security import assert_not_privileged
 except ImportError as err:
     logger.error("Failed to import Karl core modules: %s", err)
     sys.exit(1)
@@ -97,7 +105,7 @@ Return ONLY the raw JSON list starting with [ and ending with ]. Do not include 
             output_chunks.append(text)
             
         full_output = "".join(output_chunks)
-        _, response = parse_thought_stream(full_output)
+        _, response = parse_thought_stream(full_output, start_in_thought=True)
 
         # Parse JSON
         response = response.strip()
@@ -174,7 +182,7 @@ def solve_task(task: dict, llm) -> tuple[str, str]:
         output_chunks.append(text)
         
     full_output = "".join(output_chunks)
-    thought, response = parse_thought_stream(full_output)
+    thought, response = parse_thought_stream(full_output, start_in_thought=True)
     return thought, response
 
 
@@ -228,7 +236,7 @@ def reflect_and_correct(task: dict, failed_thought: str, failed_response: str, t
         output_chunks.append(text)
         
     full_output = "".join(output_chunks)
-    thought, response = parse_thought_stream(full_output)
+    thought, response = parse_thought_stream(full_output, start_in_thought=prompt_text.rstrip().endswith("<think>"))
     passed, trace = verify_solution(task, response)
     return thought, response, passed
 
@@ -358,6 +366,12 @@ def convert_adapter_to_gguf(base_model_path: str, adapter_name: str):
 
 
 def main():
+    # This script is spawned as an independent subprocess (e.g. from the
+    # start_auto_train WebSocket RPC), so main.py's startup privilege check
+    # does not cover it — assert it separately. Sandbox resource limits in
+    # executor_sandbox.py are not binding on root, so this is load-bearing.
+    assert_not_privileged()
+
     parser = argparse.ArgumentParser(description="Karl End-to-End One-Click Auto-Trainer")
     parser.add_argument("--topic", type=str, required=True, help="Topic or target capability to train (e.g. 'regex')")
     parser.add_argument("--adapter_name", type=str, required=True, help="Folder/filename to save the adapter")
@@ -370,6 +384,13 @@ def main():
     parser.add_argument("--qlora", action="store_true", default=True, help="Use QLoRA 4-bit SFT")
     parser.add_argument("--base_model", type=str, default=None, help="Path to HF base model folder")
     args = parser.parse_args()
+
+    if not _SAFE_ADAPTER_NAME_RE.match(args.adapter_name):
+        logger.error(
+            "Invalid --adapter_name %r: must match ^[A-Za-z0-9_-]{1,64}$.",
+            args.adapter_name,
+        )
+        sys.exit(1)
 
     print("====================================================")
     print("      KARL ONE-CLICK AUTO-TRAINING PIPELINE")

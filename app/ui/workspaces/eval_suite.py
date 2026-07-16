@@ -528,6 +528,9 @@ class EvalSuiteWorkspace(QWidget):
         self._thread.error.connect(self._on_error)
         self._thread.start()
 
+    def run_suite(self):
+        self._run()
+
     def _on_progress(self, current: int, total: int):
         import time
         if not getattr(self, "_eval_start_time", None):
@@ -610,21 +613,33 @@ class EvalSuiteWorkspace(QWidget):
             return
         case = item.data(0, Qt.ItemDataRole.UserRole)
         if case:
+            from app.ui.themes import get_theme_colors
+            colors = get_theme_colors(self.state)
+            accent = colors.get("accent", "#00C2FF")
+            text_hi = colors.get("text_hi", "#E4E4F0")
+            text_mid = colors.get("text_mid", "#9090A8")
+            text_lo = colors.get("text_lo", "#505068")
+            bg_deep = colors.get("bg_deep", "#0A0A14")
+            bg_surface = colors.get("bg_surface", "#14141F")
+            bg_raised = colors.get("bg_raised", "#161625")
+            border = colors.get("border", "#252535")
+            green = colors.get("green", "#2DD4A0")
+            red = colors.get("red", "#F05050")
             self._right_tabs.setCurrentIndex(1)
             case_passed = case.grade.get("passed", False) if case.grade else False
             status_text = "PASSED" if case_passed else "FAILED"
-            status_color = "#2DD4A0" if case_passed else "#F05050"
+            status_color = green if case_passed else red
             score = case.grade.get("score", 0.0) if case.grade else 0.0
             grader_detail = case.grade.get("detail", "") if case.grade else ""
             
             html_parts = [
-                f"<div style='font-size:9.5pt; color:#E4E4F0; font-family:{MONO}; line-height:1.4;'>"
-                f"<div style='border-bottom:1px solid #252535; padding-bottom:8px; margin-bottom:12px;'>"
-                f"<span style='font-size:10.5pt;'>Case ID: <b style='color:#00C2FF;'>{html.escape(case.case_id)}</b></span>"
+                f"<div style='font-size:9.5pt; color:{text_hi}; font-family:{MONO}; line-height:1.4;'>"
+                f"<div style='border-bottom:1px solid {border}; padding-bottom:8px; margin-bottom:12px;'>"
+                f"<span style='font-size:10.5pt;'>Case ID: <b style='color:{accent};'>{html.escape(case.case_id)}</b></span>"
                 f"<span style='float:right; background:{status_color}20; color:{status_color}; border:1px solid {status_color}; border-radius:4px; padding:2px 8px; font-weight:bold; font-size:8.5pt;'>{status_text}</span>"
                 f"</div>"
                 
-                f"<div style='font-size:8.5pt; color:#9090A8; margin-bottom:12px;'>"
+                f"<div style='font-size:8.5pt; color:{text_mid}; margin-bottom:12px;'>"
                 f"Grader: <b>{html.escape(case.grader)}</b> &middot; "
                 f"Score: <b>{score:.2f}</b> &middot; "
                 f"Latency: <b>{case.latency_s:.2f}s</b>"
@@ -632,12 +647,12 @@ class EvalSuiteWorkspace(QWidget):
             ]
 
             if grader_detail:
-                detail_bg = "#161625" if case_passed else "#201414"
-                detail_border = "#252535" if case_passed else "#401818"
-                detail_text_color = "#9090A8" if case_passed else "#F05050"
+                detail_bg = bg_raised if case_passed else "#201414"
+                detail_border = border if case_passed else "#401818"
+                detail_text_color = text_mid if case_passed else red
                 html_parts.append(
                     f"<div style='margin-bottom:12px;'>"
-                    f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:4px; letter-spacing:1px;'>GRADER DETAIL</div>"
+                    f"<div style='font-size:7.5pt; font-weight:bold; color:{text_lo}; margin-bottom:4px; letter-spacing:1px;'>GRADER DETAIL</div>"
                     f"<div style='background:{detail_bg}; border:1px solid {detail_border}; border-radius:4px; padding:8px 12px; color:{detail_text_color}; font-size:9pt; white-space:pre-wrap;'>{html.escape(grader_detail)}</div>"
                     f"</div>"
                 )
@@ -645,35 +660,35 @@ class EvalSuiteWorkspace(QWidget):
             if case.error:
                 html_parts.append(
                     f"<div style='margin-bottom:12px;'>"
-                    f"<div style='font-size:7.5pt; font-weight:bold; color:#F05050; margin-bottom:4px; letter-spacing:1px;'>ERROR</div>"
-                    f"<div style='background:#201414; border:1px solid #401818; border-radius:4px; padding:8px 12px; color:#F05050; font-size:9pt; white-space:pre-wrap;'>{html.escape(case.error)}</div>"
+                    f"<div style='font-size:7.5pt; font-weight:bold; color:{red}; margin-bottom:4px; letter-spacing:1px;'>ERROR</div>"
+                    f"<div style='background:#201414; border:1px solid #401818; border-radius:4px; padding:8px 12px; color:{red}; font-size:9pt; white-space:pre-wrap;'>{html.escape(case.error)}</div>"
                     f"</div>"
                 )
 
             html_parts.append(
                 f"<div style='margin-bottom:14px;'>"
-                f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:6px; letter-spacing:1.5px;'>PROMPT</div>"
-                f"<div style='background:#111119; border:1px solid #252535; border-radius:6px; padding:10px 14px; color:#E4E4F0; font-size:9.5pt; line-height:1.4; white-space:pre-wrap;'>{html.escape(case.prompt)}</div>"
+                f"<div style='font-size:7.5pt; font-weight:bold; color:{text_lo}; margin-bottom:6px; letter-spacing:1.5px;'>PROMPT</div>"
+                f"<div style='background:{bg_surface}; border:1px solid {border}; border-radius:6px; padding:10px 14px; color:{text_hi}; font-size:9.5pt; line-height:1.4; white-space:pre-wrap;'>{html.escape(case.prompt)}</div>"
                 f"</div>"
             )
 
             html_parts.append(
                 f"<div style='margin-bottom:14px;'>"
-                f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:6px; letter-spacing:1.5px;'>OUTPUT</div>"
-                f"<div style='background:#0A0A14; border:1px solid #252535; border-radius:6px; padding:10px 14px; color:#2DD4A0; font-size:9.5pt; line-height:1.4; white-space:pre-wrap;'>{html.escape(case.output)}</div>"
+                f"<div style='font-size:7.5pt; font-weight:bold; color:{text_lo}; margin-bottom:6px; letter-spacing:1.5px;'>OUTPUT</div>"
+                f"<div style='background:{bg_deep}; border:1px solid {border}; border-radius:6px; padding:10px 14px; color:{green}; font-size:9.5pt; line-height:1.4; white-space:pre-wrap;'>{html.escape(case.output)}</div>"
                 f"</div>"
             )
 
             if case.context_used:
                 context_html = ""
                 for idx, chunk in enumerate(case.context_used, 1):
-                    context_html += f"<div style='border-bottom:1px solid #1C1C2A; padding-bottom:6px; margin-bottom:6px; font-size:8.5pt; color:#9090A8;'>[Chunk {idx}]</div>"
-                    context_html += f"<div style='margin-bottom:10px; font-size:8.5pt; color:#9090A8; white-space:pre-wrap;'>{html.escape(chunk)}</div>"
+                    context_html += f"<div style='border-bottom:1px solid {border}; padding-bottom:6px; margin-bottom:6px; font-size:8.5pt; color:{text_mid};'>[Chunk {idx}]</div>"
+                    context_html += f"<div style='margin-bottom:10px; font-size:8.5pt; color:{text_mid}; white-space:pre-wrap;'>{html.escape(chunk)}</div>"
                 
                 html_parts.append(
                     f"<div style='margin-bottom:14px;'>"
-                    f"<div style='font-size:7.5pt; font-weight:bold; color:#505068; margin-bottom:6px; letter-spacing:1.5px;'>CONTEXT USED</div>"
-                    f"<div style='background:#14141F; border:1px solid #252535; border-radius:6px; padding:10px 14px;'>{context_html}</div>"
+                    f"<div style='font-size:7.5pt; font-weight:bold; color:{text_lo}; margin-bottom:6px; letter-spacing:1.5px;'>CONTEXT USED</div>"
+                    f"<div style='background:{bg_surface}; border:1px solid {border}; border-radius:6px; padding:10px 14px;'>{context_html}</div>"
                     f"</div>"
                 )
 

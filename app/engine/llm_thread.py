@@ -473,6 +473,8 @@ class LLMThread(QThread):
 
             continuation_count = 0
             max_continuations = 5
+            state_transition_count = 0
+            max_state_transitions = 3
             compression_reset_count = 0
             max_compression_resets = 2
             state_transitioned = False
@@ -560,9 +562,13 @@ class LLMThread(QThread):
                                 defer_after_think_close=dynamic_scheduling,
                             )
                             if parse_result.closed_think and dynamic_scheduling:
-                                logger.info("Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
-                                state_transitioned = True
-                                break
+                                if state_transition_count < max_state_transitions:
+                                    logger.info("Dynamic Scheduler: detected </think>, switching to ANSWERING profile")
+                                    state_transition_count += 1
+                                    state_transitioned = True
+                                    break
+                                else:
+                                    logger.warning("Dynamic Scheduler: max state transitions reached; continuing current generation turn.")
                     finally:
                         self._stop_watchdog(watchdog_thread)
                         close_fn = getattr(response_generator, "close", None)

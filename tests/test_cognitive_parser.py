@@ -30,10 +30,16 @@ def test_no_blocks():
     assert thought == ""
     assert response == "just response"
 
+def test_preseeded_cutoff():
+    thought, response = parse_thought_stream("unclosed preseeded thought", start_in_thought=True)
+    assert thought == "unclosed preseeded thought"
+    assert response == ""
+
 if __name__ == "__main__":
     test_standard_closed()
     test_unclosed()
     test_mixed_capitalization()
     test_multiple_blocks()
     test_no_blocks()
+    test_preseeded_cutoff()
     print("All cognitive parser unit tests PASSED!")

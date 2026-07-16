@@ -105,6 +105,16 @@ class ModelCircuitBreaker:
         self.state = self.OPEN
         self.cooldown_expiration = self._clock() + self.cooldown_duration
 
+    def get_state(self) -> str:
+        """Return the current circuit breaker state (CLOSED / OPEN / COOLDOWN / HALF_OPEN)."""
+        if self.state == self.OPEN:
+            now = self._clock()
+            if self.cooldown_expiration is not None and now >= self.cooldown_expiration:
+                return self.HALF_OPEN
+            return "COOLDOWN"
+        return self.state
+
+
 
 class _LlamaDraftModelAdapter:
     """Compatibility marker for speculative draft-model integration."""
@@ -280,6 +290,18 @@ class ModelLoader:
                     torch.cuda.empty_cache()
             except Exception:
                 pass
+
+    @classmethod
+    def get_circuit_breaker_state(cls) -> str:
+        """Return the current circuit breaker state (CLOSED / COOLDOWN / HALF_OPEN)."""
+        with cls._lock:
+            return cls._circuit_breaker.get_state()
+
+    @classmethod
+    def reset_circuit_breaker(cls):
+        """Force-close the circuit breaker."""
+        with cls._lock:
+            cls._circuit_breaker.reset()
 
     @classmethod
     def load_latency_s(cls) -> float | None:
@@ -705,7 +727,9 @@ class ModelLoader:
                     with cls._lock:
                         if (cls._adapter_offloaded
                                 or cls._active_adapter is None
-                                or cls._instance is None):
+                                or cls._instance is None
+                                or cls._active_generation_count > 0
+                                or cls._instance_locked):
                             continue
                         adapter_name = cls._active_adapter
                         # Best-effort C-layer LoRA detach before flagging offload.
@@ -1133,6 +1157,11 @@ class ModelLoader:
                         except Exception as e:
                             logger.warning(f"Failed to load draft model {draft_model_path}: {e}")
                             cls._draft_instance = None
+                            try:
+                                config_store.set_active_draft_model(None, enabled=False)
+                                logger.info("Speculative decoding has been disabled in configuration due to loading failure.")
+                            except Exception as config_err:
+                                logger.warning(f"Failed to auto-disable speculative decoding in config: {config_err}")
 
                     cls._draft_model_path = draft_model_path
                 cls._circuit_breaker.record_success()
@@ -1338,8 +1367,11 @@ class ModelLoader:
                     if hasattr(cls._instance, "n_ctx"):
                         val = cls._instance.n_ctx
                         if callable(val):
-                            return val()
-                        return int(val)
+                            res = val()
+                            if isinstance(res, (int, float)) and not isinstance(res, bool):
+                                return int(res)
+                        elif isinstance(val, (int, float)) and not isinstance(val, bool):
+                            return int(val)
                 except Exception as e:
                     logger.warning(f"Error querying model context limit: {e}")
             
@@ -1348,10 +1380,15 @@ class ModelLoader:
                 from app.engine import config_store
                 active = config_store.get_active_model()
                 if active and "filename" in active:
-                    return cls._read_registry_n_ctx(active["filename"])
+                    res = cls._read_registry_n_ctx(active["filename"])
+                    if isinstance(res, (int, float)) and not isinstance(res, bool):
+                        return int(res)
             except Exception:
                 pass
-            return getattr(cls, '_n_ctx', 4096)
+            fallback = getattr(cls, '_n_ctx', 4096)
+            if isinstance(fallback, (int, float)) and not isinstance(fallback, bool):
+                return int(fallback)
+            return 4096
 
     @classmethod
     def is_loaded(cls) -> bool:

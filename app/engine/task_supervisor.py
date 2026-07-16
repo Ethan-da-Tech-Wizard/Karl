@@ -191,12 +191,22 @@ class TaskSupervisor:
 
     def add_cleanup_hook(self, task_id: str, hook: Callable[[], None]) -> None:
         """Attach an additional cleanup hook to an already-registered task."""
+        run_immediately = False
         with self._lock:
             rec = self._tasks.get(task_id)
             if rec is None:
                 logger.warning("add_cleanup_hook() called on unknown task_id %s", task_id)
                 return
-            rec._cleanup_hooks.append(hook)
+            if rec.status in (TaskStatus.FINISHED, TaskStatus.ERROR):
+                run_immediately = True
+            else:
+                rec._cleanup_hooks.append(hook)
+
+        if run_immediately:
+            try:
+                hook()
+            except Exception as exc:
+                logger.warning("Cleanup hook raised immediately for terminated task %s: %s", task_id[:8], exc)
 
     # ── Queries ──────────────────────────────────────────────────────────────
 

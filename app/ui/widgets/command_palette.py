@@ -43,24 +43,24 @@ class CommandPalette(QDialog):
         layout.addWidget(self.list_widget)
 
         self._commands = [
-            ("Switch to Workbench (Chat Space)", lambda: self.main_window._sidebar.select(0)),
-            ("Switch to Prompt Lab (Playground)", lambda: self.main_window._sidebar.select(1)),
-            ("Switch to Knowledge Base (RAG)", lambda: self.main_window._sidebar.select(2)),
-            ("Switch to Vision Workbench", lambda: self.main_window._sidebar.select(3)),
-            ("Switch to AI Lab (training)", lambda: self.main_window._sidebar.select(4)),
-            ("Switch to Eval Suite (Benchmarks)", lambda: self.main_window._sidebar.select(5)),
-            ("Switch to Swarm Studio", lambda: self.main_window._sidebar.select(6)),
-            ("Switch to System Config (Settings)", lambda: self.main_window._sidebar.select(7)),
-            ("Switch to Codex (Documentation)", lambda: self.main_window._sidebar.select(8)),
-            ("Switch to Flywheel Studio", lambda: self.main_window._sidebar.select(9)),
-            ("Workbench: Start New Session", lambda: self.main_window._workbench._new_session()),
-            ("Workbench: Save Session", lambda: self.main_window._workbench._save_current_session()),
-            ("Workbench: Toggle RAG Pipeline", lambda: self.main_window._workbench._rag_check.toggle()),
-            ("Workbench: Toggle Agentic Loop", lambda: self.main_window._workbench._loop_check.toggle()),
-            ("Knowledge Base: Ingest Document", lambda: (self.main_window._sidebar.select(2), self.main_window._knowledge_base._tabs.setCurrentIndex(1), self.main_window._knowledge_base._ingest_file())),
-            ("Knowledge Base: Rebuild Search Index", lambda: (self.main_window._sidebar.select(2), self.main_window._knowledge_base._rebuild_index())),
-            ("Eval Suite: Run Benchmarks", lambda: (self.main_window._sidebar.select(5), self.main_window._eval._run_suite())),
-            ("System Config: Open Settings Tab", lambda: (self.main_window._sidebar.select(7), self.main_window._system._tabs.setCurrentIndex(4))),
+            ("Switch to Workbench (Chat Space)", lambda: self.main_window.switch_workspace(0)),
+            ("Switch to Prompt Lab (Playground)", lambda: self.main_window.switch_workspace(1)),
+            ("Switch to Knowledge Base (RAG)", lambda: self.main_window.switch_workspace(2)),
+            ("Switch to Vision Workbench", lambda: self.main_window.switch_workspace(3)),
+            ("Switch to Training Studio", lambda: self.main_window.switch_workspace(4)),
+            ("Switch to Eval Suite (Benchmarks)", lambda: self.main_window.switch_workspace(5)),
+            ("Switch to Swarm Studio", lambda: self.main_window.switch_workspace(6)),
+            ("Switch to System Config (Settings)", lambda: self.main_window.switch_workspace(7)),
+            ("Switch to Codex (Documentation)", lambda: self.main_window.switch_workspace(8)),
+            ("Switch to Flywheel Studio", lambda: self.main_window.switch_workspace(9)),
+            ("Workbench: Start New Session", self.main_window.start_new_workbench_session),
+            ("Workbench: Save Session", self.main_window.save_workbench_session),
+            ("Workbench: Toggle RAG Pipeline", self.main_window.toggle_workbench_rag),
+            ("Workbench: Toggle Agentic Loop", self.main_window.toggle_workbench_agentic_loop),
+            ("Knowledge Base: Ingest Document", self.main_window.open_knowledge_ingest),
+            ("Knowledge Base: Rebuild Search Index", self.main_window.rebuild_knowledge_index),
+            ("Eval Suite: Run Benchmarks", self.main_window.run_eval_suite),
+            ("System Config: Open Defaults Tab", self.main_window.open_system_defaults),
         ]
 
         self._populate_list()
@@ -68,8 +68,9 @@ class CommandPalette(QDialog):
 
     def _populate_list(self):
         self.list_widget.clear()
-        for title, _ in self._commands:
+        for title, action in self._commands:
             item = QListWidgetItem(title)
+            item.setData(Qt.ItemDataRole.UserRole, action)
             self.list_widget.addItem(item)
         self.list_widget.setCurrentRow(0)
 

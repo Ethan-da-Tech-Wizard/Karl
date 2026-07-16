@@ -8,7 +8,7 @@ _OPEN  = "<think>"
 _CLOSE = "</think>"
 
 
-def parse_thought_stream(raw_text: str) -> tuple[str, str]:
+def parse_thought_stream(raw_text: str, start_in_thought: bool = False) -> tuple[str, str]:
     """
     State-machine parser for DeepSeek-R1 style ``<think>…</think>`` blocks.
 
@@ -28,6 +28,8 @@ def parse_thought_stream(raw_text: str) -> tuple[str, str]:
 
     Args:
         raw_text: The complete raw string returned by ``llm()["choices"][0]["text"]``.
+        start_in_thought: If True, indicates the generation sequence was pre-seeded
+          in thought mode.
 
     Returns:
         A ``(thought_text, response_text)`` tuple. Both parts are stripped of
@@ -35,7 +37,7 @@ def parse_thought_stream(raw_text: str) -> tuple[str, str]:
     """
     thought_parts: list[str] = []
     response_parts: list[str] = []
-    in_thought = False
+    in_thought = start_in_thought
     
     # Check if we should start in thought mode.
     # This happens when the model starts generating inside a think block

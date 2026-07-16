@@ -210,7 +210,7 @@ class _RunThread(QThread):
 
             # strip think block from shown output
             from core.cognitive_parser import parse_thought_stream
-            _, response = parse_thought_stream(full)
+            _, response = parse_thought_stream(full, start_in_thought=prompt.rstrip().endswith("<think>"))
             self.done.emit(response, diagnostics)
 
         except Exception as e:
@@ -284,12 +284,13 @@ class _PromptColumn(QWidget):
         self._output.setToolTip(f"Model generation output for Column {self.label}")
         layout.addWidget(self._output, 1)
 
-        btn = QPushButton(f"▶ run {label}")
-        btn.setToolTip(f"Run generation using settings in Column {self.label}")
-        btn.clicked.connect(self._emit_run)
-        layout.addWidget(btn)
+        self._run_btn = QPushButton(f"▶ run {label}")
+        self._run_btn.setToolTip(f"Run generation using settings in Column {self.label}")
+        self._run_btn.clicked.connect(self._emit_run)
+        layout.addWidget(self._run_btn)
 
         self._thread = None
+        self._active_threads = set()
         self._last_agentic_response = ""
         self._last_agentic_diagnostics = {}
         self._refresh_model_combo()
@@ -387,6 +388,8 @@ class _PromptColumn(QWidget):
         self._model_combo.blockSignals(False)
 
     def _emit_run(self):
+        if self._thread is not None and self._thread.isRunning():
+            return
         self.run_requested.emit(self.label, self._user_edit.toPlainText().strip())
 
     def system_text(self) -> str:
@@ -409,9 +412,12 @@ class _PromptColumn(QWidget):
         user = self.user_text()
         if not user:
             return
+        if self._thread is not None and self._thread.isRunning():
+            return
         self._output.clear()
         self._output.setPlainText("generating...")
         self._stats_lbl.setText("")
+        self._run_btn.setEnabled(False)
         
         self._last_agentic_response = ""
         self._last_agentic_diagnostics = {}
@@ -479,7 +485,17 @@ class _PromptColumn(QWidget):
             self._thread.done.connect(self._on_done)
             self._thread.error.connect(self._on_error)
 
+        thread = self._thread
+        self._active_threads.add(thread)
+        thread.finished.connect(lambda t=thread: self._active_threads.discard(t))
+        thread.finished.connect(lambda t=thread: self._on_thread_finished(t))
+        thread.finished.connect(thread.deleteLater)
         self._thread.start()
+
+    def _on_thread_finished(self, thread):
+        if self._thread is thread:
+            self._thread = None
+        self._run_btn.setEnabled(True)
 
     def _on_token(self, token: str):
         from PyQt6.QtGui import QTextCursor
@@ -1220,6 +1236,19 @@ class PromptLabWorkspace(QWidget):
         self._col_b._refresh_model_combo()
         self._refresh_compare_model_combos()
 
+    def focus_primary_input(self) -> bool:
+        if self._main_tabs.currentIndex() == 0:
+            self._col_a._user_edit.setFocus()
+            return True
+        if self._main_tabs.currentIndex() == 1:
+            self._tok_input.setFocus()
+            return True
+        if self._main_tabs.currentIndex() == 2:
+            self._cmp_user.setFocus()
+            return True
+        self._pair_search.setFocus()
+        return True
+
     def _run_column(self, label: str, _user_text: str):
         self._running_both = False
         if label == "A":
@@ -1291,9 +1320,13 @@ class PromptLabWorkspace(QWidget):
         try:
             llm = ModelLoader.get_instance()
             tokens = llm.tokenize(text.encode('utf-8'))
+            from app.ui.themes import get_theme_colors
+            colors = get_theme_colors(self.state)
+            text_hi = colors.get("text_hi", "#E4E4F0")
+            text_mid = colors.get("text_mid", "#9090A8")
             
             html_parts = [
-                f"<div style='line-height: 1.8; color: #E4E4F0; font-family: {MONO};'>"
+                f"<div style='line-height: 1.8; color: {text_hi}; font-family: {MONO};'>"
             ]
             
             for t in tokens:
@@ -1302,7 +1335,7 @@ class PromptLabWorkspace(QWidget):
                 
             html_parts.append("</div>")
             
-            stats_html = f"<div style='font-size: 8.5pt; color: #9090A8; margin-bottom: 8px;'>Total Tokens: <b>{len(tokens)}</b></div>"
+            stats_html = f"<div style='font-size: 8.5pt; color: {text_mid}; margin-bottom: 8px;'>Total Tokens: <b>{len(tokens)}</b></div>"
             self._tok_output.setHtml(stats_html + "".join(html_parts))
             
         except Exception as e:

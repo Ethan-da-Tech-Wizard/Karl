@@ -9,3 +9,6 @@ if "QT_QPA_PLATFORM" not in os.environ:
 # Initialize a global QApplication instance before any test modules are imported
 if QApplication.instance() is None:
     _global_test_app = QApplication(sys.argv)
+
+if QApplication.instance() is not None:
+    QApplication.instance().setProperty("is_test", True)

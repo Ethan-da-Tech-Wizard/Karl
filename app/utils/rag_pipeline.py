@@ -12,6 +12,7 @@ Changes from original:
 import logging
 import json
 import os
+import queue
 import sqlite3
 import time
 import threading
@@ -86,6 +87,23 @@ class RAGPipeline:
         # Each entry mirrors the SQLite row shape and remains for UI compatibility.
         self.documents: list[dict] = []
         self._write_lock = threading.Lock()
+
+        # Dedicated background thread that serializes the slow part of a
+        # write — faiss.write_index()+os.replace() — in strict submission
+        # order. Writers hand off a post-mutation index snapshot here and
+        # wait on the returned handle *after* releasing _write_lock and
+        # committing their SQLite transaction, so a second concurrent
+        # writer's (fast) DB txn + in-memory mutation isn't stuck queueing
+        # behind the first writer's (slow) disk flush. See
+        # _submit_index_flush()/_wait_for_index_flush() and their use in
+        # _add_chunks_to_index()/remove_source().
+        self._index_flush_queue: "queue.Queue" = queue.Queue()
+        self._index_flush_thread = threading.Thread(
+            target=self._index_flush_worker,
+            daemon=True,
+            name=f"karl-rag-flush-{namespace}",
+        )
+        self._index_flush_thread.start()
 
         # Bootstrap: single direct connection to create the schema, then hand off
         # all subsequent concurrent writes to the pool.
@@ -167,6 +185,60 @@ class RAGPipeline:
         tmp_path = f"{self.INDEX_FILE}.tmp"
         faiss.write_index(active_index, tmp_path)
         os.replace(tmp_path, self.INDEX_FILE)
+
+    def _index_flush_worker(self) -> None:
+        """Background loop: persists queued index snapshots to disk one at a
+        time, in the exact order they were submitted (a single consumer
+        thread makes ordering automatic — no extra locking needed)."""
+        while True:
+            job = self._index_flush_queue.get()
+            if job is None:  # shutdown sentinel
+                self._index_flush_queue.task_done()
+                return
+            index_snapshot, done_event, result = job
+            try:
+                self._write_index_atomic(index_snapshot)
+                result["ok"] = True
+            except Exception as exc:
+                result["ok"] = False
+                result["error"] = exc
+            finally:
+                done_event.set()
+                self._index_flush_queue.task_done()
+
+    def _submit_index_flush(self, index_snapshot) -> tuple:
+        """Hand *index_snapshot* off to the background flush thread.
+
+        Returns a (done_event, result) handle for _wait_for_index_flush().
+        Must be called with a snapshot (faiss.clone_index(self.index)), not
+        self.index itself — self.index may keep mutating after this call
+        returns (e.g. a subsequent writer), and the background thread reads
+        the snapshot outside of _write_lock.
+        """
+        done_event = threading.Event()
+        result: dict = {}
+        self._index_flush_queue.put((index_snapshot, done_event, result))
+        return done_event, result
+
+    @staticmethod
+    def _wait_for_index_flush(flush_job: tuple) -> None:
+        """Block until a previously submitted flush completes.
+
+        Re-raises whatever exception the background thread hit while
+        writing to disk. Note: by the time a caller reaches this, its
+        SQLite transaction has already committed (see _add_chunks_to_index/
+        remove_source) — a flush failure here means the in-process index
+        and the SQLite documents table are consistent with each other and
+        immediately searchable, but the on-disk index.faiss file is stale
+        until a later successful flush or a manual rebuild_index(). This is
+        a deliberate trade-off: decoupling the disk write from the SQLite
+        write-lock is what lets concurrent writers pipeline instead of
+        fully serializing on every ingest/remove call.
+        """
+        done_event, result = flush_job
+        done_event.wait()
+        if not result.get("ok"):
+            raise result.get("error") or RuntimeError("Index flush failed")
 
     def _migrate_legacy_metadata(self):
         legacy_file = self._legacy_metadata_file()
@@ -470,7 +542,7 @@ class RAGPipeline:
             ]
             prior_index = faiss.clone_index(self.index)
             prior_documents = list(self.documents)
-            index_replaced = False
+            flush_job = None
             with self._pool.get_connection() as conn:
                 try:
                     conn.execute("BEGIN IMMEDIATE")
@@ -480,17 +552,31 @@ class RAGPipeline:
                         rows,
                     )
                     self._add_embeddings_to_index(embeddings, vector_ids)
-                    self._write_index_atomic()
-                    index_replaced = True
+                    # Snapshot the post-mutation index and hand the slow
+                    # faiss.write_index()+os.replace() disk write off to the
+                    # background flush thread, then commit immediately
+                    # without waiting for it. This is a deliberate atomicity
+                    # trade-off (see _wait_for_index_flush's docstring): if
+                    # the flush later fails, the SQLite commit below cannot
+                    # be undone anymore. What it buys us is that neither the
+                    # SQLite write transaction nor _write_lock are held for
+                    # the duration of the disk write, so a second concurrent
+                    # ingest/remove call isn't stuck queueing behind it.
+                    index_snapshot = faiss.clone_index(self.index)
+                    flush_job = self._submit_index_flush(index_snapshot)
                     conn.commit()
                     self.documents = self._fetch_documents(conn)
                 except Exception:
                     conn.rollback()
                     self.index = prior_index
                     self.documents = prior_documents
-                    if index_replaced:
-                        self._write_index_atomic(prior_index)
                     raise
+        # Outside _write_lock and outside the SQLite transaction: block
+        # until *this* call's own snapshot is durable on disk before
+        # returning, preserving "data is persisted when this method
+        # returns" for callers, without making other writers wait for it.
+        if flush_job is not None:
+            self._wait_for_index_flush(flush_job)
         return len(chunk_records)
 
     def ingest_files(
@@ -1050,10 +1136,10 @@ class RAGPipeline:
 
     def remove_source(self, source_name: str):
         """Remove all chunks belonging to source_name from SQLite and FAISS atomically."""
+        flush_job = None
         with self._write_lock:
             prior_index = faiss.clone_index(self.index)
             prior_documents = list(self.documents)
-            index_replaced = False
             with self._pool.get_connection() as conn:
                 try:
                     conn.execute("BEGIN IMMEDIATE")
@@ -1073,17 +1159,21 @@ class RAGPipeline:
                     )
                     self.index.remove_ids(selector)
                     conn.execute("DELETE FROM documents WHERE source_file = ?", (source_name,))
-                    self._write_index_atomic()
-                    index_replaced = True
+                    # See _add_chunks_to_index for why this hands the disk
+                    # flush off to the background thread and commits without
+                    # waiting for it, rather than calling
+                    # _write_index_atomic() synchronously here.
+                    index_snapshot = faiss.clone_index(self.index)
+                    flush_job = self._submit_index_flush(index_snapshot)
                     conn.commit()
                     self.documents = self._fetch_documents(conn)
                 except Exception:
                     conn.rollback()
                     self.index = prior_index
                     self.documents = prior_documents
-                    if index_replaced:
-                        self._write_index_atomic(prior_index)
                     raise
+        if flush_job is not None:
+            self._wait_for_index_flush(flush_job)
         logger.info(f"Source '{source_name}' removed. Index now has {len(self.documents)} chunks.")
 
     def rebuild_index(self):

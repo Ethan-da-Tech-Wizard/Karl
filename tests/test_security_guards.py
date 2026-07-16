@@ -39,6 +39,7 @@ def _make_server():
         patch.object(WebSocketServerManager, '_seed_codex', lambda self: None),
         patch.object(WebSocketServerManager, '_ensure_ssl_certs', lambda self: None),
         patch('app.engine.websocket_server.RAGPipeline', MagicMock),
+        patch('app.engine.websocket_server.save_cached_token', lambda *args, **kwargs: None),
     ):
         return WebSocketServerManager(port=19999)
 

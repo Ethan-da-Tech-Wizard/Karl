@@ -280,6 +280,11 @@ def test_main_window_restores_and_clears_autosave_checkpoint(tmp_path, monkeypat
         monkeypatch.setattr(main_window, name, FakeWorkspace)
     monkeypatch.setattr(main_window.MainWindow, "_setup_shortcuts", lambda self: None)
     monkeypatch.setattr(main_window.MainWindow, "_load_theme_config", lambda self: None)
+    monkeypatch.setattr(main_window.MainWindow, "_init_websocket_server", lambda self: None)
+    monkeypatch.setattr(main_window.MainWindow, "_init_model", lambda self: None)
+    import app.utils.keychain_manager as keychain_manager
+    monkeypatch.setattr(keychain_manager, "revoke_tokens", lambda: None)
+    monkeypatch.setattr(keychain_manager, "save_cached_token", lambda *args, **kwargs: None)
     monkeypatch.setattr(main_window.QTimer, "singleShot", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         main_window.QMessageBox,

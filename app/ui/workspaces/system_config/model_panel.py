@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QProgressBar,
     QComboBox,
     QCheckBox,
+    QScrollArea, QFrame,
 )
 
 from app.engine import config_store
@@ -21,7 +22,19 @@ logger = logging.getLogger("karl.system_config")
 class ModelPanelMixin:
     def _build_model_tab(self) -> QWidget:
         w = QWidget()
-        layout = QVBoxLayout(w)
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
 
@@ -48,11 +61,28 @@ class ModelPanelMixin:
         mr.addWidget(browse)
         ap_layout.addWidget(model_row)
 
-        load_btn = QPushButton("load model")
-        load_btn.setObjectName("btn-primary")
-        load_btn.setToolTip("Instantly load selected GGUF model")
-        load_btn.clicked.connect(self._load_model)
-        ap_layout.addWidget(load_btn)
+        self._load_model_btn = QPushButton("load model")
+        self._load_model_btn.setObjectName("btn-primary")
+        self._load_model_btn.setToolTip("Load selected GGUF model without blocking the interface")
+        self._load_model_btn.clicked.connect(self._load_model)
+        ap_layout.addWidget(self._load_model_btn)
+
+        # Circuit Breaker Status Row
+        cb_row = QWidget()
+        cbl = QHBoxLayout(cb_row)
+        cbl.setContentsMargins(0, 0, 0, 0)
+        cbl.setSpacing(8)
+        self._cb_status_lbl = QLabel("Circuit Breaker: CLOSED")
+        self._cb_status_lbl.setToolTip("Protects the system from freeze loops on repeated load failures")
+        self._cb_status_lbl.setStyleSheet("font-size: 9pt;")
+        cbl.addWidget(self._cb_status_lbl, 1)
+
+        self._cb_reset_btn = QPushButton("reset breaker")
+        self._cb_reset_btn.setObjectName("btn-secondary")
+        self._cb_reset_btn.setToolTip("Force-close the circuit breaker to allow model loading immediately")
+        self._cb_reset_btn.clicked.connect(self._reset_circuit_breaker)
+        cbl.addWidget(self._cb_reset_btn)
+        ap_layout.addWidget(cb_row)
 
         ap_layout.addWidget(_hline())
         ap_layout.addWidget(_section("ACTIVE ADAPTER"))
@@ -111,17 +141,17 @@ class ModelPanelMixin:
         self._load_speculative_btn.setToolTip("Reload the active base model with the draft model attached")
         self._load_speculative_btn.clicked.connect(self._load_speculative)
 
-        clear_draft_btn = QPushButton("clear draft")
-        clear_draft_btn.setObjectName("btn-ghost")
-        clear_draft_btn.setToolTip("Remove draft model and reload base model normally")
-        clear_draft_btn.clicked.connect(self._clear_draft_model)
+        self._clear_draft_btn = QPushButton("clear draft")
+        self._clear_draft_btn.setObjectName("btn-ghost")
+        self._clear_draft_btn.setToolTip("Remove draft model and reload base model normally")
+        self._clear_draft_btn.clicked.connect(self._clear_draft_model)
 
         spec_btn_row = QWidget()
         sbl = QHBoxLayout(spec_btn_row)
         sbl.setContentsMargins(0, 0, 0, 0)
         sbl.setSpacing(8)
         sbl.addWidget(self._load_speculative_btn)
-        sbl.addWidget(clear_draft_btn)
+        sbl.addWidget(self._clear_draft_btn)
         ap_layout.addWidget(spec_btn_row)
 
         self._draft_status = QLabel("")
@@ -262,6 +292,109 @@ class ModelPanelMixin:
     # ── quantization slots ────────────────────────────────────────────────────
 
 
+    def _start_model_load(
+        self,
+        model_path: str,
+        *,
+        adapter_name: str | None = None,
+        draft_model_path: str | None = None,
+        status_label: QLabel | None = None,
+        speculative: bool = False,
+        on_loaded=None,
+        on_error=None,
+        on_finished=None,
+    ):
+        from app.engine.model_load_thread import ModelLoadThread
+
+        if getattr(self, "_model_load_thread", None) and self._model_load_thread.isRunning():
+            if status_label is not None:
+                status_label.setText("model load already running")
+            return False
+
+        controls = [
+            getattr(self, "_load_model_btn", None),
+            getattr(self, "_load_speculative_btn", None),
+            getattr(self, "_clear_draft_btn", None),
+            getattr(self, "_adapter_combo", None),
+        ]
+        for control in controls:
+            if control is not None:
+                control.setEnabled(False)
+
+        if status_label is not None:
+            label = os.path.basename(model_path)
+            if draft_model_path:
+                label = f"{label} + draft {os.path.basename(draft_model_path)}"
+            status_label.setText(f"loading {label}...")
+            status_label.setTextFormat(Qt.TextFormat.PlainText)
+
+        thread = ModelLoadThread(
+            model_path,
+            adapter_name=adapter_name,
+            draft_model_path=draft_model_path,
+        )
+
+        def handle_loaded(filename: str, loaded_adapter: str | None, draft_filename: str | None):
+            self.state.model_name = filename
+            self.state.adapter_name = loaded_adapter
+            self.adapter_changed.emit(loaded_adapter or "")
+            self._scan_models(force=True)
+            self._scan_adapters(force=True)
+            if hasattr(self, "_populate_registry"):
+                self._populate_registry()
+            if hasattr(self, "_model_path_input"):
+                self._model_path_input.setText(os.path.join("data", "models", filename))
+
+            if speculative and status_label is not None:
+                from app.engine.model_loader import ModelLoader
+                if ModelLoader.is_speculative():
+                    status_label.setText(
+                        f"<span style='color:#2DD4A0;'>Speculative decoding active — draft: "
+                        f"{draft_filename}</span>"
+                    )
+                else:
+                    status_label.setText(
+                        "<span style='color:#FFD800;'>Draft model loaded but speculative kwarg "
+                        "unsupported by this llama-cpp-python version. Standard inference active.</span>"
+                    )
+                status_label.setTextFormat(Qt.TextFormat.RichText)
+            elif status_label is not None:
+                status_label.setText(f"<span style='color:#2DD4A0;'>loaded {filename}</span>")
+                status_label.setTextFormat(Qt.TextFormat.RichText)
+
+            self._run_model_preflight_checks()
+            if on_loaded is not None:
+                on_loaded(filename, loaded_adapter, draft_filename)
+
+        def handle_error(msg: str):
+            if status_label is not None:
+                status_label.setText(f"<span style='color:#FF5C7A;'>Error: {msg}</span>")
+                status_label.setTextFormat(Qt.TextFormat.RichText)
+            else:
+                QMessageBox.critical(self, "Model Load Error", msg)
+            if on_error is not None:
+                on_error(msg)
+
+        def handle_finished():
+            for control in controls:
+                if control is not None:
+                    control.setEnabled(True)
+            self._active_threads.discard(thread)
+            if getattr(self, "_model_load_thread", None) is thread:
+                self._model_load_thread = None
+            if on_finished is not None:
+                on_finished()
+
+        thread.loaded.connect(handle_loaded)
+        thread.error.connect(handle_error)
+        thread.finished.connect(handle_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._model_load_thread = thread
+        self._active_threads.add(thread)
+        thread.start()
+        return True
+
+
     def _browse_model(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select GGUF model", "data/models", "GGUF (*.gguf);;All Files (*)"
@@ -286,18 +419,7 @@ class ModelPanelMixin:
                 "stop the current generation first."
             )
             return
-        ModelLoader.reset_instance()
-        try:
-            ModelLoader.get_instance(model_path=path)
-            name = os.path.basename(path)
-            self.state.model_name = name
-            from app.engine import config_store
-            if not config_store.set_active_model(name):
-                raise OSError("Failed to persist data/active_model.json")
-            self._scan_models(force=True)
-            self._run_model_preflight_checks()
-        except Exception as e:
-            self._model_status.setText(f"error: {e}")
+        self._start_model_load(path, status_label=self._model_status)
 
 
     def _browse_draft_model(self):
@@ -338,29 +460,12 @@ class ModelPanelMixin:
             active = _cs.get_active_model()
             base_path = os.path.join("data", "models", active["filename"])
 
-        from app.engine.model_loader import ModelLoader
-        try:
-            ModelLoader.reset_instance()
-            ModelLoader.get_instance(model_path=base_path, draft_model_path=draft_path)
-            draft_name = os.path.basename(draft_path)
-            from app.engine import config_store as _cs
-            _cs.set_active_draft_model(draft_name, enabled=True)
-            speculative_on = ModelLoader.is_speculative()
-            if speculative_on:
-                self._draft_status.setText(
-                    f"<span style='color:#2DD4A0;'>Speculative decoding active — draft: "
-                    f"{draft_name}</span>"
-                )
-            else:
-                self._draft_status.setText(
-                    "<span style='color:#FFD800;'>Draft model loaded but speculative kwarg "
-                    "unsupported by this llama-cpp-python version. Standard inference active.</span>"
-                )
-            self._draft_status.setTextFormat(Qt.TextFormat.RichText)
-            self._run_model_preflight_checks()
-        except Exception as e:
-            self._draft_status.setText(f"<span style='color:#FF5C7A;'>Error: {e}</span>")
-            self._draft_status.setTextFormat(Qt.TextFormat.RichText)
+        self._start_model_load(
+            base_path,
+            draft_model_path=draft_path,
+            status_label=self._draft_status,
+            speculative=True,
+        )
 
 
     def _clear_draft_model(self):
@@ -541,3 +646,11 @@ class ModelPanelMixin:
         self._populate_registry()
         self._refresh_hardware()
         self._run_model_preflight_checks()
+
+
+    def _reset_circuit_breaker(self):
+        from app.engine.model_loader import ModelLoader
+        ModelLoader.reset_circuit_breaker()
+        if hasattr(self, "_cb_status_lbl") and self._cb_status_lbl is not None:
+            self._cb_status_lbl.setText("<span style='color:#2DD4A0;'>Circuit Breaker: CLOSED</span>")
+            self._cb_status_lbl.setTextFormat(Qt.TextFormat.RichText)

@@ -50,12 +50,33 @@ class SQLiteConnectionPool:
 
         The semaphore limits concurrent holders to pool_size; get_nowait() is
         safe here because the semaphore guarantees a slot is available.
+
+        If the caller's own error handling leaves the connection mid-transaction
+        (e.g. its `rollback()` itself raises — a full disk, a vanished WAL file),
+        returning it to the pool as-is would poison every future borrower with
+        "cannot start a transaction within a transaction". Roll back defensively
+        on any exception (a no-op if the caller already succeeded — SQLite only
+        issues ROLLBACK when a transaction is actually open) and replace the
+        connection outright if that also fails.
         """
         self._semaphore.acquire()
         conn = self._queue.get_nowait()
+        broken = False
         try:
             yield conn
+        except Exception:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                broken = True
+            raise
         finally:
+            if broken:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+                conn = self._make_connection()
             self._queue.put(conn)
             self._semaphore.release()
 

@@ -92,35 +92,12 @@ _karl_log.propagate = False
 from PyQt6.QtWidgets import QApplication
 from app.ui.main_window import MainWindow
 
-_PRIV_MSG = (
-    "Security Error: Running Karl as root or administrator is blocked "
-    "to prevent accidental host system modification during agentic testing loops."
-)
-
-
-def _assert_not_privileged() -> None:
-    """
-    Abort with exit code 1 if Karl is launched under elevated OS privileges.
-
-    Elevated execution is dangerous during agentic loops because tools can
-    write or execute arbitrary files.  Blocking root/admin at startup prevents
-    an entire class of containment failures.
-    """
-    import platform
-    plat = platform.system()
-    if plat in ("Linux", "Darwin"):
-        if os.getuid() == 0:
-            logging.getLogger("karl").critical(_PRIV_MSG)
-            sys.exit(1)
-    elif plat == "Windows":
-        try:
-            import ctypes
-            if ctypes.windll.shell32.IsUserAnAdmin():
-                logging.getLogger("karl").critical(_PRIV_MSG)
-                sys.exit(1)
-        except Exception:
-            # If the check itself fails (e.g., in Wine), allow startup.
-            pass
+# Re-exported for backwards compatibility (tests and other entrypoints import
+# these names from main). The actual implementation lives in core/security.py
+# so lightweight standalone scripts (e.g. auto_train.py) can reuse the same
+# check without pulling in main.py's heavy PyQt/torch imports.
+from core.security import PRIV_MSG as _PRIV_MSG
+from core.security import assert_not_privileged as _assert_not_privileged
 
 
 def _run_headless() -> int:
