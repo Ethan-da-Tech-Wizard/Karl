@@ -208,8 +208,31 @@ def build_prompt(system_prompt, chat_history):
         for p in default_sys_prompts
     )
 
+    def is_greeting(text: str) -> bool:
+        t = text.strip().lower().rstrip(".,!?")
+        if not t:
+            return False
+        # Direct matches
+        if t in {"hi", "hello", "hey", "yo", "greetings", "good morning", "good afternoon", "good evening", "hi there", "hello there", "hey there"}:
+            return True
+        # Check if it starts with a greeting and is very short (e.g. <= 4 words)
+        words = t.split()
+        if len(words) <= 4 and words:
+            first = words[0]
+            if first in {"hi", "hello", "hey", "yo", "greetings"}:
+                return True
+        return False
+
     # Get dynamic Codex reference context based on keyword matching
     codex_context = _get_codex_context(chat_history)
+
+    # Determine if the last user message is a greeting
+    last_user_msg = ""
+    for msg in reversed(chat_history):
+        if msg.get("role") == "user":
+            last_user_msg = msg.get("content", "")
+            break
+    is_user_greeting = is_greeting(last_user_msg)
 
     if adapter_active:
         if is_default:
@@ -217,7 +240,9 @@ def build_prompt(system_prompt, chat_history):
         else:
             effective_system = clean_sys + rag_context + codex_context
     else:
-        if is_default:
+        if is_default and is_user_greeting:
+            effective_system = "You are Karl, a precise and thoughtful AI assistant. Always respond in English." + rag_context + codex_context
+        elif is_default:
             effective_system = _BASE_SYSTEM_PROMPT + rag_context + codex_context
         else:
             effective_system = clean_sys + rag_context + codex_context
@@ -232,34 +257,16 @@ def build_prompt(system_prompt, chat_history):
         effective_system = _apply_vocab_leak_bypass(effective_system)
     # ─────────────────────────────────────────────────────────────────────────
 
-    # Determine if we should pre-seed `<think>\n`
-    last_user_msg = ""
-    for msg in reversed(chat_history):
-        if msg.get("role") == "user":
-            last_user_msg = msg.get("content", "")
-            break
-
-    def is_greeting(text: str) -> bool:
-        t = text.strip().lower().rstrip(".!?")
-        return t in {"hi", "hello", "hey", "yo", "greetings", "good morning", "good afternoon", "good evening"}
-
     preseed_think = True
-    if adapter_active:
-        # For the greeting adapter or any adapter, if the input is a simple greeting,
-        # we don't pre-seed <think>\n, so the custom greeting fires immediately.
-        # Otherwise, we pre-seed it so the model does reasoning.
-        if is_greeting(last_user_msg):
-            preseed_think = False
-        # If <think> itself is a known vocab leak (maps to <unk> in the GGUF),
-        # suppress the preseed so we don't inject an <unk> token as the first
-        # generated token.
-        elif "<think>" in ModelLoader.vocab_leak_tokens():
-            preseed_think = False
-            logger.debug(
-                "Vocab leak bypass: suppressing <think> preseed "
-                "(<think> maps to <unk> under active adapter '%s')",
-                active_adapter,
-            )
+    if is_user_greeting:
+        preseed_think = False
+    elif adapter_active and "<think>" in ModelLoader.vocab_leak_tokens():
+        preseed_think = False
+        logger.debug(
+            "Vocab leak bypass: suppressing <think> preseed "
+            "(<think> maps to <unk> under active adapter '%s')",
+            active_adapter,
+        )
 
     model_name = ModelLoader.model_name().lower()
 
