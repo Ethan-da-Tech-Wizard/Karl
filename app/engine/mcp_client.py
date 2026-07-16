@@ -36,6 +36,9 @@ class MCPClientManager:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls(config_path)
+                if os.environ.get("KARL_NO_MCP") == "1":
+                    logger.info("KARL_NO_MCP=1 detected. Skipping MCP server auto-start.")
+                    return cls._instance
                 try:
                     cls._instance.start()
                 except Exception as e:
@@ -54,6 +57,8 @@ class MCPClientManager:
     def get_tool_schemas(cls) -> list[dict]:
         """Return cached tool list; refresh if dirty. Safe to call from any thread."""
         global _cached_tools, _tools_cache_dirty
+        if os.environ.get("KARL_NO_MCP") == "1":
+            return []
         inst = cls.get_instance()
         if _cached_tools is None or _tools_cache_dirty:
             try:
@@ -97,6 +102,8 @@ class MCPClientManager:
 
     def start(self):
         """Synchronously starts all configured MCP servers."""
+        if os.environ.get("KARL_NO_MCP") == "1":
+            return
         if not self.loop:
             raise RuntimeError("Event loop not initialized.")
         future = asyncio.run_coroutine_threadsafe(self.async_start(), self.loop)

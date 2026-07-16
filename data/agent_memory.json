@@ -1,17 +1,4 @@
 {
-  "math_utils.py": {
-    "functions": [
-      {
-        "name": "add",
-        "args": [
-          "a",
-          "b"
-        ],
-        "doc": ""
-      }
-    ],
-    "classes": []
-  },
   "run_tests.py": {
     "functions": [],
     "classes": []
