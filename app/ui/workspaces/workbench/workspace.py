@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
     QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox, QColorDialog,
     QApplication, QProgressBar, QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
-    QSizePolicy,
+    QSizePolicy, QDialog, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QRect, QPropertyAnimation
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
@@ -41,7 +41,11 @@ from app.ui.widgets.symbolic_icon import IconBtn, GearIcon, HamburgerIcon, Brain
 from app.ui.widgets.toast import ToastOverlay
 
 from app.ui.workspaces.workbench.chat_view import ChatView
-from app.ui.workspaces.workbench.profiles import AGENT_PROFILES
+from app.ui.workspaces.workbench.profiles import (
+    AGENT_PROFILES, reload_profiles,
+    save_profile_override, delete_profile_override,
+    get_default_prompt, is_overridden,
+)
 from app.utils.correlation_logger import new_correlation_id, set_correlation_id
 from core.default_prompts import DEFAULT_SYSTEM_PROMPT
 from app.engine import config_store
@@ -420,11 +424,21 @@ class WorkbenchWorkspace(QMainWindow):
         self._agent_combo.setMaximumWidth(120)
         self._agent_combo.setToolTip("Select Karl's active workbench agent profile")
         for key, data in AGENT_PROFILES.items():
-            self._agent_combo.addItem(data["label"], key)
+            label = data["label"]
+            if is_overridden(key):
+                label = f"★ {label}"
+            self._agent_combo.addItem(label, key)
             idx = self._agent_combo.count() - 1
             self._agent_combo.setItemData(idx, data["description"], Qt.ItemDataRole.ToolTipRole)
         self._agent_combo.currentIndexChanged.connect(self._on_agent_selected)
         ctrl_layout.addWidget(self._agent_combo)
+
+        self._edit_profile_btn = QPushButton("✎")
+        self._edit_profile_btn.setObjectName("btn-ghost")
+        self._edit_profile_btn.setFixedSize(26, 26)
+        self._edit_profile_btn.setToolTip("Edit this profile's system prompt append")
+        self._edit_profile_btn.clicked.connect(self._on_edit_profile_prompt)
+        ctrl_layout.addWidget(self._edit_profile_btn)
 
         self._rag_check = QCheckBox("RAG")
         self._rag_check.setToolTip("Inject relevant knowledge base context into prompt")
@@ -546,7 +560,8 @@ class WorkbenchWorkspace(QMainWindow):
         self._header_agent_combo.setMaximumWidth(160)
         self._header_agent_combo.setToolTip("Select Karl's active Workbench agent profile.")
         for key, data in AGENT_PROFILES.items():
-            self._header_agent_combo.addItem(data["label"], key)
+            label = f"★ {data['label']}" if is_overridden(key) else data["label"]
+            self._header_agent_combo.addItem(label, key)
             idx = self._header_agent_combo.count() - 1
             self._header_agent_combo.setItemData(idx, data["description"], Qt.ItemDataRole.ToolTipRole)
         self._header_agent_combo.currentIndexChanged.connect(self._on_header_agent_selected)
@@ -1423,6 +1438,95 @@ class WorkbenchWorkspace(QMainWindow):
                 self._agent_combo.setCurrentIndex(idx)
                 self._agent_combo.blockSignals(False)
         self._update_expert_strip()
+
+    def _refresh_agent_combo_labels(self):
+        """Rebuild the ★-override-indicator prefix on both agent combos'
+        item text after a profile prompt is saved/reset, without disturbing
+        the current selection."""
+        for combo in (getattr(self, "_agent_combo", None), getattr(self, "_header_agent_combo", None)):
+            if combo is None:
+                continue
+            current_key = combo.currentData()
+            combo.blockSignals(True)
+            for idx in range(combo.count()):
+                key = combo.itemData(idx)
+                data = AGENT_PROFILES.get(key)
+                if not data:
+                    continue
+                label = f"★ {data['label']}" if is_overridden(key) else data["label"]
+                combo.setItemText(idx, label)
+            restore_idx = combo.findData(current_key)
+            if restore_idx >= 0:
+                combo.setCurrentIndex(restore_idx)
+            combo.blockSignals(False)
+
+    def _on_edit_profile_prompt(self):
+        """Edit the currently selected agent profile's system-prompt append.
+
+        This text is what _active_system_prompt() appends to self._system_prompt
+        whenever this profile is active (see below) -- editing it here is the
+        only UI path to profiles.save_profile_override()/delete_profile_override().
+        """
+        key = self._agent_combo.currentData() or self._agent_profile
+        profile = AGENT_PROFILES.get(key)
+        if not profile:
+            return
+        label = profile.get("label", key)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Edit Profile: {label}")
+        dialog.resize(480, 320)
+        dl = QVBoxLayout(dialog)
+
+        desc = QLabel(
+            "This text is appended to Karl's system prompt whenever the "
+            f"“{label}” profile is active. Leave empty to give it no extra instructions."
+        )
+        desc.setObjectName("lbl-muted")
+        desc.setWordWrap(True)
+        dl.addWidget(desc)
+
+        editor = QTextEdit()
+        editor.setPlainText(profile.get("prompt", ""))
+        dl.addWidget(editor, 1)
+
+        btn_row = QHBoxLayout()
+        reset_btn = QPushButton("Reset to Default")
+        reset_btn.setObjectName("btn-ghost")
+        reset_btn.setEnabled(is_overridden(key))
+        reset_btn.setToolTip("Restore this profile's original prompt")
+        btn_row.addWidget(reset_btn)
+        btn_row.addStretch()
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        btn_row.addWidget(buttons)
+        dl.addLayout(btn_row)
+
+        did_reset = {"value": False}
+
+        def _do_reset():
+            did_reset["value"] = True
+            dialog.accept()
+
+        reset_btn.clicked.connect(_do_reset)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        if did_reset["value"]:
+            if not delete_profile_override(key):
+                QMessageBox.warning(self, "Edit Profile", "Failed to reset this profile's prompt.")
+                return
+        else:
+            if not save_profile_override(key, editor.toPlainText()):
+                QMessageBox.warning(self, "Edit Profile", "Failed to save this profile's prompt.")
+                return
+
+        self._refresh_agent_combo_labels()
 
     def _pick_header_accent(self):
         from app.ui.themes import THEMES
