@@ -43,6 +43,7 @@ from app.ui.widgets.toast import ToastOverlay
 from app.ui.workspaces.workbench.chat_view import ChatView
 from app.ui.workspaces.workbench.profiles import AGENT_PROFILES
 from app.utils.correlation_logger import new_correlation_id, set_correlation_id
+from core.default_prompts import DEFAULT_SYSTEM_PROMPT
 
 
 logger = logging.getLogger("karl.workbench")
@@ -96,13 +97,7 @@ class WorkbenchWorkspace(QMainWindow):
             "thinking_temperature": getattr(self.state, "thinking_temperature", 0.8),
             "answering_temperature": getattr(self.state, "answering_temperature", 0.1),
         }
-        self._system_prompt = (
-            "You are Karl, a precise and thoughtful AI assistant. "
-            "Always respond in English. "
-            "Analyze and break down problems step-by-step. "
-            "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
-            "Double-check your derivations and arithmetic before writing the final answer."
-        )
+        self._system_prompt = DEFAULT_SYSTEM_PROMPT
         self._agent_profile = "karl"
         self._current_session_file: str | None = None
         self._session_id: str | None = None

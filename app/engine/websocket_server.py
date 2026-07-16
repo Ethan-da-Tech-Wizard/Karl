@@ -1766,13 +1766,8 @@ class WebSocketServerManager:
 
                         system_prompt = hyperparams.get("system_prompt")
                         if not system_prompt:
-                            system_prompt = (
-                                "You are Karl, a precise and thoughtful AI assistant. "
-                                "Always respond in English. "
-                                "Analyze and break down problems step-by-step. "
-                                "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
-                                "Double-check your derivations and arithmetic before writing the final answer."
-                            )
+                            from core.default_prompts import DEFAULT_SYSTEM_PROMPT
+                            system_prompt = DEFAULT_SYSTEM_PROMPT
 
                         # Resolve agent profile overrides (model / adapter / system prompt prefix)
                         agent_id = params.get("agent")

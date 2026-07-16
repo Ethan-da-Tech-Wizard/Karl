@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .common import _hline, _row, _section
+from core.default_prompts import DEFAULT_SYSTEM_PROMPT
 
 logger = logging.getLogger("karl.system_config")
 
@@ -217,13 +218,7 @@ class DefaultsPanelMixin:
 
         from PyQt6.QtWidgets import QTextEdit
         self._system_edit = QTextEdit()
-        self._system_edit.setPlainText(
-            "You are Karl, a precise and thoughtful AI assistant. "
-            "Always respond in English. "
-            "Analyze and break down problems step-by-step. "
-            "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
-            "Double-check your derivations and arithmetic before writing the final answer."
-        )
+        self._system_edit.setPlainText(DEFAULT_SYSTEM_PROMPT)
         self._system_edit.setToolTip("System prompt active during generation. Determines Karl's personality and guidelines.")
         ip_layout.addWidget(self._system_edit, 1)
 

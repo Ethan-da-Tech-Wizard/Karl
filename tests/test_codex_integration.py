@@ -5,6 +5,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.interaction_loop import strip_html_tags, matches_keyword, build_prompt
+from core.default_prompts import DEFAULT_SYSTEM_PROMPT
 
 class TestCodexIntegration(unittest.TestCase):
     def test_strip_html_tags(self):
@@ -126,15 +127,15 @@ class TestCodexIntegration(unittest.TestCase):
     def test_build_prompt_greetings_and_reasoning(self):
         # 1. Test greeting input: should NOT pre-seed <think> and should use clean system prompt
         greeting_history = [{"role": "user", "content": "hello there"}]
-        prompt_greeting = build_prompt("You are Karl, a precise and thoughtful AI assistant. Always respond in English. Analyze and break down problems step-by-step. Write down your detailed thoughts and calculations inside <think>...</think> blocks. Double-check your derivations and arithmetic before writing the final answer.", greeting_history)
+        prompt_greeting = build_prompt(DEFAULT_SYSTEM_PROMPT, greeting_history)
         self.assertNotIn("<think>", prompt_greeting)
-        self.assertNotIn("Analyze and break down problems step-by-step", prompt_greeting)
+        self.assertNotIn("think step-by-step", prompt_greeting)
 
         # 2. Test reasoning query input: should pre-seed <think>
         reasoning_history = [{"role": "user", "content": "explain how decorators work in python"}]
-        prompt_reasoning = build_prompt("You are Karl, a precise and thoughtful AI assistant. Always respond in English. Analyze and break down problems step-by-step. Write down your detailed thoughts and calculations inside <think>...</think> blocks. Double-check your derivations and arithmetic before writing the final answer.", reasoning_history)
+        prompt_reasoning = build_prompt(DEFAULT_SYSTEM_PROMPT, reasoning_history)
         self.assertIn("<think>", prompt_reasoning)
-        self.assertIn("Analyze and break down problems step-by-step", prompt_reasoning)
+        self.assertIn("think step-by-step", prompt_reasoning)
 
 if __name__ == "__main__":
     unittest.main()

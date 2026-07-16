@@ -6,6 +6,12 @@ import logging
 import os
 import re
 from app.engine.model_loader import ModelLoader
+from core.default_prompts import (
+    DEFAULT_SYSTEM_PROMPT,
+    GREETING_SYSTEM_PROMPT,
+    LEGACY_DEFAULT_SYSTEM_PROMPTS,
+    RECENCY_INSTRUCTION as _RECENCY_INSTRUCTION,
+)
 
 # System prompt used when the custom_greeting adapter (or any adapter) is active.
 # This matches the training data, so the adapter fires correctly.
@@ -13,19 +19,7 @@ logger = logging.getLogger("karl.codex_injector")
 
 
 _ADAPTER_SYSTEM_PROMPT = "Always respond in English."
-_RECENCY_INSTRUCTION = (
-    "Treat the latest user message as the active request; "
-    "use earlier turns only as context when relevant."
-)
-
-_BASE_SYSTEM_PROMPT = (
-    "You are Karl, a precise and thoughtful AI assistant. "
-    "Always respond in English. "
-    f"{_RECENCY_INSTRUCTION} "
-    "Analyze and break down problems step-by-step. "
-    "Write down your detailed thoughts and calculations inside <think>...</think> blocks. "
-    "Double-check your derivations and arithmetic before writing the final answer."
-)
+_BASE_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
 
 _CODEX_KEYWORD_MAP = {
     "python": "Python.html",
@@ -195,13 +189,8 @@ def build_prompt(system_prompt, chat_history):
         clean_sys = parts[0]
         rag_context = "\n\nRetrieved Context:\n" + parts[1]
 
-    default_sys_prompts = {
-        "",
-        "You are Karl, a precise and thoughtful AI assistant. Always respond in English. Analyze and break down problems step-by-step. Write down your detailed thoughts and calculations inside <think>...</think> blocks. Double-check your derivations and arithmetic before writing the final answer.",
-        "You are Karl, a precise and thoughtful AI assistant. Always respond in English. Treat the latest user message as the active request; use earlier turns only as context when relevant. Analyze and break down problems step-by-step. Write down your detailed thoughts and calculations inside <think>...</think> blocks. Double-check your derivations and arithmetic before writing the final answer.",
-        "Always respond in English."
-    }
-    
+    default_sys_prompts = LEGACY_DEFAULT_SYSTEM_PROMPTS | {DEFAULT_SYSTEM_PROMPT}
+
     clean_sys_stripped = " ".join(clean_sys.strip().split())
     is_default = any(
         clean_sys_stripped == " ".join(p.strip().split()) 
@@ -241,7 +230,7 @@ def build_prompt(system_prompt, chat_history):
             effective_system = clean_sys + rag_context + codex_context
     else:
         if is_default and is_user_greeting:
-            effective_system = "You are Karl, a precise and thoughtful AI assistant. Always respond in English." + rag_context + codex_context
+            effective_system = GREETING_SYSTEM_PROMPT + rag_context + codex_context
         elif is_default:
             effective_system = _BASE_SYSTEM_PROMPT + rag_context + codex_context
         else:
