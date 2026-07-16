@@ -36,6 +36,14 @@ _PERSIST_FIELDS: tuple[str, ...] = (
 
 class AppState(QObject):
     state_changed = pyqtSignal(str, object)
+    
+    # Decoupled communication signals
+    change_workspace_requested = pyqtSignal(int)
+    append_to_workbench_input = pyqtSignal(str)
+    replace_workbench_input = pyqtSignal(str)
+    attach_image_to_workbench = pyqtSignal(str)
+    set_workbench_hyperparams = pyqtSignal(dict)
+    set_workbench_system_prompt = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()

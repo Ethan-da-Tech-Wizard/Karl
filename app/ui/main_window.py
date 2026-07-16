@@ -161,15 +161,13 @@ class MainWindow(QMainWindow):
         self._workbench      = WorkbenchWorkspace(self._state)
         self._prompt_lab     = PromptLabWorkspace(self._state)
         self._knowledge_base = KnowledgeBaseWorkspace(self._state)
-        self._vision         = VisionWorkbench(self._state, self._workbench)
+        self._vision         = VisionWorkbench(self._state)
         self._training       = TrainingStudioWorkspace(self._state)
         self._eval           = EvalSuiteWorkspace(self._state)
         self._swarm          = SwarmStudioWorkspace(self._state)
         self._system         = SystemConfigWorkspace(self._state)
         self._docs           = DocsWorkspace(self._state)
-        self._docs.set_workbench(self._workbench)
         self._flywheel       = FlywheelStudioWorkspace(self._state)
-        self._system.set_workbench(self._workbench) # system config knows about workbench
 
         for ws in (
             self._workbench,
@@ -215,6 +213,7 @@ class MainWindow(QMainWindow):
         self._system.adapter_changed.connect(self._on_adapter_changed)
         self._system.appearance_changed.connect(self._apply_theme_from_state)
         self._state.state_changed.connect(self._on_state_changed)
+        self._state.change_workspace_requested.connect(self._sidebar.select)
 
     def _setup_autosave_checkpoint_timer(self):
         self._autosave_checkpoint_timer = QTimer(self)

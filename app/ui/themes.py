@@ -429,6 +429,11 @@ MONO = (
     "'Consolas', 'Courier New', monospace"
 )
 
+SANS = (
+    "'Inter', 'Segoe UI', 'Ubuntu', 'SF Pro Display', "
+    "'Helvetica Neue', 'Arial', sans-serif"
+)
+
 def darken_hex_color(hex_str: str, factor: float = 0.7) -> str:
     """Darken a hex color string by a given factor."""
     hex_str = hex_str.lstrip('#')
@@ -602,6 +607,7 @@ def get_theme_stylesheet(state_or_name, custom_accent=None, bg_tone="Default", m
 
     p = get_theme_colors(state_or_name, custom_accent, bg_tone, mode=theme_mode)
     p["mono"] = MONO
+    p["sans"] = SANS
 
     margin = 12
     spacing = 10
@@ -641,9 +647,13 @@ QMainWindow, QDialog {{
 QWidget {{
     background: transparent;
     color: {text_hi};
-    font-family: {mono};
+    font-family: {sans};
     font-size: {font_size}pt;
     border: none;
+}}
+
+QTextBrowser, QTextEdit, QPlainTextEdit, #reasoning-view, #code-preview {{
+    font-family: {mono};
 }}
 
 /* ── Sidebar ──────────────────────────────────────────────── */
@@ -780,7 +790,7 @@ QPushButton {{
     border-radius: 4px;
     color: {text_mid};
     padding: 6px 14px;
-    font-family: {mono};
+    font-family: {sans};
     font-size: {font_size}pt;
 }}
 
@@ -893,7 +903,7 @@ QComboBox {{
     border-radius: 4px;
     color: {text_hi};
     padding: 5px 10px;
-    font-family: {mono};
+    font-family: {sans};
     font-size: {font_size}pt;
 }}
 
@@ -1205,7 +1215,7 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
     color: {text_mid};
     padding: 4px 10px;
     font-size: 8.5pt;
-    font-family: {mono};
+    font-family: {sans};
 }}
 
 #hud-btn:hover {{

@@ -958,11 +958,8 @@ class KnowledgeBaseWorkspace(QWidget):
         query = self._search_input.text().strip()
         if not query:
             return
-        main_win = self.window()
-        if main_win and hasattr(main_win, "_sidebar") and hasattr(main_win, "_workbench"):
-            main_win._sidebar.select(0)
-            main_win._workbench._input.setPlainText(query)
-            main_win._workbench._input.setFocus()
+        self.state.change_workspace_requested.emit(0)
+        self.state.replace_workbench_input.emit(query)
 
 
     def _run_search(self):

@@ -52,12 +52,12 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: vscode-extension/package-lock.json
+          cache-dependency-path: oss/vss_extension/package-lock.json
 
       - name: Install dependencies
-        working-directory: vscode-extension
+        working-directory: oss/vss_extension
         run: npm ci
 
       - name: Lint with ESLint
-        working-directory: vscode-extension
+        working-directory: oss/vss_extension
         run: npx eslint .

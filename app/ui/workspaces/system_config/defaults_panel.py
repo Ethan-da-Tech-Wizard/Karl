@@ -240,10 +240,9 @@ class DefaultsPanelMixin:
 
 
     def _apply_identity(self):
-        if self._workbench:
-            self._workbench.set_system_prompt(
-                self._system_edit.toPlainText().strip()
-            )
+        self.state.set_workbench_system_prompt.emit(
+            self._system_edit.toPlainText().strip()
+        )
 
 
     def _on_settings_search_changed(self, text: str):

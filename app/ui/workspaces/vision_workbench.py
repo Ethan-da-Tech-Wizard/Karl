@@ -25,10 +25,9 @@ from app.vision.vision_model_loader import VisionModelLoader, installed_vision_m
 
 
 class VisionWorkbench(QWidget):
-    def __init__(self, state, workbench_ref=None, parent=None):
+    def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
-        self.workbench_ref = workbench_ref
         self.setObjectName("workspace-root")
         self._records = []
         self._selected_id = ""
@@ -318,9 +317,10 @@ class VisionWorkbench(QWidget):
 
     def _send_to_workbench(self):
         record = self._selected_record()
-        if not record or not self.workbench_ref:
+        if not record:
             return
-        self.workbench_ref.attach_existing_image(record.id)
+        self.state.change_workspace_requested.emit(0)
+        self.state.attach_image_to_workbench.emit(record.id)
         QMessageBox.information(self, "Image Sent", "Image attached to the Workbench composer.")
 
     def _run_analysis(self):

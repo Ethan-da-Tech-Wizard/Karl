@@ -24,16 +24,12 @@ def _hline() -> QFrame:
     return f
 
 class DocsWorkspace(QWidget):
-    def __init__(self, state, workbench_ref=None, parent=None):
+    def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
-        self._workbench = workbench_ref
         self.setObjectName("workspace-root")
         self._init_library()
         self._build_ui()
-
-    def set_workbench(self, wb):
-        self._workbench = wb
 
     def _init_library(self):
         self._library_dir = "data/codex_library"
@@ -313,7 +309,6 @@ class DocsWorkspace(QWidget):
         if not text: return
         anchor_id = text.strip().replace(" ", "_").lower()
         self._browser.scrollToAnchor(anchor_id)
-
     def _send_to_workbench(self):
         current_item = self._topics_list.currentItem()
         if not current_item:
@@ -334,9 +329,8 @@ class DocsWorkspace(QWidget):
         clean_text = re.sub(r"<[^>]+>", "", doc_content)
         clean_text = "\n".join(line.strip() for line in clean_text.splitlines() if line.strip())
         
-        if self._workbench:
-            self._workbench.append_to_input(f"\n[Codex: {topic}]\n{clean_text}\n")
-            QMessageBox.information(
-                self, "Sent to Workbench",
-                f"Topic '{topic}' content appended to chat input context."
-            )
+        self.state.append_to_workbench_input.emit(f"\n[Codex: {topic}]\n{clean_text}\n")
+        QMessageBox.information(
+            self, "Sent to Workbench",
+            f"Topic '{topic}' content appended to chat input context."
+        )

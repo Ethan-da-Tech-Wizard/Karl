@@ -31,6 +31,7 @@ def test_model_loader_missing_file(monkeypatch):
         ModelLoader.preflight_model_load("data/models/non-existent-model.gguf")
 
 
+@pytest.mark.filterwarnings("ignore::ResourceWarning")
 def test_model_loader_corrupted_file(tmp_path, monkeypatch):
     """Verify ModelLoader raises an exception when loading a corrupted GGUF file."""
     corrupted_file = tmp_path / "corrupted_model.gguf"

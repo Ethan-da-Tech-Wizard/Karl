@@ -15,8 +15,8 @@ env/
 .env
 
 node_modules/
-vscode-extension/node_modules/
-vscode-extension/*.vsix
+oss/vss_extension/node_modules/
+oss/vss_extension/*.vsix
 
 data/models/
 data/hf_models/

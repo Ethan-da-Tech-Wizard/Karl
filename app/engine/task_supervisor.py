@@ -163,6 +163,8 @@ class TaskSupervisor:
             rec = self._tasks.get(task_id)
             if rec is None:
                 return
+            if rec.status not in (TaskStatus.RUNNING, TaskStatus.CANCELLING):
+                return
             rec.status = TaskStatus.FINISHED
             rec.progress = 1.0
             hooks = list(rec._cleanup_hooks)
@@ -176,6 +178,8 @@ class TaskSupervisor:
         with self._lock:
             rec = self._tasks.get(task_id)
             if rec is None:
+                return
+            if rec.status not in (TaskStatus.RUNNING, TaskStatus.CANCELLING):
                 return
             rec.status = TaskStatus.ERROR
             rec.error = error

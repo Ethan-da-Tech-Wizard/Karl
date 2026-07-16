@@ -43,11 +43,10 @@ class SystemConfigWorkspace(
     adapter_changed = pyqtSignal(str)
     appearance_changed = pyqtSignal()
 
-    def __init__(self, state, workbench_ref=None, parent=None):
+    def __init__(self, state, parent=None):
         """Create system config tabs and start live hardware monitoring."""
         super().__init__(parent)
         self.state = state
-        self._workbench = workbench_ref
         self._download_thread = None
         self._quantizer_thread: QuantizerThread | None = None
         self._active_threads = set()
@@ -64,9 +63,6 @@ class SystemConfigWorkspace(
         self._hardware_timer.timeout.connect(self._update_live_hardware)
         self._hardware_timer.start(2000)
         self._update_live_hardware()
-
-    def set_workbench(self, wb):
-        self._workbench = wb
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -146,18 +142,17 @@ class SystemConfigWorkspace(
         top_p = self._topp_spin.value()
         max_tokens = self._maxtok_spin.value()
         
-        if self._workbench:
-            self._workbench.set_hyperparams({
-                "temperature": temp,
-                "top_p": top_p,
-                "max_tokens": max_tokens
-            })
-            QMessageBox.information(
-                self, "Defaults Applied",
-                f"Generation defaults applied to Workbench:\n"
-                f"• Temperature: {temp}\n"
-                f"• Top-P: {top_p}\n"
-                f"• Max Tokens: {max_tokens}"
-            )
+        self.state.set_workbench_hyperparams.emit({
+            "temperature": temp,
+            "top_p": top_p,
+            "max_tokens": max_tokens
+        })
+        QMessageBox.information(
+            self, "Defaults Applied",
+            f"Generation defaults applied to Workbench:\n"
+            f"• Temperature: {temp}\n"
+            f"• Top-P: {top_p}\n"
+            f"• Max Tokens: {max_tokens}"
+        )
 
     # ── theme tab ─────────────────────────────────────────────────────────────

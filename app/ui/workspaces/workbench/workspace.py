@@ -114,6 +114,13 @@ class WorkbenchWorkspace(QMainWindow):
         self._pending_generation_history: list[dict] | None = None
         self._image_threads = set()
 
+        # Connect decoupled AppState communication signals
+        self.state.append_to_workbench_input.connect(self.append_to_input)
+        self.state.replace_workbench_input.connect(self.replace_input)
+        self.state.attach_image_to_workbench.connect(self.attach_existing_image)
+        self.state.set_workbench_hyperparams.connect(self.set_hyperparams)
+        self.state.set_workbench_system_prompt.connect(self.set_system_prompt)
+
         self.setProperty("modelState", "idle")
         self._settings_overlay = None
         self._responsive_mode: str | None = None
@@ -131,8 +138,7 @@ class WorkbenchWorkspace(QMainWindow):
         else:
             self._glow_timer.start(50)
 
-        # Intercept setHtml for chat bubble fade-in animations
-        self._setup_chat_animations()
+        # Chat animations disabled to prevent rendering blocks on Linux
         
         # Initialize dynamic chat bubble colors from theme config
         from app.ui.themes import get_theme_colors
@@ -312,10 +318,14 @@ class WorkbenchWorkspace(QMainWindow):
         self._context_bar = QProgressBar()
         self._context_bar.setRange(0, 100)
         self._context_bar.setValue(0)
-        self._context_bar.setFixedHeight(10)
+        self._context_bar.setFixedHeight(18)
         self._context_bar.setTextVisible(True)
         self._context_bar.setFormat("Connect a model to see context usage")
-        self._context_bar.setStyleSheet("QProgressBar { font-size: 7.5pt; } QProgressBar::chunk { background: #2DD4A0; }")
+        self._context_bar.setStyleSheet(
+            "QProgressBar { font-size: 8pt; text-align: center; font-weight: bold; "
+            "border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 3px; "
+            "background: rgba(0, 0, 0, 0.2); } QProgressBar::chunk { background: #2DD4A0; }"
+        )
         self._context_bar.setVisible(False)
         layout.addWidget(self._context_bar)
 
@@ -837,24 +847,7 @@ class WorkbenchWorkspace(QMainWindow):
                 shadow.setColor(color)
                 shadow.setBlurRadius(radius)
 
-    def _setup_chat_animations(self):
-        original_set_html = self._chat_view.setHtml
-        def custom_set_html(html):
-            self._fade_in_chat()
-            original_set_html(html)
-        self._chat_view.setHtml = custom_set_html
-
-    def _fade_in_chat(self):
-        if getattr(self.state, "reduced_motion", False):
-            return
-        self._chat_opacity = QGraphicsOpacityEffect(self._chat_view)
-        self._chat_view.setGraphicsEffect(self._chat_opacity)
-        
-        self._chat_anim = QPropertyAnimation(self._chat_opacity, b"opacity")
-        self._chat_anim.setDuration(250)
-        self._chat_anim.setStartValue(0.7)
-        self._chat_anim.setEndValue(1.0)
-        self._chat_anim.start()
+    # Chat animations disabled to prevent rendering blocks on Linux
 
     def _populate_hud_toolbar(self):
         tb = self._hud_toolbar
@@ -2382,3 +2375,7 @@ class WorkbenchWorkspace(QMainWindow):
             self._input.setPlainText(existing + "\n" + text)
         else:
             self._input.setPlainText(text)
+
+    def replace_input(self, text: str):
+        self._input.setPlainText(text)
+        self._input.setFocus()

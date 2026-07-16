@@ -117,7 +117,7 @@ docker compose down
 
 ## VS Code & Code OSS Extension
 
-Karl contains an integrated editor extension under `vscode-extension/`. It is a
+Karl contains an integrated editor extension under `oss/vss_extension/`. It is a
 local WSS client for the running Karl app, so the editor can use Karl's
 chat, reasoning stream, prompt lab, Codex docs, and multi-agent coding swarm
 without moving inference or training out of your machine.
@@ -135,7 +135,7 @@ written to `~/.karl/service_discovery.json` when the WSS server starts.
 ### 1. Compile & Package Extension
 Make sure you have Node.js installed, then compile the extension into a local package:
 ```bash
-cd vscode-extension
+cd oss/vss_extension
 npm install
 npx @vscode/vsce package
 ```

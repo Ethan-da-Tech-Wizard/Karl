@@ -249,7 +249,7 @@ class KarlSidebarProvider {
         const bridgeToken = (this.discoveredPort !== undefined && this.discoveredToken)
             ? this.discoveredToken
             : await this._readBridgeToken();
-        const wsUrl = `wss://127.0.0.1:${activePort}${bridgeToken ? `?token=${encodeURIComponent(bridgeToken)}` : ''}`;
+        const wsUrl = `ws://127.0.0.1:${activePort}${bridgeToken ? `?token=${encodeURIComponent(bridgeToken)}` : ''}`;
         // rejectUnauthorized: false — the Python backend uses a self-signed localhost cert
         const wsOptions = { rejectUnauthorized: false };
 

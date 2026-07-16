@@ -5,6 +5,10 @@
   "version": "1.4.0",
   "publisher": "ethan-da-tech-wizard",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ethan-da-Tech-Wizard/Karl.git"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },
