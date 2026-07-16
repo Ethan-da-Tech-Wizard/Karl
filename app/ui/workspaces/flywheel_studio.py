@@ -466,6 +466,34 @@ class _LogDecryptThread(QThread):
         self.loaded.emit(all_entries)
 
 
+class _TokenLookupThread(QThread):
+    """Looks up a cached bridge token from the kernel keyring/OS keychain
+    off the GUI thread.
+
+    load_cached_token()'s OS-keychain fallback can block on a D-Bus prompt
+    that nothing will ever answer (e.g. no keyring-unlock agent running) —
+    calling it directly from the GUI thread freezes the whole application
+    before the window ever paints, since there's no visible error, just a
+    hang. keychain_manager bounds the OS-keychain call itself with a
+    timeout too (see _get_password_with_timeout), so this is defense in
+    depth, not the only thing standing between a slow backend and a frozen
+    UI.
+    """
+    found = pyqtSignal(str)
+    not_found = pyqtSignal()
+
+    def run(self):
+        try:
+            token = load_cached_token()
+        except Exception as e:
+            logger.warning("Cached token lookup failed: %s", e)
+            token = None
+        if token:
+            self.found.emit(token)
+        else:
+            self.not_found.emit()
+
+
 # ── Flywheel Studio Workspace Widget ─────────────────────────────────────────
 
 class FlywheelStudioWorkspace(QWidget):
@@ -475,6 +503,7 @@ class FlywheelStudioWorkspace(QWidget):
         self.setObjectName("workspace-root")
         self._active_loader = None
         self._log_decrypt_thread = None
+        self._token_lookup_thread = None
         self._stats_data = {}
         self._failure_pairs = []
         self._training_history = []
@@ -1020,12 +1049,34 @@ class FlywheelStudioWorkspace(QWidget):
         return w
 
     def _auto_authorize_logs(self) -> None:
-        """Attempt to automatically authorize log access using cached OS keychain token."""
-        token = load_cached_token()
-        if token:
+        """Attempt to automatically authorize log access using cached OS keychain token.
+
+        Runs the lookup on a background thread (_TokenLookupThread) rather
+        than calling load_cached_token() directly here: the OS-keychain
+        fallback it can hit is a blocking D-Bus call that has no guaranteed
+        bound on some backends, and this method is invoked via
+        QTimer.singleShot(0, ...) right as the event loop starts — calling
+        it synchronously would freeze the entire GUI, including the very
+        first paint of the main window, with no visible error.
+        """
+        if self._token_lookup_thread is not None and self._token_lookup_thread.isRunning():
+            return
+
+        thread = _TokenLookupThread()
+
+        def on_found(token: str):
             logger.info("Auto-authorizing log access with cached token.")
-            # We bypass the UI input and call a shared logic
             self._do_authorize_with_token(token)
+
+        def on_finished():
+            if self._token_lookup_thread is thread:
+                self._token_lookup_thread = None
+
+        thread.found.connect(on_found)
+        thread.finished.connect(on_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._token_lookup_thread = thread
+        thread.start()
 
     def _on_authorize_logs(self) -> None:
         token_text = self._log_token_input.text().strip()

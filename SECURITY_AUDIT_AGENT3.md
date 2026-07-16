@@ -706,3 +706,112 @@ Python script and report stdout/stderr.
 - **Atomic index persistence:** `_write_index_atomic` writes to a `.tmp` file and uses
   `os.replace()` (`rag_pipeline.py:165-169`), which is atomic on POSIX — no torn-write window for
   `index.faiss`.
+
+---
+
+## 4. Remediation Status (Findings 1–13)
+
+All 13 findings above have been fixed and verified (compile-checked, exercised against real system
+calls where applicable — bwrap containment, kernel keyring round-trip, encryption round-trip with
+legacy backward compatibility, pool recovery from a poisoned connection — and the full test suite:
+**547 passed, 42 deselected** integration/websocket tests requiring live network, 0 failures).
+Nothing in this section required new findings; it's a status update on the original 13.
+
+---
+
+## 5. Addendum — GUI Startup Hang (found during post-remediation verification)
+
+While verifying the fixes above by actually launching the app (rather than only running the test
+suite), the main window was found to **never render at all** — the process started, loaded the RAG
+index and model, and then hung indefinitely with no visible window and no error. This is a
+availability/robustness defect distinct from findings 1–13, discovered opportunistically. Documented
+here rather than a separate report since it was found via the same audit trail (keychain_manager.py)
+and the fix follows the same pattern already established in findings SEC-CRYPTO-01/02/03.
+
+### Root cause
+
+Three separate call sites synchronously invoke `keyring.get_password()` / `keyring.set_password()`
+/ `keyring.delete_password()` (the Linux SecretService/D-Bus OS-keychain backend) **on the Qt GUI
+thread**, with no timeout. On any host where the D-Bus backend blocks waiting for an unlock prompt
+that nothing will answer (no keyring-unlock agent registered — confirmed reproducible on this
+machine), each of these freezes the *entire application* before the window ever paints, or during
+shutdown, with no visible error:
+
+| ID | Call site | Trigger path |
+|---|---|---|
+| **[GUI-HANG-01]** | `FlywheelStudioWorkspace._auto_authorize_logs()` → `keychain_manager.load_cached_token()` | `QTimer.singleShot(0, ...)` fired as the event loop starts — froze the window before its first paint |
+| **[GUI-HANG-02]** | `WebSocketServerManager._init_security()` → `_save_token_safe()` → `keychain_manager.save_cached_token()` | Same — `_save_token_safe`'s existing "run in executor if the loop is running" guard was a no-op here because the asyncio loop isn't started yet at this point in `__init__` |
+| **[GUI-HANG-03]** | `MainWindow.closeEvent()` → `keychain_manager.revoke_tokens()` → `_clear_keyring()` | Same bug on the shutdown path — closing the app could hang exactly like starting it |
+
+Diagnosed with `faulthandler.dump_traceback_later()` (no `ptrace` permissions were available for
+`py-spy` in this environment) against the real `main.py` entrypoint, which pinpointed the exact
+blocking frame in each case (`secretstorage`/`jeepney` D-Bus I/O under `keyring.get_password`).
+
+### Fix
+
+- **`app/utils/keychain_manager.py`**: added `_call_keyring_with_timeout()` (a
+  `ThreadPoolExecutor`-based wrapper, 3s default) and routed `load_cached_token`,
+  `save_cached_token`, and `_clear_keyring` (used by `revoke_tokens`) through it. A blocked backend
+  is now abandoned after the timeout — the underlying thread keeps running harmlessly, un-joined —
+  instead of blocking the caller forever.
+- **`app/engine/websocket_server.py`**: `_save_token_safe()` now unconditionally runs
+  `save_cached_token` on a plain background `threading.Thread` instead of only when
+  `self.loop.is_running()` (which wasn't true at the point this is actually called).
+- **`app/ui/workspaces/flywheel_studio.py`**: added `_TokenLookupThread(QThread)` (mirroring the
+  file's existing `_LogDecryptThread` pattern) and moved `_auto_authorize_logs()`'s call to
+  `load_cached_token()` onto it, off the GUI thread, with the result delivered back via a
+  `found`/`not_found` signal.
+
+Verified by relaunching the real app (Wayland/Hyprland session, `hyprctl clients` + `grim`
+screenshots) after each fix: the window now renders correctly, and the keychain timeout warnings
+fire in the background log without ever blocking the UI.
+
+### Tests added
+
+`tests/test_gui_hardening.py`:
+- `test_close_event_waits_for_model_init_thread` — locks in the pre-existing, correct behavior that
+  `closeEvent()` blocks on `_model_init_thread` before tearing down.
+- `test_close_event_waits_for_system_config_model_thread` — same, for System Config's own
+  model-load thread.
+- `test_close_event_survives_active_kb_and_flywheel_threads` — builds a real `MainWindow` (heavy
+  workspaces stubbed, matching the pattern in `tests/test_watchdog.py`), starts real, controllable
+  `QThread`s standing in for a Knowledge Base ingest and a Flywheel log-decrypt job, and asserts
+  `closeEvent()` completes without raising while they're genuinely still running. It intentionally
+  asserts they are **not** joined (that's the current, honest behavior — `closeEvent()` never
+  references those two workspaces) rather than presuming a stronger guarantee than the code
+  provides; strengthen the assertion if that's ever changed.
+
+Full suite: 544 → 547 passed (the three new tests), 0 failures.
+
+---
+
+## 6. Addendum — Manual UI Smoke Pass
+
+Karl's window manager (Hyprland, tiling) overrides `resize()`/`showMaximized()` geometry for
+regular top-level windows, so testing "at a given resolution" against a real WM-managed window
+doesn't actually control the size under test. Instead, `MainWindow` was driven under
+`QT_QPA_PLATFORM=offscreen` (renders to an in-memory buffer, no WM involved, `resize()` honored
+exactly) through all 10 workspace tabs at 760×560 (the app's own `setMinimumSize`), 1280×768, and
+1920×1080 (standing in for "maximized," which has no meaningful equivalent under `offscreen`) — 30
+screenshots via `QWidget.grab()`.
+
+**Result:** the app renders correctly at every resolution across all 10 workspaces — no crashes, no
+blank panes. At the minimum size (760×560) specifically, several dashboard-style multi-column
+panels don't reflow and truncate text/labels rather than wrapping or eliding:
+
+- **Training Studio** (worst case): the "EXPORT & PREVIEW" panel title truncates, and the
+  "Export SFT"/"Export DPO" button labels are cut to unreadable fragments ("ır" / "ırt").
+- **Flywheel Studio**: "Evaluation Trend History" and "Loss Curve: `<name>`" chart titles truncate.
+- **Knowledge Base**: the "Encoder: Lazy-loaded (Idle)" status label truncates.
+- **Vision Workbench**: runtime-status and placeholder text overflow their containers.
+- **Swarm Studio**: the prompt/workspace-path inputs and small icon-button labels truncate.
+
+Confirmed (by direct screenshot comparison at 1280×768 for Training Studio and Flywheel Studio)
+that all of the above resolve completely above the minimum size — this is specifically a
+minimum-window-size layout gap, not a general rendering bug. Workbench, Prompt Lab, System Config,
+and Docs rendered cleanly at all three sizes.
+
+This is a cosmetic/UX finding, not a security or correctness one, and was not fixed as part of this
+pass — it would mean redesigning those panels' layout to reflow or elide at narrow widths, which is
+a product/design decision outside this audit's scope. Flagging it here so it's tracked rather than
+lost.

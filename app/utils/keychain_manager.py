@@ -91,7 +91,7 @@ def save_cached_token(token: str):
         return
 
     try:
-        keyring.set_password(SERVICE_NAME, USER_NAME, token)
+        _set_password_with_timeout(SERVICE_NAME, USER_NAME, token)
         logger.info("Bridge token cached in OS keychain.")
     except Exception as e:
         logger.warning(f"Failed to cache token in OS keychain: {e}")
@@ -123,13 +123,64 @@ def load_cached_token() -> str | None:
         return None
 
     try:
-        token = keyring.get_password(SERVICE_NAME, USER_NAME)
+        token = _get_password_with_timeout(SERVICE_NAME, USER_NAME)
         if token and _verify_token(token):
             return token
     except Exception as e:
         logger.warning(f"OS keychain access failed or locked: {e}")
-    
+
     return None
+
+
+def _call_keyring_with_timeout(fn, *args, timeout: float = 3.0):
+    """
+    Calls a blocking `keyring` function with a hard wall-clock timeout.
+
+    Some OS keychain backends — notably the Linux SecretService/D-Bus
+    backend when no prompt-handling agent is available to answer an unlock
+    request — can block indefinitely. Both save_cached_token() and
+    load_cached_token() can be reached from the GUI thread during startup
+    (see FlywheelStudioWorkspace._auto_authorize_logs and
+    WebSocketServerManager._init_security, both of which moved their own
+    call site off the GUI thread specifically because of this), where an
+    unbounded block would freeze the entire application before the window
+    ever paints, with no visible error. Python has no API to forcibly kill
+    a blocked thread, so on timeout this abandons the call (the underlying
+    thread keeps running harmlessly in the background, un-joined, until/if
+    it ever returns) and raises TimeoutError instead of letting the caller
+    hang.
+    """
+    import concurrent.futures
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn, *args)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        logger.warning(
+            "OS keychain call (%s) exceeded %.1fs (backend may be waiting "
+            "on an unlock prompt); giving up for this call.",
+            getattr(fn, "__name__", fn), timeout,
+        )
+        raise TimeoutError(f"keyring.{getattr(fn, '__name__', fn)} timed out after {timeout}s")
+    finally:
+        executor.shutdown(wait=False)
+
+
+def _get_password_with_timeout(service: str, user: str, timeout: float = 3.0) -> str | None:
+    """Calls keyring.get_password() with a hard wall-clock timeout (see
+    _call_keyring_with_timeout). Returns None on timeout — a missing
+    password is an ordinary, expected outcome for a get."""
+    try:
+        return _call_keyring_with_timeout(keyring.get_password, service, user, timeout=timeout)
+    except TimeoutError:
+        return None
+
+
+def _set_password_with_timeout(service: str, user: str, password: str, timeout: float = 3.0) -> None:
+    """Calls keyring.set_password() with a hard wall-clock timeout (see
+    _call_keyring_with_timeout). Re-raises on timeout so the caller's
+    existing `except Exception` handling logs the failure to persist."""
+    _call_keyring_with_timeout(keyring.set_password, service, user, password, timeout=timeout)
 
 
 def revoke_tokens():
@@ -212,11 +263,17 @@ def _verify_token(token: str) -> bool:
 
 
 def _clear_keyring():
-    """Removes the bridge token from the OS keychain."""
+    """Removes the bridge token from the OS keychain.
+
+    revoke_tokens() (and therefore this) runs synchronously from
+    MainWindow.closeEvent() on the GUI thread during app shutdown — bound
+    with the same timeout as save_cached_token/load_cached_token so a
+    hung SecretService/D-Bus backend can't also freeze the app on exit.
+    """
     if not keyring:
         return
     try:
-        keyring.delete_password(SERVICE_NAME, USER_NAME)
+        _call_keyring_with_timeout(keyring.delete_password, SERVICE_NAME, USER_NAME)
     except Exception:
         pass
 

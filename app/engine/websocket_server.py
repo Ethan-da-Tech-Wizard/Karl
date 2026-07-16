@@ -301,11 +301,24 @@ class WebSocketServerManager:
             pass
 
     def _save_token_safe(self, token: str) -> None:
-        """Saves the token to the OS keychain safely without blocking the event loop."""
-        if hasattr(self, "loop") and self.loop and self.loop.is_running():
-            self.loop.run_in_executor(None, save_cached_token, token)
-        else:
-            save_cached_token(token)
+        """Saves the token to the OS keychain without blocking the caller.
+
+        save_cached_token() can hit an OS-keychain backend (SecretService/
+        D-Bus) that blocks for several seconds — or, before
+        keychain_manager's own timeout guard, indefinitely — waiting on an
+        unlock prompt nothing will answer. This method is called from
+        _init_security() during WebSocketServerManager.__init__(), which
+        itself runs on the GUI thread via MainWindow's
+        QTimer.singleShot(0, self._init_websocket_server) — i.e. right as
+        the Qt event loop starts, before the main window has painted.
+        Always run it on a plain background thread rather than only when
+        self.loop happens to already be running (it typically isn't yet at
+        this point in startup, which made that condition a no-op here).
+        """
+        threading.Thread(
+            target=save_cached_token, args=(token,), daemon=True,
+            name="karl-save-bridge-token",
+        ).start()
 
     def _generate_token(self) -> str:
         return uuid.uuid4().hex
