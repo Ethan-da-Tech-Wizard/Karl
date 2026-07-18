@@ -258,7 +258,10 @@ def merge_datasets(
     self_correction_path = curated_path.parent / "self_correction_sft.jsonl"
     self_correction_data = load_jsonl(self_correction_path) if self_correction_path.exists() else []
 
-    combined = curated + synthetic + public_data + scraped_library_data + self_correction_data
+    api_automation_path = curated_path.parent / "api_automation_sft.jsonl"
+    api_automation_data = load_jsonl(api_automation_path) if api_automation_path.exists() else []
+
+    combined = curated + synthetic + public_data + scraped_library_data + self_correction_data + api_automation_data
 
     valid_rows = [row for row in combined if passes_quality_checks(row, max_tokens=max_tokens)]
 
@@ -276,6 +279,7 @@ def merge_datasets(
         "public_total": len(public_data),
         "scraped_library_total": len(scraped_library_data),
         "self_correction_total": len(self_correction_data),
+        "api_automation_total": len(api_automation_data),
         "combined_total": len(combined),
         "valid_total": len(valid_rows),
         "discarded_total": len(combined) - len(valid_rows),
@@ -315,7 +319,7 @@ def main() -> int:
         print(
             f"Merged {stats['curated_total']} curated + {stats['synthetic_total']} synthetic "
             f"+ {stats['public_total']} public + {stats['scraped_library_total']} library-scraped "
-            f"+ {stats['self_correction_total']} self-corrected = {stats['combined_total']} rows; "
+            f"+ {stats['self_correction_total']} self-corrected + {stats['api_automation_total']} api-automation = {stats['combined_total']} rows; "
             f"kept {stats['valid_total']}, discarded {stats['discarded_total']} (invalid syntax or over {args.max_tokens} tokens)."
         )
         print(f"Wrote validated, shuffled dataset to {merged_path}")
