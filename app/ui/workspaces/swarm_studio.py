@@ -39,6 +39,8 @@ from PyQt6.QtWidgets import (
 )
 
 from app.engine.swarm_orchestrator import SwarmOrchestratorThread
+from app.ui.workspaces.agent_profile_studio import AgentProfileStudioWorkspace
+from app.utils.swarm_agent_profiles import load_agent_profiles
 
 
 class _TpsChart(QWidget):
@@ -112,11 +114,13 @@ class SwarmStudioWorkspace(QWidget):
         self._task_nodes: dict[str, QGraphicsRectItem] = {}
         self._graph_scene: QGraphicsScene | None = None
         self._active_filepaths: list[str] = []
+        self._agent_profiles: dict[str, dict] = {}
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
 
         self._build_ui()
+        self._refresh_agent_profile_selectors()
         self._load_history()
 
     def _build_ui(self):
@@ -154,6 +158,9 @@ class SwarmStudioWorkspace(QWidget):
 
         self._main_tabs = QTabWidget()
         self._main_tabs.addTab(live_tab, "Live Run")
+        self._profile_studio = AgentProfileStudioWorkspace(self.state)
+        self._profile_studio.profile_saved.connect(lambda _name: self._refresh_agent_profile_selectors())
+        self._main_tabs.addTab(self._profile_studio, "Agent Profiles")
         self._main_tabs.addTab(self._build_replay_panel(), "Replay")
         self._main_tabs.currentChanged.connect(self._on_main_tab_changed)
         root.addWidget(self._main_tabs, 1)
@@ -235,6 +242,15 @@ class SwarmStudioWorkspace(QWidget):
         ig.addWidget(self._specialists_check, 1, 1)
         ig.addWidget(self._critic_check, 2, 0)
         ig.addWidget(self._adaptive_check, 2, 1)
+        self._architect_profile_combo = QComboBox()
+        self._coder_profile_combo = QComboBox()
+        self._tester_profile_combo = QComboBox()
+        ig.addWidget(QLabel("Architect"), 3, 0)
+        ig.addWidget(self._architect_profile_combo, 3, 1)
+        ig.addWidget(QLabel("Coder"), 4, 0)
+        ig.addWidget(self._coder_profile_combo, 4, 1)
+        ig.addWidget(QLabel("Tester"), 5, 0)
+        ig.addWidget(self._tester_profile_combo, 5, 1)
         layout.addWidget(intel_group)
 
         row = QWidget()
@@ -644,6 +660,27 @@ class SwarmStudioWorkspace(QWidget):
         if "max_tokens" in data:
             self._tokens_spin.setValue(int(data["max_tokens"]))
 
+    def _refresh_agent_profile_selectors(self):
+        self._agent_profiles = load_agent_profiles()
+        combos = {
+            "architect": getattr(self, "_architect_profile_combo", None),
+            "coder": getattr(self, "_coder_profile_combo", None),
+            "tester": getattr(self, "_tester_profile_combo", None),
+        }
+        for default_id, combo in combos.items():
+            if combo is None:
+                continue
+            previous = combo.currentData() or default_id
+            combo.blockSignals(True)
+            combo.clear()
+            for profile_id, profile in sorted(self._agent_profiles.items()):
+                combo.addItem(f"{profile.get('icon', '')} {profile.get('name', profile_id)}".strip(), profile_id)
+            index = combo.findData(previous)
+            if index < 0:
+                index = combo.findData(default_id)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            combo.blockSignals(False)
+
     def _launch(self):
         objective = self._objective_input.toPlainText().strip()
         workspace_path = self._workspace_input.text().strip()
@@ -667,6 +704,11 @@ class SwarmStudioWorkspace(QWidget):
             "enable_critic": self._critic_check.isChecked(),
             "adaptive_concurrency": self._adaptive_check.isChecked(),
             "pause_on_step": self._pause_on_step_check.isChecked(),
+            "agent_profiles": {
+                "architect": self._architect_profile_combo.currentData() or "architect",
+                "coder": self._coder_profile_combo.currentData() or "coder",
+                "tester": self._tester_profile_combo.currentData() or "tester",
+            },
         }
         self._thread = SwarmOrchestratorThread(workspace_path, objective, test_command, hyperparams)
         self._thread.status_update.connect(self._on_status)

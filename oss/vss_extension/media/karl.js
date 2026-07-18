@@ -73,6 +73,7 @@ window.addEventListener('message', event => {
             setConnectionState('connected', 'Connected');
             if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
             requestRuntimeStatus();
+            loadAgentProfiles();
             runtimeStatusTimer = runtimeStatusTimer || setInterval(requestRuntimeStatus, 4000);
             persist();
         } else if (state === 'error') {
@@ -149,6 +150,9 @@ function bindEvents() {
     $('runBtn').addEventListener('click', runSwarm);
     $('stopBtn').addEventListener('click', stopSwarm);
     $('askWorkspaceBtn').addEventListener('click', askWorkspace);
+    $('refreshAgentProfilesBtn')?.addEventListener('click', loadAgentProfiles);
+    $('agentProfileSelect')?.addEventListener('change', renderSelectedAgentProfile);
+    $('saveAgentProfileBtn')?.addEventListener('click', saveSelectedAgentProfile);
     $('chatSendBtn').addEventListener('click', sendChatMessage);
     $('chatInput').addEventListener('keydown', event => {
         if (event.key === 'Enter') sendChatMessage();
@@ -522,13 +526,94 @@ function runSwarm() {
             ...hyperparams(),
             timeout_seconds: Number($('swarmTimeout').value) || 600,
             max_loops: Number($('swarmMaxLoops').value) || 5,
-            auto_steering_enabled: $('swarmAutoSteer').checked
+            auto_steering_enabled: $('swarmAutoSteer').checked,
+            agent_profiles: {
+                architect: $('swarmArchitectProfile').value || 'architect',
+                coder: $('swarmCoderProfile').value || 'coder',
+                tester: $('swarmTesterProfile').value || 'tester'
+            }
         }
     });
 }
 
 function stopSwarm() {
     rpc(2, 'stop_task');
+}
+
+function loadAgentProfiles() {
+    rpc(70, 'get_agent_profiles', {});
+}
+
+function renderAgentProfileOptions() {
+    const entries = Object.entries(swarmAgentProfiles || {});
+    const optionHtml = entries.map(([id, profile]) => {
+        const label = `${profile.icon || ''} ${profile.name || id}`.trim();
+        return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+    }).join('');
+    const defaultSelections = {
+        swarmArchitectProfile: 'architect',
+        swarmCoderProfile: 'coder',
+        swarmTesterProfile: 'tester'
+    };
+    ['swarmArchitectProfile', 'swarmCoderProfile', 'swarmTesterProfile', 'agentProfileSelect'].forEach(id => {
+        const el = $(id);
+        if (!el) return;
+        const previous = el.value;
+        el.innerHTML = optionHtml || '<option value="">No profiles loaded</option>';
+        if (previous && entries.some(([profileId]) => profileId === previous)) {
+            el.value = previous;
+        } else if (defaultSelections[id] && swarmAgentProfiles[defaultSelections[id]]) {
+            el.value = defaultSelections[id];
+        }
+    });
+    renderSelectedAgentProfile();
+}
+
+function renderSelectedAgentProfile() {
+    const id = $('agentProfileSelect')?.value || '';
+    const profile = swarmAgentProfiles[id] || null;
+    if (!profile) {
+        $('agentProfileSpec').textContent = 'No profile selected.';
+        return;
+    }
+    $('agentProfileName').value = profile.name || id;
+    $('agentProfileIcon').value = profile.icon || '';
+    $('agentProfilePrompt').value = profile.system_prompt || profile.prompt || '';
+    $('agentProfileTemp').value = profile.temperature ?? 0.2;
+    $('agentProfileContext').value = profile.context_limit ?? 2048;
+    const tools = profile.tools || {};
+    $('agentToolRead').checked = !!tools.read_files;
+    $('agentToolWrite').checked = !!tools.write_files;
+    $('agentToolExec').checked = !!tools.execute_sandbox;
+    $('agentToolRag').checked = !!tools.query_rag;
+    $('agentProfileSpec').innerHTML = `
+        <div><strong>${escapeHtml(profile.name || id)}</strong> <span class="muted">${escapeHtml(id)}</span></div>
+        <div class="muted">Temp ${Number(profile.temperature ?? 0).toFixed(2)} · Context ${profile.context_limit || 2048} · ${profile.builtin ? 'built-in' : 'custom'}</div>
+    `;
+}
+
+function saveSelectedAgentProfile() {
+    const id = $('agentProfileSelect')?.value || '';
+    if (!id) {
+        vscode.postMessage({ command: 'show_error', text: 'Select an agent profile first.' });
+        return;
+    }
+    rpc(71, 'save_agent_profile', {
+        profile: {
+            id,
+            name: $('agentProfileName').value.trim() || id,
+            icon: $('agentProfileIcon').value.trim() || id.slice(0, 1).toUpperCase(),
+            system_prompt: $('agentProfilePrompt').value,
+            temperature: Number($('agentProfileTemp').value) || 0,
+            context_limit: Number($('agentProfileContext').value) || 2048,
+            tools: {
+                read_files: $('agentToolRead').checked,
+                write_files: $('agentToolWrite').checked,
+                execute_sandbox: $('agentToolExec').checked,
+                query_rag: $('agentToolRag').checked
+            }
+        }
+    });
 }
 
 // ── thoughts panel initialisation ─────────────────────────────────────────────

@@ -1259,6 +1259,30 @@ class KarlSidebarProvider {
                     <button id="askWorkspaceBtn">Ask Workspace</button>
                 </div>
                 <div class="context-meter" id="contextMeter">Context package: none queued.</div>
+                <div class="subpanel" id="swarmProfilesPane">
+                    <div class="section-head mini-head"><div><div class="eyebrow">Specialists</div><h2>Agent Profiles</h2></div><button id="refreshAgentProfilesBtn">Refresh</button></div>
+                    <div class="settings-grid">
+                        <label>Architect <select id="swarmArchitectProfile"><option value="architect">Architect</option></select></label>
+                        <label>Coder <select id="swarmCoderProfile"><option value="coder">Coder</option></select></label>
+                        <label>Tester <select id="swarmTesterProfile"><option value="tester">Tester</option></select></label>
+                    </div>
+                    <label>Inspect / Edit <select id="agentProfileSelect"><option value="">No profiles loaded</option></select></label>
+                    <div id="agentProfileSpec" class="result-card">Profile specs load after connecting to Karl.</div>
+                    <label>Prompt Override <textarea id="agentProfilePrompt" rows="6" placeholder="Override this specialist prompt..."></textarea></label>
+                    <div class="settings-grid">
+                        <label>Name <input id="agentProfileName" type="text" placeholder="Specialist name"></label>
+                        <label>Icon <input id="agentProfileIcon" type="text" placeholder="A"></label>
+                        <label>Temperature <input id="agentProfileTemp" type="number" min="0" max="2" step="0.05" value="0.2"></label>
+                        <label>Context Limit <input id="agentProfileContext" type="number" min="256" max="32768" step="256" value="2048"></label>
+                    </div>
+                    <div class="settings-grid">
+                        <label class="check"><input id="agentToolRead" type="checkbox"> Read Files</label>
+                        <label class="check"><input id="agentToolWrite" type="checkbox"> Write Files</label>
+                        <label class="check"><input id="agentToolExec" type="checkbox"> Execute Sandbox</label>
+                        <label class="check"><input id="agentToolRag" type="checkbox"> Query RAG</label>
+                    </div>
+                    <button id="saveAgentProfileBtn" class="primary">Save Profile</button>
+                </div>
                 <div class="subpanel" id="swarmRagPane">
                     <div class="section-head mini-head"><div><div class="eyebrow">Knowledge</div><h2>RAG Search</h2></div></div>
                     <label>Search Term <input id="swarmRagQuery" type="text" placeholder="Search indexed project knowledge..."></label>

@@ -173,6 +173,7 @@ function _directConnect() {
             reconnectTimer = null;
         }
         requestRuntimeStatus();
+        loadAgentProfiles();
         runtimeStatusTimer = runtimeStatusTimer || setInterval(requestRuntimeStatus, 4000);
         _startTokenRefreshTimer();
         persist();
@@ -258,6 +259,11 @@ function handleSocketMessage(data) {
 
     } else if (method === 'task_plan_created') {
         addTimeline('Plan', 'Swarm architect created an implementation plan.');
+
+    } else if (method === 'agent_profiles_updated') {
+        swarmAgentProfiles = params.profiles || swarmAgentProfiles || {};
+        renderAgentProfileOptions();
+        log('[Swarm] Agent profiles updated.');
 
     } else if (method === 'edits_proposed') {
         const proposals = Array.isArray(params.proposals) ? params.proposals : [];
@@ -399,6 +405,13 @@ function handleRpcResult(id, result) {
         renderKbSearch(result);
     } else if (id === 53) {
         renderSwarmRagResults(result);
+    } else if (id === 70) {
+        swarmAgentProfiles = result || {};
+        renderAgentProfileOptions();
+        log('[Swarm] Agent profiles loaded.');
+    } else if (id === 71) {
+        log(`[Swarm] Saved agent profile ${result.id || ''}.`);
+        loadAgentProfiles();
     } else if (typeof result.ok === 'boolean' && Array.isArray(result.restored) && Array.isArray(result.removed)) {
         const status = result.ok ? 'complete' : 'failed';
         addTimeline('Rollback', `Swarm rollback ${status}.`);

@@ -23,6 +23,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from concurrent.futures import ThreadPoolExecutor
 from app.engine.swarm_agents import ArchitectAgent, CoderAgent, TesterAgent
 from app.engine.swarm_memory import SwarmMemory
+from app.utils.swarm_agent_profiles import active_profile_map
 from app.engine.swarm_judge import select_winner
 from app.engine.swarm_specialists import (
     classify_task,
@@ -190,6 +191,7 @@ class SwarmOrchestratorThread(QThread):
         self.timeout_seconds = 600
         self.max_loops = 5
         self.auto_steering_enabled = True
+        self.tester_execute_sandbox = True
         self._run_deadline: float | None = None
         self._drift_history: dict[str, dict[str, str | None]] = {}
         self._plan_filepaths: set[str] = set()
@@ -204,6 +206,7 @@ class SwarmOrchestratorThread(QThread):
         self._cumulative_tokens = 0
 
         if hyperparams:
+            self._apply_agent_profiles(hyperparams.get("agent_profiles") or {})
             temp = hyperparams.get("temperature")
             max_tok = hyperparams.get("max_tokens")
             if temp is not None:
@@ -221,6 +224,39 @@ class SwarmOrchestratorThread(QThread):
             self.max_loops = max(1, int(hyperparams.get("max_loops", 5) or 5))
             self.auto_steering_enabled = bool(hyperparams.get("auto_steering_enabled", True))
             self.pause_on_step = bool(hyperparams.get("pause_on_step", False))
+
+    def _apply_agent_profiles(self, selected_profiles: dict[str, str]) -> None:
+        profiles = active_profile_map(selected_profiles)
+        architect = profiles.get("architect", {})
+        coder = profiles.get("coder", {})
+        tester = profiles.get("tester", {})
+
+        if architect.get("system_prompt"):
+            self.architect.system_prompt = architect["system_prompt"]
+        self.architect.temperature = float(architect.get("temperature", self.architect.temperature))
+        self.architect.max_tokens = int(architect.get("context_limit", self.architect.max_tokens))
+
+        if coder.get("system_prompt"):
+            self.coder.system_prompt = coder["system_prompt"]
+        self.coder.temperature = float(coder.get("temperature", self.coder.temperature))
+        self.coder.max_tokens = int(coder.get("context_limit", self.coder.max_tokens))
+        self.coder.allowed_tools = self._tool_permissions_to_names(coder.get("tools", {}))
+
+        # Tester is programmatic today; keep profile metadata ready for future
+        # LLM-backed testers while honoring execute_sandbox at verification time.
+        self.tester_profile = tester
+        self.tester_execute_sandbox = bool(tester.get("tools", {}).get("execute_sandbox", True))
+
+    @staticmethod
+    def _tool_permissions_to_names(tools: dict) -> set[str]:
+        allowed: set[str] = set()
+        if tools.get("read_files"):
+            allowed.update({"read_file", "grep_workspace"})
+        if tools.get("write_files"):
+            allowed.add("write_file")
+        if tools.get("execute_sandbox"):
+            allowed.update({"shell_run", "lint_python"})
+        return allowed
 
     # ── Live steering ────────────────────────────────────────────────────────
 
@@ -313,6 +349,12 @@ class SwarmOrchestratorThread(QThread):
         layer_index: int,
     ) -> tuple[bool, str]:
         """Apply proposed edits to a temporary copy and run verification there."""
+        if not self.tester_execute_sandbox:
+            trace = "Verification blocked: selected tester profile does not allow execute_sandbox."
+            self.proposal_verification_finished.emit(layer_index, False, trace)
+            self.test_result.emit(False, trace)
+            return False, trace
+
         cmd = self.state.test_command
 
         source = Path(self.state.workspace_path).resolve()
@@ -1022,6 +1064,11 @@ class SwarmOrchestratorThread(QThread):
 
         cmd = self.state.test_command
         if cmd:
+            if not self.tester_execute_sandbox:
+                trace = "Verification blocked: selected tester profile does not allow execute_sandbox."
+                self.test_result.emit(False, trace)
+                self.verification_failed.emit(f"Layer {layer_index}", trace)
+                return _finish_layer(False, f"Layer {layer_index} verification blocked by tester profile")
             self.verification_started.emit(layer_index, cmd)
             self._process_events_if_main_thread()
             with Span("Test Execution", {

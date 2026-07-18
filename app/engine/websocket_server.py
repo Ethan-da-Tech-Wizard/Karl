@@ -33,6 +33,7 @@ from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
 from app.ui.workspaces.prompt_lab import generate_char_diff_html
 from app.utils.keychain_manager import save_cached_token
 from app.utils.correlation_logger import new_correlation_id, set_correlation_id
+from app.utils.swarm_agent_profiles import load_agent_profiles, save_agent_profile
 
 
 logger = logging.getLogger("karl.websocket")
@@ -163,6 +164,8 @@ class WebSocketServerManager:
         "swarm_step":         "admin:execute",
         "swarm_override_task": "admin:execute",
         "swarm_get_history":  "read:telemetry",
+        "get_agent_profiles": "read:telemetry",
+        "save_agent_profile": "admin:execute",
         "set_active_model":   "admin:execute",
         "save_prompt_pair":   "admin:execute",
         "delete_prompt_pair": "admin:execute",
@@ -206,6 +209,8 @@ class WebSocketServerManager:
         "swarm_step",
         "swarm_override_task",
         "swarm_get_history",
+        "get_agent_profiles",
+        "save_agent_profile",
         "list_codex_topics",
         "get_codex_content",
         "compute_diff",
@@ -992,6 +997,10 @@ class WebSocketServerManager:
             run_id = params.get("run_id")
             if run_id is not None and not isinstance(run_id, str):
                 return "run_id must be a string when provided."
+        if method == "save_agent_profile":
+            profile = params.get("profile")
+            if not isinstance(profile, dict):
+                return "profile is required and must be an object."
         if method == "start_auto_train":
             for name in ("topic", "adapter_name"):
                 error = require_string(name)
@@ -1608,6 +1617,43 @@ class WebSocketServerManager:
                             "id": req_id,
                             "result": self._search_kb(params)
                         }))
+
+                    elif method == "get_agent_profiles":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": load_agent_profiles()
+                        }))
+
+                    elif method == "save_agent_profile":
+                        profile_dict = params.get("profile") if isinstance(params, dict) else None
+                        if not isinstance(profile_dict, dict):
+                            await websocket.send(json.dumps(self._rpc_error_response(
+                                -32602, req_id, message="Invalid params: profile object is required."
+                            )))
+                            continue
+                        profile_id = str(profile_dict.get("id") or profile_dict.get("profile_id") or "").strip()
+                        if not profile_id:
+                            await websocket.send(json.dumps(self._rpc_error_response(
+                                -32602, req_id, message="Invalid params: profile.id is required."
+                            )))
+                            continue
+                        try:
+                            saved = save_agent_profile(profile_id, profile_dict)
+                        except Exception as exc:
+                            await websocket.send(json.dumps(self._rpc_error_response(
+                                -32602, req_id, message=f"Invalid profile: {exc}"
+                            )))
+                            continue
+                        result = {"status": "saved", "id": profile_id, "profile": saved}
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": result,
+                        }))
+                        self._send_notification("agent_profiles_updated", {
+                            "profiles": load_agent_profiles()
+                        })
 
                     elif method == "submit_task":
                         objective = params.get("objective")

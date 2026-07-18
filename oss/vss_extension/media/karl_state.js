@@ -35,6 +35,7 @@ let currentResponseText = '';
 let nextReconnectSec = 5;
 let lastKbSnapshot = {};
 let lastKbResults = [];
+let swarmAgentProfiles = {};
 
 const $ = (id) => document.getElementById(id);
 
@@ -179,6 +180,7 @@ function switchWorkspace(wsId) {
         loadCodexTopics();
     }
     if (wsId === 'lab') loadPromptPairs();
+    if (wsId === 'swarm' && isConnected()) loadAgentProfiles();
     
     // Focus Management
     if (wsId === 'chat') {

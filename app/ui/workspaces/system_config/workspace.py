@@ -21,6 +21,7 @@ from .model_preflight import ModelPreflightMixin
 from .quantization_panel import QuantizationPanelMixin
 from .registry_panel import RegistryPanelMixin
 from .vision_hardware_panel import VisionHardwarePanelMixin
+from .adapter_sandbox import AdapterSandboxMixin
 
 
 logger = logging.getLogger("karl.system_config")
@@ -36,6 +37,7 @@ class SystemConfigWorkspace(
     AppearancePanelMixin,
     AppearanceRuntimeMixin,
     McpPanelMixin,
+    AdapterSandboxMixin,
     QWidget,
 ):
     """Tabbed system workspace for model, registry, theme, telemetry, and hardware controls."""
@@ -69,6 +71,8 @@ class SystemConfigWorkspace(
         super().showEvent(event)
         self._scan_models(force=False)
         self._scan_adapters(force=False)
+        if hasattr(self, "_scan_sandbox_adapters"):
+            self._scan_sandbox_adapters()
 
         from app.engine import config_store as _cs
         draft_cfg = _cs.get_active_draft_model()
@@ -128,6 +132,7 @@ class SystemConfigWorkspace(
         self._tabs.addTab(self._observability_tab, "Observability")
 
         self._tabs.addTab(self._build_hardware_tab(), "Hardware")
+        self._tabs.addTab(self._build_adapter_sandbox_tab(), "Adapter Sandbox")
         root.addWidget(self._tabs, 1)
 
     def show_theme_tab(self):

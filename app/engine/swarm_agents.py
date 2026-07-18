@@ -56,10 +56,12 @@ def register_tool(name: str, description: str):
         return fn
     return decorator
 
-def get_tool_schema_block() -> str:
+def get_tool_schema_block(allowed_tools: set[str] | None = None) -> str:
     """Returns the tool schema XML block to inject into coder prompts."""
     lines = ["<tools>"]
     for name, (_, desc) in _TOOL_REGISTRY.items():
+        if allowed_tools is not None and name not in allowed_tools:
+            continue
         lines.append(f"  <tool name='{name}'>{desc}</tool>")
     lines.append("</tools>")
     return "\n".join(lines)
@@ -260,6 +262,7 @@ class CoderAgent(BaseSwarmAgent):
 
     def __init__(self):
         super().__init__(self.SYSTEM_PROMPT, temperature=0.3, max_tokens=4096)
+        self.allowed_tools: set[str] | None = None
 
     def generate(self, task: dict, workspace_context: dict,
                  workspace_path: str = ".",
@@ -288,7 +291,7 @@ class CoderAgent(BaseSwarmAgent):
         """
         llm = ModelLoader.get_instance()
         temperature = self.temperature if temperature_override is None else temperature_override
-        tool_schema = get_tool_schema_block()
+        tool_schema = get_tool_schema_block(self.allowed_tools)
         memory_reference = ""
         try:
             memory = CodebaseMemory(workspace_path)
@@ -415,7 +418,9 @@ class CoderAgent(BaseSwarmAgent):
                         k, _, v = line.partition(":")
                         args[k.strip()] = v.strip()
 
-                if tool_name in _TOOL_REGISTRY:
+                if self.allowed_tools is not None and tool_name not in self.allowed_tools:
+                    result_text = f"ERROR: tool '{tool_name}' is disabled for this agent profile."
+                elif tool_name in _TOOL_REGISTRY:
                     executor, _ = _TOOL_REGISTRY[tool_name]
                     blocked_path = None
                     if tool_name == "write_file" and allowed_paths is not None:
