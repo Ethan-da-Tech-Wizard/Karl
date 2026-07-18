@@ -39,54 +39,70 @@ def main() -> int:
         logger.error("HuggingFace 'datasets' library is not installed. Install requirements.txt first.")
         return 1
 
-    logger.info("Downloading sahil2801/CodeAlpaca-20k from HuggingFace...")
-    try:
-        dataset = load_dataset("sahil2801/CodeAlpaca-20k", split="train")
-    except Exception as exc:
-        logger.error("Failed to download dataset: %s", exc)
-        return 1
+    datasets_to_load = [
+        ("sahil2801/CodeAlpaca-20k", "train", "public_codealpaca"),
+        ("iamtarun/python_code_instructions_18k_alpaca", "train", "python_instructions_18k")
+    ]
 
-    logger.info("Filtering and formatting programming instructions...")
     formatted_count = 0
+    seen_prompts = set()
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     with OUT_PATH.open("w", encoding="utf-8") as fh:
-        for item in dataset:
-            instruction = item.get("instruction", "")
-            input_context = item.get("input", "")
-            output = item.get("output", "")
-
-            # Ensure we are capturing Python programming queries
-            is_python = (
-                "python" in instruction.lower()
-                or "python" in input_context.lower()
-                or is_python_code(output)
-            )
-            if not is_python:
+        for ds_name, split_name, source_label in datasets_to_load:
+            logger.info("Downloading %s from HuggingFace...", ds_name)
+            try:
+                dataset = load_dataset(ds_name, split=split_name)
+            except Exception as exc:
+                logger.warning("Failed to download dataset %s: %s", ds_name, exc)
                 continue
 
-            user_content = instruction
-            if input_context:
-                user_content += f"\n\nInput Context:\n{input_context}"
+            logger.info("Filtering and formatting programming instructions from %s...", ds_name)
+            for item in dataset:
+                instruction = item.get("instruction", "")
+                input_context = item.get("input", "")
+                output = item.get("output", "")
 
-            # Format to conversational system/user/assistant block
-            sft_entry = {
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an expert Python software engineer. Prioritise correctness, "
-                            "idiomatic style, and minimal complexity."
-                        )
-                    },
-                    {"role": "user", "content": user_content},
-                    {"role": "assistant", "content": output}
-                ],
-                "source": "public_codealpaca"
-            }
+                if not instruction.strip() or not output.strip():
+                    continue
 
-            fh.write(json.dumps(sft_entry, ensure_ascii=False) + "\n")
-            formatted_count += 1
+                # Ensure we are capturing Python programming queries
+                is_python = (
+                    "python" in instruction.lower()
+                    or "python" in input_context.lower()
+                    or is_python_code(output)
+                )
+                if not is_python:
+                    continue
+
+                user_content = instruction
+                if input_context:
+                    user_content += f"\n\nInput Context:\n{input_context}"
+
+                # Deduplicate by prompt
+                prompt_key = user_content.strip()
+                if prompt_key in seen_prompts:
+                    continue
+                seen_prompts.add(prompt_key)
+
+                # Format to conversational system/user/assistant block
+                sft_entry = {
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert Python software engineer. Prioritise correctness, "
+                                "idiomatic style, and minimal complexity."
+                            )
+                        },
+                        {"role": "user", "content": user_content},
+                        {"role": "assistant", "content": output}
+                    ],
+                    "source": source_label
+                }
+
+                fh.write(json.dumps(sft_entry, ensure_ascii=False) + "\n")
+                formatted_count += 1
 
     logger.info("Successfully wrote %d SFT examples to %s", formatted_count, OUT_PATH)
     return 0
