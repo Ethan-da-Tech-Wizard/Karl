@@ -271,3 +271,64 @@ Implement sequence packing, cosine decay learning schedule, and dynamic attentio
      - **Cosine Learning Schedule**: Set learning rate scheduler type to `"cosine"` and configure warm-up ratio (default 0.03).
      - **Dynamic Projections**: Query the loaded model's architecture class name to detect its attention layers dynamically. Support common projection names like `q_proj`, `v_proj`, `k_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`, and set them as target modules in `LoraConfig`.
      - **Dataset Loader**: Include `self_correction_sft.jsonl` and `scraped_library_sft.jsonl` in the training setup stats.
+
+---
+---
+
+## Phase 5 Prompts (Swarm Agent Profile Studio & LoRA Adapter Sandbox)
+
+The following prompts define the next steps for perfecting the app.
+
+---
+
+### Agent 1: Swarm Agent Profile Studio & VS Code Cockpit Sync (Prompt 9)
+
+#### Objective
+Build a visual agent editor that lets users configure custom Swarm Specialist profiles (name, system prompt instructions, hyperparams, and checkbox tool access) from the PyQt6 dashboard, and sync these active profiles to the VS Code Extension Sidebar.
+
+#### Steps to Implement:
+
+1. **Create `app/ui/workspaces/agent_profile_studio.py` [NEW]**:
+   - Build an `AgentProfileStudioWorkspace` widget (or add a dedicated "Agent Profiles" tab inside the Swarm Studio):
+     - **List Panel**: Read registered agent profiles from `data/agent_profiles.json` (providing defaults if missing: Architect, Coder, Tester, Critic).
+     - **Editor Panel**: Inputs to modify:
+       - Specialist Name and Icon/Avatar.
+       - System Prompt instructions text box.
+       - Specialist hyperparams (temperature, top_p, max_tokens).
+       - Checklist permissions for specialist tool access: `allow_read_files`, `allow_write_files`, `allow_terminal_commands`, `allow_rag_retrieve`.
+     - **Actions**: Add "Save Profile" and "Revert" buttons. Saving writes to `data/agent_profiles.json` and updates the active `app/ui/workspaces/workbench/profiles.py` registry.
+
+2. **Modify `app/engine/websocket_server.py`**:
+   - Map new RPC endpoints for profile synchronization:
+     - `get_agent_profiles()`: Loads and returns the profiles list from `data/agent_profiles.json`.
+     - `save_agent_profile(profile_dict)`: Saves or overwrites a profile dynamically.
+
+3. **Modify `oss/vss_extension/src/sidebarProvider.js`**:
+   - In the sidebar HTML view, under the Swarm tab:
+     - Render an "Agent Specialist Config" list/dropdown.
+     - When opened, retrieve profiles via `get_agent_profiles` RPC and render details.
+     - Allow the user to check/uncheck which specialists are spawned during a swarm run and customize their system instructions directly from the editor panel.
+
+---
+
+### Agent 2: LoRA Adapter Sandbox & Speculative Evaluation Benchmarks (Prompt 10)
+
+#### Objective
+Create a benchmark evaluation tool to compare adapted local models against baseline models, and build a PyQt6 "Adapter Sandbox" dashboard inside the System Config workspace to visually test and dynamically hot-reload trained adapters.
+
+#### Steps to Implement:
+
+1. **Create `tools/evaluate_adapters.py` [NEW]**:
+   - Write a python benchmarking script:
+     - Load an evaluation dataset from `eval/datasets/`.
+     - Load the baseline GGUF model and run a generation suite, measuring AST syntax accuracy and generation speed (tokens-per-second, TPS).
+     - Load a trained LoRA adapter from `data/adapters/<name>` on top of the model, and rerun the suite.
+     - Calculate comparison metrics: Code accuracy delta, TPS performance delta, and memory (VRAM) delta.
+     - Output findings to `data/adapters/eval_report_<name>.json`.
+
+2. **Modify `app/ui/workspaces/system_config/workspace.py`**:
+   - Add an "Adapter Sandbox" tab alongside the other settings:
+     - **Adapter Selector**: Scan and list all subdirectories inside `data/adapters/`.
+     - **Toggle Load**: Add a button to dynamically call `ModelLoader.get_instance(adapter_name=...)` to reload the local engine with the chosen adapter.
+     - **Live Console**: Text area to input a custom code prompt, run a test generation, and display the active generation speed (TPS) alongside active VRAM parameters.
+     - **Benchmark Trigger**: Add a button to spawn `tools/evaluate_adapters.py` on the selected adapter and render a comparison table of accuracy and generation speed deltas in the UI.

@@ -138,6 +138,8 @@ class KarlSidebarProvider {
         /** @type {vscode.FileSystemWatcher | null} */
         this._gitWatcher = null;
 
+        this._startingBackend = false;
+
         this._initGitWatcher();
         vscode.workspace.onDidChangeWorkspaceFolders(() => {
             this._cachedBranch = '';
@@ -380,6 +382,10 @@ class KarlSidebarProvider {
         const config = vscode.workspace.getConfiguration('karl');
         const autoConnect = config.get('autoConnect', true);
 
+        if (isError && !this.lastConnectedAt && !this.manualDisconnect) {
+            this.startBackendHeadless();
+        }
+
         if (autoConnect && !this.manualDisconnect && !this.reconnectTimer) {
             let nextReconnectSec = 5;
             this._setConnectionState('offline', `Reconnecting in ${nextReconnectSec}s`);
@@ -395,6 +401,53 @@ class KarlSidebarProvider {
                 }
             }, 1000);
         }
+    }
+
+    /**
+     * Spawns the Karl Python backend in headless mode.
+     */
+    startBackendHeadless() {
+        if (this._startingBackend) return;
+        this._startingBackend = true;
+
+        const cp = require('child_process');
+        const fs = require('fs');
+        const os = require('os');
+        const path = require('path');
+
+        const karlRoot = path.resolve(this.extensionUri.fsPath, '..', '..');
+        const mainPy = path.join(karlRoot, 'main.py');
+        const pythonBin = os.platform() === 'win32' ? 'python' : 'python3';
+
+        if (!fs.existsSync(mainPy)) {
+            console.warn(`[Karl] Cannot auto-start: main.py not found at ${mainPy}`);
+            this._startingBackend = false;
+            return;
+        }
+
+        let pythonPath = pythonBin;
+        const venvPy = path.join(karlRoot, 'venv', 'bin', 'python');
+        if (fs.existsSync(venvPy)) {
+            pythonPath = venvPy;
+        }
+
+        console.log(`[Karl] Spawning headless backend at ${karlRoot} using ${pythonPath}...`);
+        try {
+            const child = cp.spawn(pythonPath, ['main.py', '--headless'], {
+                cwd: karlRoot,
+                detached: true,
+                stdio: 'ignore'
+            });
+            child.unref();
+            vscode.window.showInformationMessage('Karl: Starting backend server in the background...');
+        } catch (err) {
+            console.error('[Karl] Failed to spawn backend:', err);
+        }
+
+        // Allow attempts to start again after 30 seconds if still disconnected
+        setTimeout(() => {
+            this._startingBackend = false;
+        }, 30000);
     }
 
     /**
