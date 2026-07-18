@@ -304,10 +304,8 @@ Build a visual agent editor that lets users configure custom Swarm Specialist pr
      - `save_agent_profile(profile_dict)`: Saves or overwrites a profile dynamically.
 
 3. **Modify `oss/vss_extension/src/sidebarProvider.js`**:
-   - In the sidebar HTML view, under the Swarm tab:
-     - Render an "Agent Specialist Config" list/dropdown.
-     - When opened, retrieve profiles via `get_agent_profiles` RPC and render details.
-     - Allow the user to check/uncheck which specialists are spawned during a swarm run and customize their system instructions directly from the editor panel.
+   - In the sidebar view (under the Swarm tab), retrieve custom profiles using the `get_agent_profiles` RPC and render details.
+   - Allow the user to select which active specialists are active during a swarm run and customize their system instructions directly from the editor panel.
 
 ---
 
@@ -331,4 +329,57 @@ Create a benchmark evaluation tool to compare adapted local models against basel
      - **Adapter Selector**: Scan and list all subdirectories inside `data/adapters/`.
      - **Toggle Load**: Add a button to dynamically call `ModelLoader.get_instance(adapter_name=...)` to reload the local engine with the chosen adapter.
      - **Live Console**: Text area to input a custom code prompt, run a test generation, and display the active generation speed (TPS) alongside active VRAM parameters.
-     - **Benchmark Trigger**: Add a button to spawn `tools/evaluate_adapters.py` on the selected adapter and render a comparison table of accuracy and generation speed deltas in the UI.
+     - **Benchmark Trigger**: Add a button to spawn `tools/evaluate_adapters.py` on the selected adapter and render a comparison table of accuracy and speed deltas in the UI.
+
+---
+---
+
+## Phase 6 Prompts (Multi-Language AST Scraping & Sandboxed Training)
+
+The following prompts define the next steps for perfecting the app.
+
+---
+
+### Agent 1: Multi-Language AST Parser & Doc Scraper (Prompt 11)
+
+#### Objective
+Extend the documentation scraper utility to inspect, crawl, and compile SFT programming instructions from JavaScript/TypeScript and Rust modules, and merge them into the multi-language training pipeline.
+
+#### Steps to Implement:
+
+1. **Modify `tools/scrape_library_docs.py`**:
+   - Extend code crawl parsing:
+     - **TypeScript/JavaScript**: Parse `package.json` configurations. Scan directories to locate JSDoc comments, class structures, and exported function interfaces.
+     - **Rust**: Crawl `Cargo.toml` dependencies. Support loading and reading `rustdoc` json datasets or parse `src/*.rs` files to extract public function headers and doc comments.
+   - For each function/class extracted:
+     - Construct a targeted instruction generation query: *"Construct a practical coding task instruction and valid TypeScript/Rust solution showing how to use the function '[signature]' described as: '[docstring]'."*
+     - Query the local model to build SFT structures.
+     - Save successfully compiled QA structures to `data/training/code/scraped_multilang_sft.jsonl`.
+   - Accept CLI `--lang` flag (choices: `python`, `typescript`, `rust`, default `python`).
+
+2. **Modify `tools/curate_code_datasets.py`**:
+   - In `merge_datasets`, check for `data/training/code/scraped_multilang_sft.jsonl`.
+   - If present, merge its entries into `merged_sft.jsonl` alongside local and public data. Report counts of Python vs. TypeScript vs. Rust files in the console summary.
+
+---
+
+### Agent 2: Multi-Language Sandboxing & Cross-Training Automation (Prompt 12)
+
+#### Objective
+Build a multi-language sandboxed execution manager to run TypeScript and Rust files, and extend the self-correction curation pipeline to compile trajectories of compiler/test fixes for TypeScript and Rust.
+
+#### Steps to Implement:
+
+1. **Create `data/flywheel/multilang_sandbox.py` [NEW]**:
+   - Implement `SafeMultiLangSandbox` class:
+     - Set up a temporary sandbox directory block.
+     - Support execution of:
+       - **TypeScript**: Runs files via `node` or `ts-node` package execution.
+       - **Rust**: Runs tests via `cargo test` in a sandboxed target crate.
+     - Monitor resources (timeouts, memory limits) and return execution output tracebacks.
+
+2. **Modify `tools/generate_self_correction_dataset.py`**:
+   - Support loading TypeScript and Rust evaluation datasets.
+   - Inside the correction loop, execute attempts using the new `SafeMultiLangSandbox` based on task file extension.
+   - Capture JavaScript/TypeScript tracebacks or rustc/cargo compiler error outputs.
+   - Reconstruct successful iteration 2 & 3 corrections (thoughts, buggy code, error message, corrected code) and write SFT rows to `data/training/code/multilang_self_correction_sft.jsonl`.
