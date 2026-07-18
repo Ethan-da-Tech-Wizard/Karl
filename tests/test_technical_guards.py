@@ -112,7 +112,7 @@ class TestTechnicalGuards(unittest.TestCase):
             thread = LLMThread(
                 system_prompt="system",
                 chat_history=[],
-                hyperparams={},
+                hyperparams={"machine_speak_enabled": False},
             )
             history = [
                 {"role": "user", "content": "seed"},
@@ -140,7 +140,7 @@ class TestTechnicalGuards(unittest.TestCase):
             thread = LLMThread(
                 system_prompt="system",
                 chat_history=[],
-                hyperparams={"max_tokens": 128},
+                hyperparams={"max_tokens": 128, "machine_speak_enabled": False},
             )
             prompt, history, _system, tokens, budget = thread._build_prompt_with_context_budget(
                 TokenDenseMock(),

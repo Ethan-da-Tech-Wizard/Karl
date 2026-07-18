@@ -25,7 +25,7 @@ from typing import Set, Optional, Any
 from PyQt6.QtCore import Qt
 
 from app.engine import config_store
-from app.engine.swarm_orchestrator import SwarmOrchestratorThread
+from app.engine.swarm_orchestrator import SwarmOrchestratorThread, rollback_swarm_run
 from app.engine.inference_service import InferenceService
 from app.engine.model_loader import CircuitBreakerOpenException, ModelLoader
 from app.utils.rag_pipeline import RAGPipeline
@@ -155,8 +155,14 @@ class WebSocketServerManager:
         "ingest_path":        "write:kb",
         "submit_task":        "admin:execute",
         "swarm_commit_edits": "admin:execute",
+        "rollback_swarm_run": "admin:execute",
         "submit_chat":        "admin:execute",
         "swarm_inject_guidance": "admin:execute",
+        "swarm_pause":        "admin:execute",
+        "swarm_resume":       "admin:execute",
+        "swarm_step":         "admin:execute",
+        "swarm_override_task": "admin:execute",
+        "swarm_get_history":  "read:telemetry",
         "set_active_model":   "admin:execute",
         "save_prompt_pair":   "admin:execute",
         "delete_prompt_pair": "admin:execute",
@@ -191,9 +197,15 @@ class WebSocketServerManager:
         "search_kb",
         "submit_task",
         "swarm_commit_edits",
+        "rollback_swarm_run",
         "stop_task",
         "submit_chat",
         "swarm_inject_guidance",
+        "swarm_pause",
+        "swarm_resume",
+        "swarm_step",
+        "swarm_override_task",
+        "swarm_get_history",
         "list_codex_topics",
         "get_codex_content",
         "compute_diff",
@@ -955,11 +967,31 @@ class WebSocketServerManager:
             selected = params.get("selected_filepaths")
             if not isinstance(selected, list) or any(not isinstance(p, str) for p in selected):
                 return "selected_filepaths is required and must be a list of strings."
+        if method == "rollback_swarm_run":
+            error = require_string("workspace_path")
+            if error:
+                return error
+            run_id = params.get("run_id")
+            if run_id is not None and not isinstance(run_id, str):
+                return "run_id must be a string when provided."
         if method == "swarm_inject_guidance":
             for name in ("filepath", "message"):
                 error = require_string(name)
                 if error:
                     return error
+        if method in ("swarm_pause", "swarm_resume", "swarm_step"):
+            error = require_string("run_id")
+            if error:
+                return error
+        if method == "swarm_override_task":
+            for name in ("run_id", "filepath", "instructions"):
+                error = require_string(name)
+                if error:
+                    return error
+        if method == "swarm_get_history":
+            run_id = params.get("run_id")
+            if run_id is not None and not isinstance(run_id, str):
+                return "run_id must be a string when provided."
         if method == "start_auto_train":
             for name in ("topic", "adapter_name"):
                 error = require_string(name)
@@ -1650,7 +1682,12 @@ class WebSocketServerManager:
                             )
                             self.orchestrator.finished_swarm.connect(
                                 lambda success, summary: self._send_notification(
-                                    "finished_swarm", {"success": success, "summary": summary}
+                                    "finished_swarm",
+                                    {
+                                        "success": success,
+                                        "summary": summary,
+                                        "run_id": getattr(self.orchestrator, "_run_id", None),
+                                    }
                                 ),
                                 Qt.ConnectionType.DirectConnection
                             )
@@ -1700,12 +1737,49 @@ class WebSocketServerManager:
                                 ),
                                 Qt.ConnectionType.DirectConnection
                             )
+                            self.orchestrator.drift_detected.connect(
+                                lambda fp, message: self._send_notification(
+                                    "swarm_drift_detected", {"filepath": fp, "message": message}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.swarm_paused.connect(
+                                lambda task_info: self._send_notification(
+                                    "swarm_paused",
+                                    {"run_id": getattr(self.orchestrator, "_run_id", None), "task": task_info}
+                                ),
+                                Qt.ConnectionType.DirectConnection
+                            )
+                            self.orchestrator.telemetry_update.connect(
+                                lambda payload: self._send_notification("swarm_telemetry", payload),
+                                Qt.ConnectionType.DirectConnection
+                            )
 
                             self.orchestrator.start()
                         await websocket.send(json.dumps({
                             "jsonrpc": "2.0",
                             "id": req_id,
                             "result": {"status": "started"}
+                        }))
+
+                    elif method == "rollback_swarm_run":
+                        workspace_path = params.get("workspace_path")
+                        run_id = params.get("run_id") or None
+                        if not self._is_safe_path(workspace_path):
+                            await websocket.send(json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32001,
+                                    "message": f"Security Error: Targeting a sensitive system path is blocked: {workspace_path}"
+                                }
+                            }))
+                            continue
+                        result = rollback_swarm_run(workspace_path, run_id)
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": result
                         }))
 
                     elif method == "swarm_commit_edits":
@@ -1748,6 +1822,64 @@ class WebSocketServerManager:
                                         "message": "No swarm task is currently running."
                                     }
                                 }))
+
+                    elif method in ("swarm_pause", "swarm_resume", "swarm_step"):
+                        run_id = params.get("run_id")
+                        with self._threads_lock:
+                            orchestrator = self.orchestrator
+                            if not orchestrator or not orchestrator.isRunning():
+                                await self._send_rpc_error(
+                                    websocket, -32000, req_id, "No swarm task is currently running."
+                                )
+                            elif orchestrator._run_id != run_id:
+                                await self._send_rpc_error(
+                                    websocket, -32000, req_id,
+                                    f"run_id '{run_id}' does not match the active swarm run '{orchestrator._run_id}'."
+                                )
+                            else:
+                                if method == "swarm_pause":
+                                    orchestrator.pause()
+                                    status = "pausing"
+                                elif method == "swarm_resume":
+                                    orchestrator.resume()
+                                    status = "resumed"
+                                else:
+                                    orchestrator.step()
+                                    status = "stepped"
+                                await websocket.send(json.dumps(
+                                    self._rpc_result_response(req_id, {"status": status})
+                                ))
+
+                    elif method == "swarm_override_task":
+                        run_id = params.get("run_id")
+                        filepath = params.get("filepath")
+                        instructions = params.get("instructions")
+                        with self._threads_lock:
+                            orchestrator = self.orchestrator
+                            if not orchestrator or not orchestrator.isRunning():
+                                await self._send_rpc_error(
+                                    websocket, -32000, req_id, "No swarm task is currently running."
+                                )
+                            elif orchestrator._run_id != run_id:
+                                await self._send_rpc_error(
+                                    websocket, -32000, req_id,
+                                    f"run_id '{run_id}' does not match the active swarm run '{orchestrator._run_id}'."
+                                )
+                            else:
+                                orchestrator.override_active_task(filepath, instructions)
+                                await websocket.send(json.dumps(
+                                    self._rpc_result_response(req_id, {"status": "override_queued"})
+                                ))
+
+                    elif method == "swarm_get_history":
+                        run_id = params.get("run_id")
+                        from app.utils.swarm_replay import SwarmReplayManager
+                        replay = SwarmReplayManager()
+                        if run_id:
+                            result = replay.get_run_details(run_id)
+                        else:
+                            result = {"runs": replay.list_past_runs()}
+                        await websocket.send(json.dumps(self._rpc_result_response(req_id, result)))
 
                     elif method == "submit_chat":
                         message = params.get("message")

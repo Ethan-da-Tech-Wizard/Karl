@@ -13,6 +13,7 @@ from app.engine.kv_cache import kv_cache_stats, log_cache_stats
 from app.engine.event_broker import EventBroker
 from app.engine.task_supervisor import TaskSupervisor
 from app.engine.streaming_parser import StreamingThoughtParser
+from app.utils.compactor import decompact_trace
 from app.utils.trace_logger import TraceLogger
 import core.interaction_loop
 
@@ -77,6 +78,51 @@ def _get_gpu_temp() -> float | None:
         return max(temps) if temps else None
     except Exception:
         return None
+
+
+def _json_object_complete(text: str) -> bool:
+    depth = 0
+    in_string = False
+    escaped = False
+    started = False
+    for ch in text.lstrip():
+        if not started:
+            if ch != "{":
+                return False
+            started = True
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return True
+    return False
+
+
+def _emit_compacted_generation(buffer: str, parser: StreamingThoughtParser) -> bool:
+    try:
+        trace = decompact_trace(buffer.strip())
+    except Exception:
+        return False
+    thought = str(trace.get("thinking") or trace.get("tk") or "")
+    response = str(trace.get("response") or trace.get("r") or "")
+    if thought:
+        parser._emit_thought(thought)
+    if response:
+        parser._emit_chat(response)
+    parser.in_thought = False
+    parser.buffer = ""
+    return bool(thought or response)
 
 
 class LLMThread(QThread):
@@ -310,6 +356,7 @@ class LLMThread(QThread):
         changed = False
 
         def _compile():
+            core.interaction_loop.ACTIVE_HYPERPARAMS = self.hyperparams
             prompt_text = core.interaction_loop.build_prompt(working_system, working_history)
             return prompt_text, self._token_count(llm, prompt_text)
 
@@ -470,6 +517,9 @@ class LLMThread(QThread):
                 chat_cb=self.new_chat_token.emit,
             )
             finish_reason = "stop"
+            compact_stream_mode: bool | None = None
+            compact_buffer = ""
+            compact_emitted = False
 
             continuation_count = 0
             max_continuations = 5
@@ -500,6 +550,7 @@ class LLMThread(QThread):
                         else:
                             current_temp = self.hyperparams.get("answering_temperature", 0.1)
                             current_top_p = 0.1 # High precision for answering
+                    speculative_kwargs = ModelLoader.speculative_generation_kwargs()
                     
                     response_generator = llm(
                         prompt + raw_output,
@@ -510,7 +561,8 @@ class LLMThread(QThread):
                         stream=True,
                         # <|im_start|> stops the model from hallucinating a new conversation turn
                         stop=["<|im_end|>", "<|endoftext|>", "<|end_of_text|>", "<|im_start|>"],
-                        echo=False
+                        echo=False,
+                        **speculative_kwargs,
                     )
                     self._active_response_generator = response_generator
                     watchdog_thread = self._start_watchdog(llm)
@@ -556,6 +608,28 @@ class LLMThread(QThread):
                             EventBroker.get_instance().publish("tokens:raw", {"token": text})
 
                             raw_output += text
+
+                            if compact_stream_mode is None:
+                                stripped_raw = raw_output.lstrip()
+                                if not stripped_raw:
+                                    continue
+                                if stripped_raw.startswith("{"):
+                                    compact_stream_mode = True
+                                    compact_buffer = raw_output
+                                else:
+                                    compact_stream_mode = False
+                            elif compact_stream_mode:
+                                compact_buffer += text
+
+                            if compact_stream_mode:
+                                if _json_object_complete(compact_buffer):
+                                    compact_emitted = _emit_compacted_generation(compact_buffer, parser)
+                                    if not compact_emitted:
+                                        parser.feed(compact_buffer, defer_after_think_close=False)
+                                    compact_buffer = ""
+                                    compact_stream_mode = False
+                                continue
+
                             dynamic_scheduling = self.hyperparams.get("enable_dynamic_scheduling", True)
                             parse_result = parser.feed(
                                 text,
@@ -638,7 +712,12 @@ class LLMThread(QThread):
                         continuation_count += 1
 
             # Flush remainder
-            parser.flush()
+            if compact_stream_mode:
+                compact_emitted = _emit_compacted_generation(compact_buffer, parser)
+                if not compact_emitted:
+                    parser.feed(compact_buffer, defer_after_think_close=False)
+            if not compact_emitted:
+                parser.flush()
 
             # MCP Tool loop — if enabled and model emitted tool calls, execute and continue
             if self.enable_tools:

@@ -27,7 +27,8 @@ def test_registry_companion_draft_is_discoverable(tmp_path, monkeypatch):
     draft_cfg = config_store.get_active_draft_model()
 
     assert config_store.registry_draft_model_filename("target.gguf") == "draft.gguf"
-    assert draft_cfg == {"enabled": False, "filename": "draft.gguf"}
+    assert draft_cfg["enabled"] == False
+    assert draft_cfg["filename"] == "draft.gguf"
 
 
 def test_active_draft_model_persists_enabled_flag(tmp_path, monkeypatch):
@@ -36,16 +37,14 @@ def test_active_draft_model_persists_enabled_flag(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     assert config_store.set_active_draft_model("draft.gguf", enabled=True)
-    assert config_store.get_active_draft_model() == {
-        "enabled": True,
-        "filename": "draft.gguf",
-    }
+    draft_cfg1 = config_store.get_active_draft_model()
+    assert draft_cfg1["enabled"] == True
+    assert draft_cfg1["filename"] == "draft.gguf"
 
     assert config_store.set_active_draft_model(None, enabled=False)
-    assert config_store.get_active_draft_model() == {
-        "enabled": False,
-        "filename": None,
-    }
+    draft_cfg2 = config_store.get_active_draft_model()
+    assert draft_cfg2["enabled"] == False
+    assert draft_cfg2["filename"] is None
 
 
 def test_model_loader_uses_persisted_draft_setting():

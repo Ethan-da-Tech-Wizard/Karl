@@ -7,6 +7,7 @@ from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QTextCursor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFrame,
     QGraphicsLineItem,
     QGraphicsRectItem,
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
@@ -37,6 +39,61 @@ from PyQt6.QtWidgets import (
 )
 
 from app.engine.swarm_orchestrator import SwarmOrchestratorThread
+
+
+class _TpsChart(QWidget):
+    """Minimal sparkline canvas for live tokens-per-second telemetry."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(64)
+        self._samples: list[float] = []
+        self._cumulative_tokens = 0
+        self._latest_tps = 0.0
+
+    def add_sample(self, tokens_per_second: float, cumulative_tokens: int) -> None:
+        self._samples.append(max(0.0, tokens_per_second))
+        self._samples = self._samples[-60:]
+        self._latest_tps = tokens_per_second
+        self._cumulative_tokens = cumulative_tokens
+        self.update()
+
+    def reset(self) -> None:
+        self._samples = []
+        self._cumulative_tokens = 0
+        self._latest_tps = 0.0
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect()
+        painter.fillRect(rect, QColor("#0A0A14"))
+        painter.setPen(QPen(QColor("#252535")))
+        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+
+        if len(self._samples) >= 2:
+            max_v = max(self._samples) or 1.0
+            w = rect.width() - 8
+            h = rect.height() - 22
+            n = len(self._samples)
+            step = w / max(1, n - 1)
+            painter.setPen(QPen(QColor("#7FDBFF"), 1.5))
+            points = [
+                QPointF(4 + i * step, 4 + h - (v / max_v) * h)
+                for i, v in enumerate(self._samples)
+            ]
+            for a, b in zip(points, points[1:]):
+                painter.drawLine(a, b)
+
+        painter.setPen(QPen(QColor("#C0C0D0")))
+        painter.setFont(QFont("Monospace", 8))
+        painter.drawText(
+            rect.adjusted(4, 0, -4, -4),
+            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft,
+            f"{self._latest_tps:.1f} tok/s · {self._cumulative_tokens} tokens total",
+        )
+        painter.end()
 
 
 class SwarmStudioWorkspace(QWidget):
@@ -88,7 +145,18 @@ class SwarmStudioWorkspace(QWidget):
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 4)
         splitter.setStretchFactor(2, 3)
-        root.addWidget(splitter, 1)
+
+        live_tab = QWidget()
+        live_layout = QVBoxLayout(live_tab)
+        live_layout.setContentsMargins(0, 8, 0, 0)
+        live_layout.setSpacing(0)
+        live_layout.addWidget(splitter, 1)
+
+        self._main_tabs = QTabWidget()
+        self._main_tabs.addTab(live_tab, "Live Run")
+        self._main_tabs.addTab(self._build_replay_panel(), "Replay")
+        self._main_tabs.currentChanged.connect(self._on_main_tab_changed)
+        root.addWidget(self._main_tabs, 1)
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
@@ -296,7 +364,53 @@ class SwarmStudioWorkspace(QWidget):
         )
         layout.addWidget(self._stream_view)
 
+        chart_header = QLabel("Live Telemetry")
+        chart_header.setObjectName("section-header")
+        layout.addWidget(chart_header)
+        self._tps_chart = _TpsChart()
+        layout.addWidget(self._tps_chart)
+
+        # ── Interactive debugger: pause/step/resume mid-run ──────────────────
+        debugger_group = QGroupBox("Interactive Debugger")
+        dg = QVBoxLayout(debugger_group)
+        dg.setSpacing(6)
+
+        self._pause_on_step_check = QPushButton("Pause on Step")
+        self._pause_on_step_check.setCheckable(True)
+        self._pause_on_step_check.setObjectName("btn-toggle")
+        self._pause_on_step_check.setToolTip(
+            "Pause before each coder task starts so you can inspect or override it before it runs."
+        )
+        dg.addWidget(self._pause_on_step_check)
+
+        debug_btn_row = QWidget()
+        dbr = QHBoxLayout(debug_btn_row)
+        dbr.setContentsMargins(0, 0, 0, 0)
+        dbr.setSpacing(4)
+        self._debug_pause_btn = QPushButton("Pause")
+        self._debug_pause_btn.setToolTip("Engage step-pausing now; takes effect at the next task boundary.")
+        self._debug_pause_btn.clicked.connect(self._on_debug_pause)
+        self._debug_step_btn = QPushButton("Step")
+        self._debug_step_btn.setEnabled(False)
+        self._debug_step_btn.clicked.connect(self._on_debug_step)
+        self._debug_resume_btn = QPushButton("Resume")
+        self._debug_resume_btn.setEnabled(False)
+        self._debug_resume_btn.clicked.connect(self._on_debug_resume)
+        dbr.addWidget(self._debug_pause_btn)
+        dbr.addWidget(self._debug_step_btn)
+        dbr.addWidget(self._debug_resume_btn)
+        dg.addWidget(debug_btn_row)
+
+        self._debug_active_step_lbl = QLabel("No task currently paused.")
+        self._debug_active_step_lbl.setObjectName("lbl-muted")
+        self._debug_active_step_lbl.setWordWrap(True)
+        dg.addWidget(self._debug_active_step_lbl)
+
+        layout.addWidget(debugger_group)
+
         # ── Live steering: inject a human correction into an in-flight task ──
+        # Doubles as the "editable text box" for the interactive debugger —
+        # when paused, target the shown filepath and send an instruction.
         # Target path, message, and button used to share one row -- three
         # widgets fighting for a panel that's only ~1/3 of the app's 760px
         # minimum width left the message field showing a couple of
@@ -386,6 +500,116 @@ class SwarmStudioWorkspace(QWidget):
         layout.addWidget(self._result_banner)
         return panel
 
+    def _build_replay_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        self._replay_manager = None
+        self._replay_steps: list[dict] = []
+
+        header_row = QWidget()
+        hl = QHBoxLayout(header_row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(8)
+        hl.addWidget(QLabel("Past Run:"))
+        self._replay_run_combo = QComboBox()
+        self._replay_run_combo.setMinimumWidth(280)
+        self._replay_run_combo.currentIndexChanged.connect(self._on_replay_run_selected)
+        hl.addWidget(self._replay_run_combo, 1)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_replay_runs)
+        hl.addWidget(refresh_btn)
+        layout.addWidget(header_row)
+
+        self._replay_objective_lbl = QLabel("Select a past run to inspect its step-by-step timeline.")
+        self._replay_objective_lbl.setObjectName("lbl-muted")
+        self._replay_objective_lbl.setWordWrap(True)
+        layout.addWidget(self._replay_objective_lbl)
+
+        replay_split = QSplitter(Qt.Orientation.Horizontal)
+        replay_split.setHandleWidth(1)
+
+        self._replay_steps_list = QListWidget()
+        self._replay_steps_list.itemClicked.connect(self._on_replay_step_selected)
+        replay_split.addWidget(self._replay_steps_list)
+
+        detail_widget = QWidget()
+        dw_layout = QVBoxLayout(detail_widget)
+        dw_layout.setContentsMargins(0, 0, 0, 0)
+        dw_layout.setSpacing(6)
+        dw_layout.addWidget(QLabel("Diff"))
+        self._replay_diff_view = QPlainTextEdit()
+        self._replay_diff_view.setReadOnly(True)
+        self._replay_diff_view.setFont(QFont("Monospace", 8))
+        dw_layout.addWidget(self._replay_diff_view, 1)
+        dw_layout.addWidget(QLabel("Test Output"))
+        self._replay_test_view = QPlainTextEdit()
+        self._replay_test_view.setReadOnly(True)
+        self._replay_test_view.setFont(QFont("Monospace", 8))
+        dw_layout.addWidget(self._replay_test_view, 1)
+        replay_split.addWidget(detail_widget)
+        replay_split.setStretchFactor(0, 1)
+        replay_split.setStretchFactor(1, 2)
+
+        layout.addWidget(replay_split, 1)
+        return panel
+
+    def _on_main_tab_changed(self, index: int) -> None:
+        if self._main_tabs.tabText(index) == "Replay" and self._replay_run_combo.count() == 0:
+            self._refresh_replay_runs()
+
+    def _refresh_replay_runs(self) -> None:
+        from app.utils.swarm_replay import SwarmReplayManager
+        if self._replay_manager is None:
+            self._replay_manager = SwarmReplayManager()
+
+        runs = self._replay_manager.list_past_runs()
+        self._replay_run_combo.blockSignals(True)
+        self._replay_run_combo.clear()
+        for run in runs:
+            status = "ok" if run.get("success") else "failed"
+            objective = (run.get("objective") or run["run_id"])[:50]
+            label = f"{run.get('timestamp', '')[:19]} — {objective} ({status})"
+            self._replay_run_combo.addItem(label, run["run_id"])
+        self._replay_run_combo.blockSignals(False)
+
+        if runs:
+            self._on_replay_run_selected(0)
+        else:
+            self._replay_objective_lbl.setText("No past swarm runs found yet.")
+            self._replay_steps_list.clear()
+            self._replay_diff_view.clear()
+            self._replay_test_view.clear()
+
+    def _on_replay_run_selected(self, index: int) -> None:
+        if index < 0 or self._replay_manager is None:
+            return
+        run_id = self._replay_run_combo.itemData(index)
+        if not run_id:
+            return
+        details = self._replay_manager.get_run_details(run_id)
+        self._replay_objective_lbl.setText(details.get("objective") or "(no objective recorded)")
+        self._replay_steps = details.get("steps", [])
+        self._replay_steps_list.clear()
+        for step in self._replay_steps:
+            label = f"[{step['step_index']}] {step['type']}"
+            if step.get("filepath"):
+                label += f" — {step['filepath']}"
+            if step.get("is_drift"):
+                label += "  ⚠ drift"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, step)
+            self._replay_steps_list.addItem(item)
+        self._replay_diff_view.clear()
+        self._replay_test_view.clear()
+
+    def _on_replay_step_selected(self, item: QListWidgetItem) -> None:
+        step = item.data(Qt.ItemDataRole.UserRole) or {}
+        self._replay_diff_view.setPlainText(step.get("diff") or "(no diff for this step)")
+        self._replay_test_view.setPlainText(step.get("test_output") or "(no test output for this step)")
+
     def _load_history(self):
         self._history = self.state.memory.load_swarm_history()
         self._recent_list.clear()
@@ -442,6 +666,7 @@ class SwarmStudioWorkspace(QWidget):
             "enable_specialists": self._specialists_check.isChecked(),
             "enable_critic": self._critic_check.isChecked(),
             "adaptive_concurrency": self._adaptive_check.isChecked(),
+            "pause_on_step": self._pause_on_step_check.isChecked(),
         }
         self._thread = SwarmOrchestratorThread(workspace_path, objective, test_command, hyperparams)
         self._thread.status_update.connect(self._on_status)
@@ -466,6 +691,8 @@ class SwarmStudioWorkspace(QWidget):
         self._thread.specialist_review.connect(self._on_specialist_review)
         self._thread.concurrency_adjusted.connect(self._on_concurrency_adjusted)
         self._thread.guidance_injected.connect(self._on_guidance_injected)
+        self._thread.swarm_paused.connect(self._on_swarm_paused)
+        self._thread.telemetry_update.connect(self._on_telemetry_update)
         self._thread.finished.connect(self._thread.deleteLater)
 
         self._launch_btn.setEnabled(False)
@@ -499,6 +726,10 @@ class SwarmStudioWorkspace(QWidget):
         self._verify_lbl.setText("Verification: idle")
         self._result_banner.setText("Run active.")
         self._result_banner.setStyleSheet("")
+        self._tps_chart.reset()
+        self._debug_step_btn.setEnabled(False)
+        self._debug_resume_btn.setEnabled(False)
+        self._debug_active_step_lbl.setText("No task currently paused.")
 
     def _stop(self):
         if self._thread and self._thread.isRunning():
@@ -612,6 +843,43 @@ class SwarmStudioWorkspace(QWidget):
             return
         self._thread.inject_guidance(target, message)
         self._steering_input.clear()
+
+    # ── Interactive debugger ─────────────────────────────────────────────────
+
+    def _on_debug_pause(self):
+        if self._thread and self._thread.isRunning():
+            self._thread.pause()
+            self._status_log.append("[Debugger] Pause requested — takes effect at the next task boundary.")
+
+    def _on_debug_resume(self):
+        if self._thread and self._thread.isRunning():
+            self._thread.resume()
+        self._debug_step_btn.setEnabled(False)
+        self._debug_resume_btn.setEnabled(False)
+        self._debug_active_step_lbl.setText("No task currently paused.")
+        self._status_log.append("[Debugger] Resumed.")
+
+    def _on_debug_step(self):
+        if self._thread and self._thread.isRunning():
+            self._thread.step()
+        self._debug_step_btn.setEnabled(False)
+        self._debug_resume_btn.setEnabled(False)
+        self._status_log.append("[Debugger] Stepping one task forward.")
+
+    def _on_swarm_paused(self, task_info: dict):
+        filepath = task_info.get("filepath", "")
+        instructions = task_info.get("instructions", "")
+        self._debug_active_step_lbl.setText(f"Paused before: {filepath}\n{instructions}")
+        self._debug_step_btn.setEnabled(True)
+        self._debug_resume_btn.setEnabled(True)
+        if not self._steering_target.text().strip():
+            self._steering_target.setText(filepath)
+        self._status_log.append(f"[Debugger] Paused before {filepath}.")
+
+    def _on_telemetry_update(self, payload: dict):
+        self._tps_chart.add_sample(
+            payload.get("tokens_per_second", 0.0), payload.get("cumulative_tokens", 0)
+        )
 
     def _on_verification_started(self, layer_index: int, command: str):
         self._verify_lbl.setText(f"Layer {layer_index}: verifying")

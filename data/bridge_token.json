@@ -1,12 +1,12 @@
 {
-  "token": "1e16573a3d4344fe8298d44e3ed4c0ae",
+  "token": "39aa61d3bbe24125b62c7cf42d54c3c2",
   "tokens": {
-    "1e16573a3d4344fe8298d44e3ed4c0ae": [
+    "39aa61d3bbe24125b62c7cf42d54c3c2": [
       "read:telemetry",
       "read:kb",
       "write:kb",
       "admin:execute"
     ]
   },
-  "created_at": 1784213189.1982982
+  "created_at": 1784324334.823747
 }

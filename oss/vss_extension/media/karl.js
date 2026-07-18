@@ -55,7 +55,7 @@ window.addEventListener('message', event => {
     // ── Host-relay bridge events ──────────────────────────────────────────────
     // When KARL_USE_HOST_RELAY is active the extension host owns the WebSocket
     // and forwards frames/lifecycle events here via postMessage.
-    if (message.command === 'bridge_message') {
+    if (message.command === 'bridge_message' || message.command === 'socket_message') {
         try {
             const data = typeof message.data === 'string'
                 ? JSON.parse(message.data)
@@ -108,6 +108,8 @@ window.addEventListener('message', event => {
         removePendingEdit(message.editId, 'Rejected');
     } else if (message.command === 'file_edit_rolled_back') {
         markPendingEdit(message.editId, 'rolled_back');
+    } else if (message.command === 'swarm_run_history') {
+        renderSwarmRunHistory(message.runs || []);
     } else if (message.command === 'cockpit_state_update') {
         updateCockpitState(message.state || {});
     } else if (message.command === 'completion_diagnostic_failed') {
@@ -252,6 +254,10 @@ function bindEvents() {
     
     $('previewAllBtn').addEventListener('click', () => vscode.postMessage({ command: 'preview_all_files' }));
     $('rejectAllBtn').addEventListener('click', () => vscode.postMessage({ command: 'reject_all_files' }));
+    $('rollbackSwarmRunBtn').addEventListener('click', () => vscode.postMessage({
+        command: 'rollback_swarm_run',
+        runId: $('swarmRunSelect').value
+    }));
     $('copySummaryBtn').addEventListener('click', () => vscode.postMessage({ command: 'copy_patch_summary' }));
     $('changeFilter').addEventListener('change', renderPendingEdits);
     $('clearTasksBtn').addEventListener('click', () => {
@@ -370,6 +376,23 @@ function bindEvents() {
                 $('objective').value = `Reference: ${res.source_file} (Chunk ${res.chunk_id})\n\n${res.text}\n\n${$('objective').value}`;
                 switchWorkspace('swarm');
             }
+        }
+    });
+
+    $('swarmRagSearchBtn').addEventListener('click', searchSwarmRag);
+    $('swarmRagQuery').addEventListener('keydown', event => {
+        if (event.key === 'Enter') searchSwarmRag();
+    });
+    $('swarmRagResults').addEventListener('click', event => {
+        const btn = event.target.closest('button');
+        if (!btn) return;
+        const res = lastSwarmRagResults[Number(btn.dataset.idx)];
+        if (!res) return;
+        if (btn.dataset.copy !== undefined) {
+            vscode.postMessage({ command: 'copy_to_clipboard', text: res.text || '' });
+        } else if (btn.dataset.inject !== undefined) {
+            const reference = `Reference: ${res.source_file} (Chunk ${res.chunk_id})\n\n${res.text}\n\n`;
+            $('objective').value = `${reference}${$('objective').value}`;
         }
     });
 
@@ -495,7 +518,12 @@ function runSwarm() {
         objective,
         workspace_path: workspace,
         test_command: testCommand,
-        hyperparams: hyperparams()
+        hyperparams: {
+            ...hyperparams(),
+            timeout_seconds: Number($('swarmTimeout').value) || 600,
+            max_loops: Number($('swarmMaxLoops').value) || 5,
+            auto_steering_enabled: $('swarmAutoSteer').checked
+        }
     });
 }
 
@@ -705,6 +733,32 @@ function markPendingEdit(editId, status) {
     }
 }
 
+function markPendingEditByPath(filepath, status) {
+    if (!filepath) return;
+    for (const [editId, edit] of pendingEdits.entries()) {
+        if (edit.filepath === filepath && ['approved', 'submitted'].includes(edit.status)) {
+            markPendingEdit(editId, status);
+            return;
+        }
+    }
+}
+
+function renderSwarmRunHistory(runs) {
+    swarmRunHistory = Array.isArray(runs) ? runs.slice(0, 5) : [];
+    const select = $('swarmRunSelect');
+    if (!select) return;
+    if (!swarmRunHistory.length) {
+        select.innerHTML = '<option value="">No swarm runs yet</option>';
+        return;
+    }
+    select.innerHTML = swarmRunHistory.map(run => {
+        const when = run.timestamp ? new Date(run.timestamp).toLocaleString() : 'unknown time';
+        const files = Array.isArray(run.changedFiles) ? run.changedFiles.length : 0;
+        const objective = (run.objective || run.summary || 'Swarm run').slice(0, 48);
+        return `<option value="${escapeHtml(run.runId || '')}">${escapeHtml(when)} · ${escapeHtml(objective)} · ${files} file(s)</option>`;
+    }).join('');
+}
+
 function removePendingEdit(editId, state) {
     pendingEdits.delete(editId);
     renderPendingEdits();
@@ -879,6 +933,38 @@ function searchKb() {
         threshold: Number($('kbThreshold').value) || 0,
         source_filter: $('kbSourceFilter').value || null
     });
+}
+
+function searchSwarmRag() {
+    const query = $('swarmRagQuery').value.trim();
+    if (!query) {
+        vscode.postMessage({ command: 'show_error', text: 'Enter a search term.' });
+        return;
+    }
+    $('swarmRagResults').innerHTML = '<div class="result-card">Searching index...</div>';
+    rpc(53, 'search_kb', {
+        query,
+        top_k: Number($('swarmRagTopK').value) || 5,
+        threshold: Number($('swarmRagThreshold').value) || 0
+    });
+}
+
+function renderSwarmRagResults(payload) {
+    if (!payload || typeof payload !== 'object') payload = {};
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    lastSwarmRagResults = results;
+    $('swarmRagResults').innerHTML = results.length ? results.map((result, index) => {
+        if (!result) result = {};
+        return `
+        <div class="result-card">
+            <div class="result-meta">Rank ${escapeHtml(result.rank ?? index)} · ${escapeHtml(result.source_file || 'unknown')} · Chunk ${escapeHtml(result.chunk_id || '0')} · dist=${Number(result.distance || 0).toFixed(4)}</div>
+            <pre>${escapeHtml(result.text || '').slice(0, 1800)}</pre>
+            <div class="action-row compact-actions" style="margin-top:6px;">
+                <button data-idx="${index}" data-copy>Copy</button>
+                <button data-idx="${index}" data-inject>Inject Into Objective</button>
+            </div>
+        </div>
+    `; }).join('') : '<div class="result-card">No chunks matched the current query and threshold.</div>';
 }
 
 function requiresBridgeSupport(feature, method) {

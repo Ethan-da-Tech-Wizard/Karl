@@ -66,7 +66,7 @@ def test_eval_harness_model_and_adapter_selection():
         report = harness.run(
             dataset_path=dataset_path,
             workflow_name="grounded_answer",
-            hyperparams={"eval_process_isolation": False},
+            hyperparams={"eval_process_isolation": False, "machine_speak_enabled": False},
             model_name="deepseek-r1-llama-8b.gguf",
             adapter_name="llama_8b_math_greeting"
         )
@@ -136,7 +136,7 @@ def test_eval_harness_failure_curation():
         report = harness.run(
             dataset_path=dataset_path,
             workflow_name="general_chat",
-            hyperparams={"eval_process_isolation": False},
+            hyperparams={"eval_process_isolation": False, "machine_speak_enabled": False},
         )
         
         # Verify case failed

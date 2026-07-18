@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QTextBrowser, QTextEdit, QLabel,
     QFrame, QComboBox, QListWidget, QLineEdit,
     QMessageBox, QTabWidget, QCheckBox, QSizePolicy,
+    QSpinBox, QFileDialog, QProgressBar,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QTextCursor
@@ -773,6 +774,42 @@ class _ModelCompareThread(QThread):
             self.error.emit(str(exc))
 
 
+class PromptOptimizeThread(QThread):
+    """Runs PromptOptimizer.optimize_loop() off the UI thread, relaying
+    per-iteration progress and the final optimized prompt."""
+
+    iteration_progress = pyqtSignal(int, int, float, str)  # current_iter, total_iters, score, prompt
+    finished_optimizing = pyqtSignal(str)                  # final best prompt
+    error = pyqtSignal(str)
+
+    def __init__(self, prompt_key: str, dataset_path: str, iterations: int, model_name: str | None = None):
+        super().__init__()
+        self.prompt_key = prompt_key
+        self.dataset_path = dataset_path
+        self.iterations = iterations
+        self.model_name = model_name
+        self._stop_requested = False
+
+    def request_stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        from core.prompt_optimizer import PromptOptimizer
+        try:
+            optimizer = PromptOptimizer(model_name=self.model_name)
+            final_prompt = optimizer.optimize_loop(
+                self.prompt_key,
+                self.dataset_path,
+                iterations=self.iterations,
+                progress_callback=lambda i, total, score, prompt: self.iteration_progress.emit(i, total, score, prompt),
+                stop_check=lambda: self._stop_requested,
+            )
+            self.finished_optimizing.emit(final_prompt)
+        except Exception as exc:
+            logger.error("[PromptOptimizeThread] %s", exc)
+            self.error.emit(str(exc))
+
+
 # ── workspace ─────────────────────────────────────────────────────────────────
 
 class PromptLabWorkspace(QWidget):
@@ -1046,6 +1083,108 @@ class PromptLabWorkspace(QWidget):
         ct_layout.addWidget(cmp_splitter, 1)
 
         self._main_tabs.addTab(cmp_tab, "Multi-Model Comparison")
+
+        # 5. Optimize tab ────────────────────────────────────────────────────────
+        optimize_tab = QWidget()
+        opt_layout = QVBoxLayout(optimize_tab)
+        opt_layout.setContentsMargins(0, 8, 0, 0)
+        opt_layout.setSpacing(8)
+
+        opt_layout.addWidget(_section("PROMPT EVOLUTION LAB"))
+        opt_desc = QLabel(
+            "Runs a local hill-climbing search: mutates the selected registry prompt against "
+            "failures on a mini-train split, scores each candidate on a held-out mini-validation "
+            "split, and keeps only improvements."
+        )
+        opt_desc.setObjectName("lbl-muted")
+        opt_desc.setWordWrap(True)
+        opt_desc.setStyleSheet("font-size: 8.5pt; margin-bottom: 4px;")
+        opt_layout.addWidget(opt_desc)
+
+        # Config row: prompt + iterations
+        opt_cfg_row = QWidget()
+        opt_cfg_layout = QHBoxLayout(opt_cfg_row)
+        opt_cfg_layout.setContentsMargins(0, 0, 0, 0)
+        opt_cfg_layout.setSpacing(8)
+        opt_cfg_layout.addWidget(QLabel("Prompt:"))
+        self._opt_prompt_combo = QComboBox()
+        self._opt_prompt_combo.setToolTip("Registry prompt template to optimize (data/system_prompts.json + built-ins)")
+        opt_cfg_layout.addWidget(self._opt_prompt_combo, 1)
+        opt_cfg_layout.addWidget(QLabel("Iterations:"))
+        self._opt_iterations_spin = QSpinBox()
+        self._opt_iterations_spin.setRange(1, 20)
+        self._opt_iterations_spin.setValue(3)
+        self._opt_iterations_spin.setToolTip("Number of mutation rounds to run")
+        opt_cfg_layout.addWidget(self._opt_iterations_spin)
+        opt_layout.addWidget(opt_cfg_row)
+
+        # Dataset row
+        opt_ds_row = QWidget()
+        opt_ds_layout = QHBoxLayout(opt_ds_row)
+        opt_ds_layout.setContentsMargins(0, 0, 0, 0)
+        opt_ds_layout.setSpacing(8)
+        opt_ds_layout.addWidget(QLabel("Dataset:"))
+        self._opt_dataset_path = QLineEdit()
+        self._opt_dataset_path.setPlaceholderText("Path to a JSONL eval dataset (see eval/datasets/*.jsonl)…")
+        opt_ds_layout.addWidget(self._opt_dataset_path, 1)
+        opt_browse_btn = QPushButton("Browse…")
+        opt_browse_btn.clicked.connect(self._browse_optimize_dataset)
+        opt_ds_layout.addWidget(opt_browse_btn)
+        opt_layout.addWidget(opt_ds_row)
+
+        # Start/Stop + progress
+        opt_run_row = QWidget()
+        opt_run_layout = QHBoxLayout(opt_run_row)
+        opt_run_layout.setContentsMargins(0, 0, 0, 0)
+        opt_run_layout.setSpacing(8)
+        self._opt_start_btn = QPushButton("▶ Start Optimization")
+        self._opt_start_btn.setObjectName("btn-primary")
+        self._opt_start_btn.clicked.connect(self._start_prompt_optimization)
+        opt_run_layout.addWidget(self._opt_start_btn)
+        self._opt_stop_btn = QPushButton("■ Stop")
+        self._opt_stop_btn.setEnabled(False)
+        self._opt_stop_btn.clicked.connect(self._stop_prompt_optimization)
+        opt_run_layout.addWidget(self._opt_stop_btn)
+        self._opt_progress = QProgressBar()
+        self._opt_progress.setRange(0, 1)
+        self._opt_progress.setValue(0)
+        opt_run_layout.addWidget(self._opt_progress, 1)
+        opt_layout.addWidget(opt_run_row)
+
+        self._opt_status = QLabel("Select a prompt and dataset, then click Start Optimization.")
+        self._opt_status.setObjectName("lbl-muted")
+        self._opt_status.setStyleSheet("font-size: 8.5pt; padding: 2px 0;")
+        opt_layout.addWidget(self._opt_status)
+
+        # Active/best prompt text area
+        opt_layout.addWidget(_section("ACTIVE / BEST SYSTEM PROMPT"))
+        self._opt_prompt_text = QTextEdit()
+        self._opt_prompt_text.setPlaceholderText("The current best system prompt will appear here as the loop runs…")
+        opt_layout.addWidget(self._opt_prompt_text, 1)
+
+        # Log
+        opt_layout.addWidget(_section("OPTIMIZATION LOG"))
+        self._opt_log = QTextBrowser()
+        self._opt_log.setMaximumHeight(140)
+        opt_layout.addWidget(self._opt_log)
+
+        # Save to registry
+        save_row = QWidget()
+        save_layout = QHBoxLayout(save_row)
+        save_layout.setContentsMargins(0, 0, 0, 0)
+        save_layout.setSpacing(8)
+        save_layout.addWidget(QLabel("Save as key:"))
+        self._opt_save_key = QLineEdit()
+        self._opt_save_key.setPlaceholderText("e.g. code_expert_v2 (no leading underscore)")
+        save_layout.addWidget(self._opt_save_key, 1)
+        self._opt_save_btn = QPushButton("Save to Registry")
+        self._opt_save_btn.clicked.connect(self._save_optimized_prompt)
+        save_layout.addWidget(self._opt_save_btn)
+        opt_layout.addWidget(save_row)
+
+        self._main_tabs.addTab(optimize_tab, "Optimize")
+        self._opt_thread: PromptOptimizeThread | None = None
+        self._populate_optimize_prompt_combo()
 
         # Thread reference (kept to prevent GC while running)
         self._cmp_thread: _ModelCompareThread | None = None
@@ -1540,3 +1679,88 @@ class PromptLabWorkspace(QWidget):
         self._cmp_run_btn.setEnabled(True)
         self._cmp_status.setText(f"Error: {msg}")
         logger.error("[MultiModelComparison] %s", msg)
+
+    # ── Optimize tab ─────────────────────────────────────────────────────────
+
+    def _populate_optimize_prompt_combo(self):
+        from core.default_prompts import load_prompt_presets
+        self._opt_prompt_combo.clear()
+        for key, entry in load_prompt_presets().items():
+            self._opt_prompt_combo.addItem(f"{entry.get('label', key)} ({key})", key)
+
+    def _browse_optimize_dataset(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Eval Dataset", "eval/datasets", "JSONL Files (*.jsonl);;All Files (*)"
+        )
+        if path:
+            self._opt_dataset_path.setText(path)
+
+    def _start_prompt_optimization(self):
+        prompt_key = self._opt_prompt_combo.currentData()
+        dataset_path = self._opt_dataset_path.text().strip()
+        iterations = self._opt_iterations_spin.value()
+
+        if not prompt_key:
+            QMessageBox.warning(self, "No Prompt Selected", "Choose a registry prompt to optimize.")
+            return
+        if not dataset_path or not os.path.exists(dataset_path):
+            QMessageBox.warning(self, "No Dataset", "Choose a valid JSONL eval dataset.")
+            return
+
+        self._opt_log.clear()
+        self._opt_progress.setRange(0, iterations)
+        self._opt_progress.setValue(0)
+        self._opt_start_btn.setEnabled(False)
+        self._opt_stop_btn.setEnabled(True)
+        self._opt_status.setText(f"Optimizing '{prompt_key}'…")
+
+        self._opt_thread = PromptOptimizeThread(prompt_key, dataset_path, iterations)
+        t = self._opt_thread
+        t.iteration_progress.connect(self._on_opt_iteration_progress)
+        t.finished_optimizing.connect(self._on_opt_finished)
+        t.error.connect(self._on_opt_error)
+        t.start()
+
+    def _stop_prompt_optimization(self):
+        if self._opt_thread:
+            self._opt_thread.request_stop()
+            self._opt_status.setText("Stopping after the current iteration…")
+
+    def _on_opt_iteration_progress(self, current_iter: int, total_iters: int, score: float, prompt: str):
+        self._opt_progress.setValue(current_iter)
+        self._opt_prompt_text.setPlainText(prompt)
+        label = "Baseline" if current_iter == 0 else f"Iteration {current_iter}/{total_iters}"
+        self._opt_log.append(f"[{label}] best score so far: {score:.3f}")
+        self._opt_status.setText(f"{label} — best score {score:.3f}")
+
+    def _on_opt_finished(self, final_prompt: str):
+        self._opt_start_btn.setEnabled(True)
+        self._opt_stop_btn.setEnabled(False)
+        self._opt_prompt_text.setPlainText(final_prompt)
+        self._opt_status.setText("Optimization complete.")
+        self._opt_log.append("Optimization finished.")
+
+    def _on_opt_error(self, msg: str):
+        self._opt_start_btn.setEnabled(True)
+        self._opt_stop_btn.setEnabled(False)
+        self._opt_status.setText(f"Error: {msg}")
+        self._opt_log.append(f"ERROR: {msg}")
+        logger.error("[PromptOptimizeThread] %s", msg)
+
+    def _save_optimized_prompt(self):
+        key = self._opt_save_key.text().strip()
+        prompt_text = self._opt_prompt_text.toPlainText().strip()
+        if not key or key.startswith("_"):
+            QMessageBox.warning(self, "Invalid Key", "Enter a registry key without a leading underscore.")
+            return
+        if not prompt_text:
+            QMessageBox.warning(self, "Nothing to Save", "Run an optimization or paste a prompt first.")
+            return
+        from core.default_prompts import save_user_preset
+        label = self._opt_prompt_combo.currentText().split(" (")[0] or key
+        ok = save_user_preset(key, f"{label} (optimized)", "Saved from the Prompt Evolution Lab.", prompt_text)
+        if ok:
+            QMessageBox.information(self, "Saved", f"Saved prompt to registry as '{key}'.")
+            self._populate_optimize_prompt_combo()
+        else:
+            QMessageBox.warning(self, "Save Failed", "Could not write to data/system_prompts.json.")

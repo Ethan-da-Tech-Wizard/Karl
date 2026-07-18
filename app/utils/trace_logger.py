@@ -12,6 +12,8 @@ import sys
 from datetime import datetime, timezone
 from contextlib import contextmanager
 
+from app.utils import compactor
+
 logger = logging.getLogger("karl.trace_logger")
 
 
@@ -182,7 +184,7 @@ class TraceLogger:
             now = datetime.now(timezone.utc)
             for root, _, files in os.walk(logs_dir):
                 for f in files:
-                    if f.endswith((".jsonl", ".gz", ".enc", ".tokens")):
+                    if f.endswith((".jsonl", ".jsonl.compact", ".gz", ".enc", ".tokens")):
                         filepath = os.path.join(root, f)
                         try:
                             mtime = os.path.getmtime(filepath)
@@ -205,7 +207,7 @@ class TraceLogger:
             total_size = 0
             for root, _, files in os.walk(logs_dir):
                 for f in files:
-                    if f.endswith((".jsonl", ".gz", ".enc", ".tokens")):
+                    if f.endswith((".jsonl", ".jsonl.compact", ".gz", ".enc", ".tokens")):
                         filepath = os.path.join(root, f)
                         try:
                             mtime = os.path.getmtime(filepath)
@@ -335,6 +337,27 @@ class TraceLogger:
                     return
                 i += 1
 
+    @staticmethod
+    def _compact_log_path(jsonl_path: str) -> str:
+        return f"{jsonl_path}.compact"
+
+    def _append_compact_entry(self, jsonl_path: str, entry: dict) -> None:
+        compact_path = self._compact_log_path(jsonl_path)
+        try:
+            with open(compact_path, "a", encoding="utf-8") as f:
+                f.write(compactor.compact_trace_for_ai(entry) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to write compact trace log {compact_path}: {e}")
+
+    def _rewrite_compact_file(self, jsonl_path: str, entries: list[dict]) -> None:
+        compact_path = self._compact_log_path(jsonl_path)
+        try:
+            with open(compact_path, "w", encoding="utf-8") as f:
+                for entry in entries:
+                    f.write(compactor.compact_trace_for_ai(entry) + "\n")
+        except Exception as e:
+            logger.warning(f"Failed to rewrite compact trace log {compact_path}: {e}")
+
     def log_generation(
         self,
         compiled_prompt: str,
@@ -427,6 +450,7 @@ class TraceLogger:
         with self._lock:
             with open(self._log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            self._append_compact_entry(self._log_file, entry)
 
         return self._log_file
 
@@ -553,5 +577,18 @@ class TraceLogger:
 
                 with open(self._log_file, "w", encoding="utf-8") as f:
                     f.writelines(lines)
+
+                entries = []
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        parsed = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed, dict):
+                        entries.append(parsed)
+                self._rewrite_compact_file(self._log_file, entries)
             except Exception as e:
                 logger.warning(f"Error updating feedback: {e}")

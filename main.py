@@ -90,6 +90,7 @@ _karl_log.propagate = False
 
 # ── 5. Application ────────────────────────────────────────────────────────────
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtGui import QIcon
 from app.ui.main_window import MainWindow
 
 # Re-exported for backwards compatibility (tests and other entrypoints import
@@ -225,6 +226,9 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Karl")
+    icon_path = os.path.join(os.path.dirname(__file__), "oss/vss_extension/media/icon.png")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
 
     # Minimal inline base stylesheet (pure ASCII, no file read).
     # Full theme applied by MainWindow after init.

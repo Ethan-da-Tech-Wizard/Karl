@@ -266,7 +266,8 @@ class CoderAgent(BaseSwarmAgent):
                  token_callback: Callable[[str], None] | None = None,
                  guidance_getter: Callable[[], list[str]] | None = None,
                  memory_hint: str = "",
-                 temperature_override: float | None = None) -> str:
+                 temperature_override: float | None = None,
+                 allowed_paths: set[str] | None = None) -> str:
         """
         Multi-turn tool loop. Model reads workspace, thinks, writes files.
         Returns the final written content for the primary task file, or an error string.
@@ -281,6 +282,9 @@ class CoderAgent(BaseSwarmAgent):
         temperature_override: sampling temperature for this call; falls back to
             self.temperature when None (used by Multiverse candidate generation
             to explore genuinely different solutions per candidate).
+        allowed_paths: when provided, write_file calls targeting any other
+            workspace-relative path are blocked — keeps the coder confined to
+            files the Architect actually planned to touch.
         """
         llm = ModelLoader.get_instance()
         temperature = self.temperature if temperature_override is None else temperature_override
@@ -413,14 +417,27 @@ class CoderAgent(BaseSwarmAgent):
 
                 if tool_name in _TOOL_REGISTRY:
                     executor, _ = _TOOL_REGISTRY[tool_name]
-                    try:
-                        result_text = executor(workspace_path, args)
-                    except Exception as ex:
-                        result_text = f"ERROR: tool raised exception: {ex}"
+                    blocked_path = None
+                    if tool_name == "write_file" and allowed_paths is not None:
+                        rel = args.get("path", "").strip().replace("\\", "/").lstrip("/")
+                        if rel not in allowed_paths:
+                            blocked_path = rel
 
-                    # Capture written content for return value
-                    if tool_name == "write_file":
-                        written_content = args.get("content", "")
+                    if blocked_path is not None:
+                        result_text = (
+                            f"ERROR: Drift Guard: '{blocked_path}' is not part of the architect's "
+                            f"task plan. Write blocked. Allowed file(s): "
+                            f"{', '.join(sorted(allowed_paths)) or 'none'}."
+                        )
+                    else:
+                        try:
+                            result_text = executor(workspace_path, args)
+                        except Exception as ex:
+                            result_text = f"ERROR: tool raised exception: {ex}"
+
+                        # Capture written content for return value
+                        if tool_name == "write_file":
+                            written_content = args.get("content", "")
                 else:
                     result_text = f"ERROR: unknown tool '{tool_name}'"
     

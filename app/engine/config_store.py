@@ -130,12 +130,18 @@ def get_active_draft_model() -> dict:
     data = read_json(DRAFT_MODEL_PATH, default={})
     if not isinstance(data, dict):
         data = {}
+    draft_model_path = data.get("draft_model_path") or None
     filename = data.get("filename") or None
+    if filename is None and draft_model_path:
+        filename = os.path.basename(draft_model_path)
     if filename is None:
         filename = registry_draft_model_filename(get_active_model()["filename"])
     return {
-        "enabled": bool(data.get("enabled", False)),
+        "enabled": bool(data.get("enabled", bool(draft_model_path))),
         "filename": filename,
+        "draft_model_path": draft_model_path,
+        "n_ctx": int(data.get("n_ctx", DEFAULT_N_CTX) or DEFAULT_N_CTX),
+        "n_gpu_layers": int(data.get("n_gpu_layers", -1)),
     }
 
 
@@ -276,6 +282,7 @@ UI_CONFIG_DEFAULTS: dict[str, Any] = {
     "thermal_protection_enabled": True,
     "thermal_protection_threshold": 95,
     "quantized_kv_cache": False,
+    "enable_machine_speak": True,
     # Empty string sentinel → load DEFAULT_SYSTEM_PROMPT at startup.
     # Storing the actual prompt text so changes survive restarts.
     "workbench_system_prompt": "",

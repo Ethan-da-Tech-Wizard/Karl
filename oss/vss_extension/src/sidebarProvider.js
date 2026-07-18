@@ -102,6 +102,8 @@ class KarlSidebarProvider {
         const savedEdits = context.workspaceState.get('karl.pendingEdits', []);
         this.pendingEdits = new Map(savedEdits);
         this.committedSwarmBatches = new Set();
+        this.latestSwarmRunId = context.workspaceState.get('karl.latestSwarmRunId', '');
+        this.swarmRunHistory = context.workspaceState.get('karl.swarmRunHistory', []);
         
         /** @type {(() => void) | null} */
         this._resolveWebview = null;
@@ -523,6 +525,7 @@ class KarlSidebarProvider {
                             }
                         });
                     }
+                    this.postSwarmRunHistory();
 
                     while (this.messageQueue.length > 0) {
                         const msg = this.messageQueue.shift();
@@ -587,6 +590,16 @@ class KarlSidebarProvider {
                     break;
                 case 'copy_patch_summary':
                     await this.copyPatchSummary();
+                    break;
+                case 'copy_to_clipboard':
+                    await vscode.env.clipboard.writeText(String(message.text || ''));
+                    vscode.window.showInformationMessage('Karl copied text to clipboard.');
+                    break;
+                case 'record_swarm_run':
+                    this.recordSwarmRun(message.run);
+                    break;
+                case 'rollback_swarm_run':
+                    await this.rollbackSwarmRun(message.runId);
                     break;
                 case 'accept_file':
                     await this.acceptLegacyFile(message.filepath);
@@ -727,6 +740,82 @@ class KarlSidebarProvider {
         vscode.window.showInformationMessage('Karl patch summary copied.');
     }
 
+    recordSwarmRun(run) {
+        if (!run || typeof run.runId !== 'string') return;
+        const workspacePath = currentWorkspacePath();
+        const entry = {
+            runId: run.runId,
+            timestamp: run.timestamp || new Date().toISOString(),
+            objective: run.objective || '',
+            summary: run.summary || '',
+            changedFiles: Array.isArray(run.changedFiles) ? run.changedFiles.slice(0, 20) : [],
+            workspacePath,
+        };
+        this.latestSwarmRunId = entry.runId;
+        this.swarmRunHistory = [
+            entry,
+            ...this.swarmRunHistory.filter(item => item.runId !== entry.runId),
+        ].slice(0, 5);
+        this.context.workspaceState.update('karl.latestSwarmRunId', entry.runId);
+        this.context.workspaceState.update('karl.swarmRunHistory', this.swarmRunHistory);
+        this.postSwarmRunHistory();
+    }
+
+    postSwarmRunHistory() {
+        this.postMessageToWebview({
+            command: 'swarm_run_history',
+            runs: this.swarmRunHistory,
+        });
+    }
+
+    async rollbackSwarmRun(runId) {
+        const selectedRunId = runId || this.latestSwarmRunId;
+        if (!selectedRunId) {
+            vscode.window.showWarningMessage('No Karl swarm run is available to roll back.');
+            return;
+        }
+        const run = this.swarmRunHistory.find(item => item.runId === selectedRunId) || { runId: selectedRunId };
+        const workspacePath = run.workspacePath || currentWorkspacePath();
+        if (!workspacePath) {
+            vscode.window.showWarningMessage('Open a workspace before rolling back a swarm run.');
+            return;
+        }
+        const preview = await this.previewSwarmRollback(workspacePath, selectedRunId);
+        const detail = preview.ok
+            ? `This will restore ${preview.restoreCount} file(s) and remove ${preview.removeCount} new file(s) from run ${selectedRunId}.`
+            : `Could not read rollback manifest for run ${selectedRunId}.`;
+        const choice = await vscode.window.showWarningMessage(
+            `${detail} Continue?`,
+            { modal: true },
+            'Rollback'
+        );
+        if (choice !== 'Rollback') return;
+        if (!this.sendRpc('rollback_swarm_run', {
+            workspace_path: workspacePath,
+            run_id: selectedRunId,
+        })) {
+            vscode.window.showWarningMessage('Karl bridge is offline; cannot roll back swarm run.');
+            return;
+        }
+        vscode.window.showInformationMessage(`Requested rollback for Karl swarm run ${selectedRunId}.`);
+    }
+
+    async previewSwarmRollback(workspacePath, runId) {
+        try {
+            const manifestUri = vscode.Uri.file(path.join(workspacePath, '.karl_swarm_backups', runId, 'manifest.json'));
+            const bytes = await vscode.workspace.fs.readFile(manifestUri);
+            const manifest = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+            const files = Array.isArray(manifest.files) ? manifest.files : [];
+            return {
+                ok: true,
+                restoreCount: files.filter(file => file.existed).length,
+                removeCount: files.filter(file => !file.existed).length,
+            };
+        } catch {
+            return { ok: false, restoreCount: 0, removeCount: 0 };
+        }
+    }
+
     async applyFile(editId) {
         const edit = this.pendingEdits.get(editId);
         if (!edit) {
@@ -735,6 +824,10 @@ class KarlSidebarProvider {
         }
 
         if (edit.swarmBatchId) {
+            if (this.committedSwarmBatches.has(edit.swarmBatchId)) {
+                vscode.window.showWarningMessage('This swarm batch has already been submitted to Karl.');
+                return;
+            }
             edit.status = 'approved';
             this.pendingEdits.set(editId, edit);
             this._savePendingEdits();
@@ -795,6 +888,10 @@ class KarlSidebarProvider {
             return;
         }
         if (edit && edit.swarmBatchId) {
+            if (this.committedSwarmBatches.has(edit.swarmBatchId)) {
+                vscode.window.showWarningMessage('This swarm batch has already been submitted to Karl.');
+                return;
+            }
             edit.status = 'rejected';
             this.pendingEdits.set(editId, edit);
             this._savePendingEdits();
@@ -825,6 +922,14 @@ class KarlSidebarProvider {
             return;
         }
         this.committedSwarmBatches.add(batchId);
+        for (const [editId, edit] of this.pendingEdits.entries()) {
+            if (edit.swarmBatchId !== batchId) continue;
+            const status = edit.status === 'approved' ? 'submitted' : 'excluded';
+            edit.status = status;
+            this.pendingEdits.set(editId, edit);
+            this.postMessageToWebview({ command: 'file_edit_status', editId, status });
+        }
+        this._savePendingEdits();
         this.socket.send(JSON.stringify({
             jsonrpc: '2.0',
             id: Date.now(),
@@ -1101,6 +1206,16 @@ class KarlSidebarProvider {
                     <button id="askWorkspaceBtn">Ask Workspace</button>
                 </div>
                 <div class="context-meter" id="contextMeter">Context package: none queued.</div>
+                <div class="subpanel" id="swarmRagPane">
+                    <div class="section-head mini-head"><div><div class="eyebrow">Knowledge</div><h2>RAG Search</h2></div></div>
+                    <label>Search Term <input id="swarmRagQuery" type="text" placeholder="Search indexed project knowledge..."></label>
+                    <div class="settings-grid">
+                        <label>Top K <input id="swarmRagTopK" type="number" min="1" max="20" step="1" value="5"></label>
+                        <label>Threshold <input id="swarmRagThreshold" type="number" min="0" max="1" step="0.05" value="0"></label>
+                    </div>
+                    <button id="swarmRagSearchBtn">Search Knowledge Base</button>
+                    <div id="swarmRagResults" class="result-list"></div>
+                </div>
                 <label>Workflow
                     <select id="taskMode">
                         <option value="Custom Task">Custom Task</option>
@@ -1115,6 +1230,11 @@ class KarlSidebarProvider {
                 <label>Objective <textarea id="objective" rows="5" placeholder="Describe what Karl should do..."></textarea></label>
                 <label>Workspace Path <input id="workspace" type="text" placeholder="/path/to/project"></label>
                 <label>Verification Command <input id="testCmd" type="text" value="python run_tests.py"></label>
+                <div class="settings-grid">
+                    <label>Timeout (seconds) <input id="swarmTimeout" type="number" min="30" step="30" value="600"></label>
+                    <label>Max Loops <input id="swarmMaxLoops" type="number" min="1" max="20" step="1" value="5"></label>
+                    <label class="check"><input id="swarmAutoSteer" type="checkbox" checked> Auto-Steering (Drift Correction)</label>
+                </div>
                 <div class="action-row">
                     <button id="runBtn" class="primary">Deploy Swarm</button>
                     <button id="stopBtn" class="danger">Stop</button>
@@ -1132,9 +1252,11 @@ class KarlSidebarProvider {
                     <div class="action-row compact-actions">
                         <button id="previewAllBtn">Preview All</button>
                         <button id="rejectAllBtn" class="danger">Reject All</button>
+                        <button id="rollbackSwarmRunBtn" class="danger">Rollback Swarm Run</button>
                         <button id="copySummaryBtn">Copy Summary</button>
                     </div>
                 </div>
+                <label>Swarm Run <select id="swarmRunSelect"><option value="">No swarm runs yet</option></select></label>
                 <label>Filter <select id="changeFilter"><option value="">All</option><option value="proposed">Proposed</option><option value="previewed">Previewed</option><option value="applied">Applied</option><option value="rolled_back">Rolled Back</option></select></label>
                 <div id="changeQueue" class="queue empty">No pending Karl edits.</div>
             </section>

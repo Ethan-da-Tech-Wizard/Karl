@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import inspect
 import threading
 import multiprocessing
 import time
@@ -131,6 +132,8 @@ class ModelLoader:
     _circuit_breaker = ModelCircuitBreaker()
     _draft_model_path: str | None = None
     _draft_instance = None
+    _draft_n_ctx: int | None = None
+    _draft_n_gpu_layers: int | None = None
     _remote_instance = None
     _remote_fallback_reason: str | None = None
     _MEMORY_SAFETY_MARGIN = 0.92
@@ -784,8 +787,17 @@ class ModelLoader:
                     adapter_name = active["adapter"]
             if draft_model_path is None:
                 draft_cfg = config_store.get_active_draft_model()
-                if draft_cfg.get("enabled") and draft_cfg.get("filename"):
-                    draft_model_path = os.path.join("data", "models", draft_cfg["filename"])
+                draft_n_ctx = int(draft_cfg.get("n_ctx", cls._n_ctx) or cls._n_ctx)
+                draft_n_gpu_layers = int(draft_cfg.get("n_gpu_layers", -1))
+                if draft_cfg.get("enabled"):
+                    configured_path = draft_cfg.get("draft_model_path")
+                    if configured_path:
+                        draft_model_path = configured_path
+                    elif draft_cfg.get("filename"):
+                        draft_model_path = os.path.join("data", "models", draft_cfg["filename"])
+            else:
+                draft_n_ctx = cls._n_ctx
+                draft_n_gpu_layers = -1
 
             # If the idle watcher offloaded the adapter, clear _active_adapter so that
             # the needs_reload check below fires and the adapter is lazily reloaded.
@@ -801,7 +813,15 @@ class ModelLoader:
             current_adapter = getattr(cls, "_active_adapter", None)
 
             # change speculative draft model only when requested draft path differs
-            needs_draft_reload = (draft_model_path != getattr(cls, '_draft_model_path', None))
+            needs_draft_reload = (
+                draft_model_path != getattr(cls, '_draft_model_path', None) or
+                (
+                    draft_model_path is not None and (
+                        draft_n_ctx != getattr(cls, "_draft_n_ctx", None) or
+                        draft_n_gpu_layers != getattr(cls, "_draft_n_gpu_layers", None)
+                    )
+                )
+            )
 
             needs_reload = (
                 cls._instance is None or
@@ -809,7 +829,7 @@ class ModelLoader:
                 (adapter_name != current_adapter)
             )
 
-            if needs_reload:
+            if needs_reload or needs_draft_reload:
                 cls._circuit_breaker.before_call()
 
                 if cls._instance_locked or cls._active_generation_count > 0:
@@ -1095,8 +1115,8 @@ class ModelLoader:
                             
                             draft_kwargs = dict(
                                 model_path=draft_model_path,
-                                n_ctx=cls._n_ctx,
-                                n_gpu_layers=-1,
+                                n_ctx=draft_n_ctx,
+                                n_gpu_layers=draft_n_gpu_layers,
                                 logits_all=False,
                                 n_threads=threads,
                                 verbose=False,
@@ -1164,6 +1184,8 @@ class ModelLoader:
                                 logger.warning(f"Failed to auto-disable speculative decoding in config: {config_err}")
 
                     cls._draft_model_path = draft_model_path
+                    cls._draft_n_ctx = draft_n_ctx
+                    cls._draft_n_gpu_layers = draft_n_gpu_layers
                 cls._circuit_breaker.record_success()
             cls._start_idle_watcher()
             return cls._instance
@@ -1203,6 +1225,8 @@ class ModelLoader:
                 cls._draft_instance = None
 
             cls._draft_model_path = None
+            cls._draft_n_ctx = None
+            cls._draft_n_gpu_layers = None
             cls._active_adapter = None
             cls._model_path = None
 
@@ -1401,6 +1425,31 @@ class ModelLoader:
         """True when a draft model is attached and speculative decoding is active."""
         with cls._lock:
             return cls._draft_instance is not None
+
+    @classmethod
+    def speculative_generation_kwargs(cls) -> dict:
+        """Return per-call speculative kwargs when supported by llama-cpp-python.
+
+        Karl primarily wires speculative decoding through the Llama constructor
+        because that is the API exposed by the local llama-cpp-python build.
+        Some builds may expose a per-call ``draft_model`` kwarg; this helper lets
+        generation loops pass it without breaking builds that reject it.
+        """
+        with cls._lock:
+            draft = cls._draft_instance
+            instance = cls._instance
+        if draft is None or instance is None:
+            return {}
+        try:
+            params = inspect.signature(instance.__call__).parameters
+        except (TypeError, ValueError):
+            return {}
+        if "draft_model" in params or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in params.values()
+        ):
+            return {"draft_model": draft}
+        return {}
 
     @classmethod
     def get_quantization(cls) -> str | None:

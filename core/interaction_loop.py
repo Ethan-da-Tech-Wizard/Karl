@@ -5,7 +5,9 @@
 import logging
 import os
 import re
+from app.engine import config_store
 from app.engine.model_loader import ModelLoader
+from app.utils.compactor import compact_trace_for_ai
 from core.default_prompts import (
     DEFAULT_SYSTEM_PROMPT,
     GREETING_SYSTEM_PROMPT,
@@ -18,8 +20,19 @@ from core.default_prompts import (
 logger = logging.getLogger("karl.codex_injector")
 
 
+ACTIVE_HYPERPARAMS: dict = {}
+
 _ADAPTER_SYSTEM_PROMPT = "Always respond in English."
 _BASE_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
+_MACHINE_SPEAK_RULE = (
+    "[COMPRESSION RULE] The message history has been serialized into token-dense "
+    "'Machine Speak' to save context space.\n"
+    "You must respond in kind using the exact same compressed format:\n"
+    "1. Shorten all response properties according to the Key Map (e.g., use 'r' "
+    "for response, 'tk' for thoughts).\n"
+    "2. Express all code modifications as unified diff blocks ($diff) rather "
+    "than writing full files."
+)
 
 _CODEX_KEYWORD_MAP = {
     "python": "Python.html",
@@ -158,6 +171,38 @@ def _apply_vocab_leak_bypass(text: str) -> str:
     return text
 
 
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _machine_speak_enabled() -> bool:
+    if "machine_speak_enabled" in ACTIVE_HYPERPARAMS:
+        return _truthy(ACTIVE_HYPERPARAMS.get("machine_speak_enabled"))
+    if "enable_machine_speak" in ACTIVE_HYPERPARAMS:
+        return _truthy(ACTIVE_HYPERPARAMS.get("enable_machine_speak"))
+    try:
+        return _truthy(config_store.get_ui_config().get("enable_machine_speak", True))
+    except Exception:
+        return True
+
+
+def _machine_speak_history(system_prompt: str, chat_history: list[dict]) -> list[dict]:
+    compressed: list[dict] = []
+    for index, msg in enumerate(chat_history):
+        role = msg.get("role", "user")
+        trace_turn = {
+            "compiled_prompt": msg.get("content", "") if role == "user" else "",
+            "response": msg.get("content", "") if role == "assistant" else "",
+            "system_prompt": system_prompt if index == 0 else "",
+        }
+        compressed.append({**msg, "content": compact_trace_for_ai(trace_turn)})
+    return compressed
+
+
 def build_prompt(system_prompt, chat_history):
     """
     Builds the native prompt for distilled models based on loaded architecture.
@@ -239,6 +284,13 @@ def build_prompt(system_prompt, chat_history):
     if _RECENCY_INSTRUCTION not in effective_system:
         effective_system = (effective_system + "\n" if effective_system else "") + _RECENCY_INSTRUCTION
 
+    machine_speak_enabled = _machine_speak_enabled()
+    render_history = chat_history
+    if machine_speak_enabled:
+        if _MACHINE_SPEAK_RULE not in effective_system:
+            effective_system = (effective_system + "\n\n" if effective_system else "") + _MACHINE_SPEAK_RULE
+        render_history = _machine_speak_history(effective_system, chat_history)
+
     # ── Vocab leak bypass: sanitise the system prompt scaffold ───────────────
     # Strip any token texts that were detected as <unk> collisions by the
     # Vocab Leak Inspector at load time.  User message content is not altered.
@@ -264,7 +316,7 @@ def build_prompt(system_prompt, chat_history):
         prompt = ""
         if effective_system:
             prompt += f"<|start_header_id|>system<|end_header_id|>\n\n{effective_system}<|eot_id|>"
-        for msg in chat_history:
+        for msg in render_history:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if role == "user":
@@ -281,7 +333,7 @@ def build_prompt(system_prompt, chat_history):
         prompt = ""
         if effective_system:
             prompt += f"<|im_start|>system\n{effective_system}<|im_end|>\n"
-        for msg in chat_history:
+        for msg in render_history:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if role == "user":
@@ -298,7 +350,7 @@ def build_prompt(system_prompt, chat_history):
         prompt = ""
         if effective_system:
             prompt += f"{effective_system}"
-        for msg in chat_history:
+        for msg in render_history:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if role == "user":

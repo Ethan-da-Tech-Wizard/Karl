@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-from app.engine.swarm_orchestrator import SwarmOrchestratorThread
+from app.engine.swarm_orchestrator import SwarmOrchestratorThread, rollback_swarm_run
 
 
 class TestSwarmOrchestrator(unittest.TestCase):
@@ -23,7 +23,16 @@ class TestSwarmOrchestrator(unittest.TestCase):
         self.sandbox_dir = tempfile.TemporaryDirectory()
         self.workspace_path = self.sandbox_dir.name
 
-        # Create a dummy python test script in the workspace that asserts add(2, 3) == 5
+        # Patch config_store to disable machine speak in tests to avoid prompt compaction
+        self.config_patcher = patch("app.engine.config_store.get_ui_config")
+        self.mock_get_ui_config = self.config_patcher.start()
+        self.mock_get_ui_config.return_value = {
+            "enable_machine_speak": False,
+            "theme_preset": "Karl Obsidian Core",
+            "layout_preset": "Focused Workbench",
+        }
+
+        # Create dummy python test script in the workspace that asserts add(2, 3) == 5
         self.test_script_path = os.path.join(self.workspace_path, "run_tests.py")
         test_script_content = (
             "import sys\n"
@@ -41,7 +50,98 @@ class TestSwarmOrchestrator(unittest.TestCase):
             f.write(test_script_content)
 
     def tearDown(self):
+        self.config_patcher.stop()
         self.sandbox_dir.cleanup()
+
+    def test_generated_smoke_suite_passes_without_test_command(self):
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create a helper module.",
+            test_command=""
+        )
+
+        passed, trace = orchestrator._verify_proposals_in_temp_workspace(
+            [{"filepath": "helper.py", "content": "def ok():\n    return True\n"}],
+            layer_index=1,
+        )
+
+        self.assertTrue(passed)
+        self.assertIn("GENERATED SMOKE TEST PASSED", trace)
+        self.assertFalse(os.path.exists(os.path.join(self.workspace_path, "helper.py")))
+
+    def test_generated_smoke_suite_fails_on_python_syntax_error(self):
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create a helper module.",
+            test_command=""
+        )
+
+        passed, trace = orchestrator._verify_proposals_in_temp_workspace(
+            [{"filepath": "helper.py", "content": "def broken(:\n    pass\n"}],
+            layer_index=1,
+        )
+
+        self.assertFalse(passed)
+        self.assertIn("GENERATED SMOKE TEST FAILED", trace)
+        self.assertIn("python compile failed", trace)
+
+    def test_backup_workspace_file_preserves_existing_content(self):
+        source_path = os.path.join(self.workspace_path, "existing.py")
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write("VALUE = 'before'\n")
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Update an existing file.",
+            test_command=""
+        )
+
+        backup_path = orchestrator._backup_workspace_file("existing.py", orchestrator._resolve_task_path("existing.py")[1])
+
+        self.assertTrue(os.path.exists(backup_path))
+        with open(backup_path, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "VALUE = 'before'\n")
+        self.assertIn(".karl_swarm_backups", backup_path)
+
+    def test_rollback_swarm_run_restores_existing_file(self):
+        source_path = os.path.join(self.workspace_path, "existing.py")
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write("VALUE = 'before'\n")
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Update an existing file.",
+            test_command=""
+        )
+        backup_path = orchestrator._backup_workspace_file("existing.py", orchestrator._resolve_task_path("existing.py")[1])
+        orchestrator._record_backup_manifest("existing.py", backup_path, True)
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write("VALUE = 'after'\n")
+
+        result = rollback_swarm_run(self.workspace_path, orchestrator._run_id)
+
+        self.assertTrue(result["ok"])
+        self.assertIn("existing.py", result["restored"])
+        with open(source_path, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), "VALUE = 'before'\n")
+
+    def test_rollback_swarm_run_removes_new_file(self):
+        new_path = os.path.join(self.workspace_path, "new_file.py")
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create a new file.",
+            test_command=""
+        )
+        backup_path = orchestrator._backup_workspace_file("new_file.py", orchestrator._resolve_task_path("new_file.py")[1])
+        orchestrator._record_backup_manifest("new_file.py", backup_path, False)
+        with open(new_path, "w", encoding="utf-8") as f:
+            f.write("VALUE = 'new'\n")
+
+        result = rollback_swarm_run(self.workspace_path, orchestrator._run_id)
+
+        self.assertTrue(result["ok"])
+        self.assertIn("new_file.py", result["removed"])
+        self.assertFalse(os.path.exists(new_path))
 
     @patch("app.engine.model_loader.ModelLoader.get_instance")
     def test_swarm_self_correction_loop(self, mock_get_llm):
@@ -333,6 +433,250 @@ class TestSwarmOrchestrator(unittest.TestCase):
         matching = [p for p in seen_prompts if "Human guidance (mid-task correction)" in p]
         self.assertTrue(matching, "expected the injected guidance to appear in a later coder prompt")
         self.assertIn("docstring", matching[0])
+
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_drift_detector_injects_guidance_after_repeated_failure_trace(self, mock_get_llm):
+        """The same syntax error twice in a row for one file should trip the
+        drift detector and auto-inject corrective guidance."""
+        def stateful_mock_llm(prompt, **kwargs):
+            if "Architect" in prompt or "tasks" in prompt:
+                plan = {
+                    "explanation": "x",
+                    "tasks": [{"filepath": "math_utils.py", "instructions": "Define an add(a, b) function."}],
+                }
+                return {"choices": [{"text": json.dumps(plan)}]}
+            # Always the same broken syntax, so the resulting trace repeats verbatim.
+            return {"choices": [{"text": "def add(a, b\n    return a + b\n"}]}
+
+        mock_get_llm.return_value = MagicMock(side_effect=stateful_mock_llm)
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create an add function",
+            test_command="echo ok",
+            hyperparams={"max_loops": 3, "timeout_seconds": 60},
+        )
+        orchestrator.edits_proposed.connect(
+            lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals])
+        )
+        drift_events = []
+        orchestrator.drift_detected.connect(lambda fp, msg: drift_events.append((fp, msg)))
+
+        orchestrator.run()
+
+        self.assertTrue(drift_events, "expected a drift alert after repeated identical syntax errors")
+        self.assertEqual(drift_events[0][0], "math_utils.py")
+        self.assertIn("Drift detected", drift_events[0][1])
+
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_max_loops_hyperparam_limits_layer_retries(self, mock_get_llm):
+        """max_loops caps how many times a failing layer is retried."""
+        def stateful_mock_llm(prompt, **kwargs):
+            if "Architect" in prompt or "tasks" in prompt:
+                plan = {
+                    "explanation": "x",
+                    "tasks": [{"filepath": "math_utils.py", "instructions": "Define an add(a, b) function."}],
+                }
+                return {"choices": [{"text": json.dumps(plan)}]}
+            # Always buggy (subtraction instead of addition), so verification keeps failing.
+            return {"choices": [{"text": "def add(a, b):\n    return a - b\n"}]}
+
+        mock_get_llm.return_value = MagicMock(side_effect=stateful_mock_llm)
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create an add function",
+            test_command=f"{sys.executable} run_tests.py",
+            hyperparams={"max_loops": 1},
+        )
+        orchestrator.edits_proposed.connect(
+            lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals])
+        )
+        test_results = []
+        orchestrator.test_result.connect(lambda passed, trace: test_results.append(passed))
+        finished = {}
+        orchestrator.finished_swarm.connect(lambda success, summary: finished.update({"success": success}))
+
+        orchestrator.run()
+
+        self.assertEqual(orchestrator.max_loops, 1)
+        self.assertEqual(len(test_results), 1)  # no retry beyond the single allowed loop
+        self.assertFalse(finished["success"])
+
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_execution_timeout_stops_gracefully(self, mock_get_llm):
+        """A run whose deadline has already passed should stop before doing
+        any layer work instead of hanging or crashing."""
+        def stateful_mock_llm(prompt, **kwargs):
+            plan = {
+                "explanation": "x",
+                "tasks": [{"filepath": "math_utils.py", "instructions": "Define an add(a, b) function."}],
+            }
+            return {"choices": [{"text": json.dumps(plan)}]}
+
+        mock_get_llm.return_value = MagicMock(side_effect=stateful_mock_llm)
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create an add function",
+            test_command="echo ok",
+            hyperparams={"timeout_seconds": 30},
+        )
+        self.assertEqual(orchestrator.timeout_seconds, 30)
+
+        finished = {}
+        orchestrator.finished_swarm.connect(
+            lambda success, summary: finished.update({"success": success, "summary": summary})
+        )
+        # Simulate the deadline already having elapsed, without depending on
+        # real wall-clock time in the test.
+        orchestrator._timed_out = lambda: True
+
+        orchestrator.run()
+
+        self.assertEqual(finished.get("success"), False)
+        self.assertIn("timed out", finished.get("summary", "").lower())
+
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_coder_write_blocked_outside_task_plan(self, mock_get_llm):
+        """write_file calls targeting a path outside allowed_paths must be
+        blocked rather than silently written to the real workspace."""
+        from app.engine.swarm_agents import CoderAgent
+
+        def stateful_mock_llm(prompt, **kwargs):
+            return {"choices": [{"text": (
+                "<tool_call name='write_file'>\n"
+                "  path: secret.py\n"
+                "  content: pwned = True\n"
+                "</tool_call>"
+                "<tool_call name='done'></tool_call>"
+            )}]}
+
+        mock_get_llm.return_value = MagicMock(side_effect=stateful_mock_llm)
+
+        coder = CoderAgent()
+        task = {"filepath": "math_utils.py", "instructions": "Define add(a, b)."}
+        coder.generate(
+            task, {}, workspace_path=self.workspace_path,
+            allowed_paths={"math_utils.py"},
+        )
+
+        self.assertFalse(os.path.exists(os.path.join(self.workspace_path, "secret.py")))
+
+    def test_step_unblocks_without_disabling_pause_mode(self):
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path, objective="x", test_command="",
+            hyperparams={"pause_on_step": True},
+        )
+        orchestrator.pause_event.clear()
+        self.assertTrue(orchestrator.pause_on_step)
+
+        orchestrator.step()
+
+        self.assertTrue(orchestrator.pause_event.is_set())
+        self.assertTrue(orchestrator.pause_on_step)  # step() re-arms for the next boundary
+
+    def test_resume_disables_pause_mode(self):
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path, objective="x", test_command="",
+            hyperparams={"pause_on_step": True},
+        )
+        orchestrator.pause_event.clear()
+
+        orchestrator.resume()
+
+        self.assertTrue(orchestrator.pause_event.is_set())
+        self.assertFalse(orchestrator.pause_on_step)
+
+    def test_record_token_telemetry_emits_with_throttle(self):
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path, objective="x", test_command="",
+        )
+        events = []
+        orchestrator.telemetry_update.connect(lambda payload: events.append(payload))
+
+        for _ in range(7):
+            orchestrator._record_token_telemetry()
+
+        # Emits on the 1st call and every 5th call thereafter.
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["cumulative_tokens"], 1)
+        self.assertEqual(events[1]["cumulative_tokens"], 5)
+        self.assertIn("tokens_per_second", events[0])
+        self.assertIn("elapsed_seconds", events[0])
+
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_pause_on_step_emits_and_resume_unblocks(self, mock_get_llm):
+        def stateful_mock_llm(prompt, **kwargs):
+            if "Architect" in prompt or "tasks" in prompt:
+                plan = {
+                    "explanation": "x",
+                    "tasks": [{"filepath": "math_utils.py", "instructions": "Define an add(a, b) function."}],
+                }
+                return {"choices": [{"text": json.dumps(plan)}]}
+            return {"choices": [{"text": "def add(a, b):\n    return a + b\n"}]}
+
+        mock_get_llm.return_value = MagicMock(side_effect=stateful_mock_llm)
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create an add function",
+            test_command="echo ok",
+            hyperparams={"pause_on_step": True},
+        )
+        orchestrator.edits_proposed.connect(
+            lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals])
+        )
+        paused_events = []
+
+        def _on_paused(info):
+            paused_events.append(info)
+            orchestrator.resume()
+
+        orchestrator.swarm_paused.connect(_on_paused)
+        orchestrator.run()
+
+        self.assertTrue(paused_events)
+        self.assertEqual(paused_events[0]["filepath"], "math_utils.py")
+        self.assertEqual(paused_events[0]["layer_index"], 1)
+        self.assertFalse(orchestrator.pause_on_step)  # resume() disabled further pausing
+
+    @patch("app.engine.model_loader.ModelLoader.get_instance")
+    def test_override_active_task_replaces_instructions(self, mock_get_llm):
+        seen_prompts = []
+
+        def stateful_mock_llm(prompt, **kwargs):
+            seen_prompts.append(prompt)
+            if "Architect" in prompt or "tasks" in prompt:
+                plan = {
+                    "explanation": "x",
+                    "tasks": [{"filepath": "math_utils.py", "instructions": "Define an add(a, b) function."}],
+                }
+                return {"choices": [{"text": json.dumps(plan)}]}
+            return {"choices": [{"text": "def sub(a, b):\n    return a - b\n"}]}
+
+        mock_get_llm.return_value = MagicMock(side_effect=stateful_mock_llm)
+
+        orchestrator = SwarmOrchestratorThread(
+            workspace_path=self.workspace_path,
+            objective="Create an add function",
+            test_command="echo ok",
+            hyperparams={"pause_on_step": True},
+        )
+        orchestrator.edits_proposed.connect(
+            lambda proposals: orchestrator.commit_selected_edits([p["filepath"] for p in proposals])
+        )
+
+        def _on_paused(info):
+            orchestrator.override_active_task(info["filepath"], "Define a subtract(a, b) function instead.")
+            orchestrator.resume()
+
+        orchestrator.swarm_paused.connect(_on_paused)
+        orchestrator.run()
+
+        coder_prompts = [p for p in seen_prompts if "Task: Edit" in p]
+        self.assertTrue(coder_prompts)
+        self.assertIn("Define a subtract(a, b) function instead.", coder_prompts[0])
 
 
 if __name__ == "__main__":

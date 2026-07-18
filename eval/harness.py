@@ -57,6 +57,8 @@ def _run_model_worker(
             model_path = os.path.join("data", "models", model_name)
         llm = ModelLoader.get_instance(model_path=model_path, adapter_name=adapter_name)
         history = [{"role": "user", "content": user_prompt}]
+        import core.interaction_loop
+        core.interaction_loop.ACTIVE_HYPERPARAMS = hyperparams
         prompt = build_prompt(system_prompt, history)
 
         start = time.time()
@@ -219,6 +221,8 @@ class EvalHarness:
             model_path = os.path.join("data", "models", model_name)
         llm = ModelLoader.get_instance(model_path=model_path, adapter_name=adapter_name)
         history = [{"role": "user", "content": user_prompt}]
+        import core.interaction_loop
+        core.interaction_loop.ACTIVE_HYPERPARAMS = hyperparams
         prompt = build_prompt(system_prompt, history)
 
         start = time.time()
@@ -320,15 +324,23 @@ class EvalHarness:
         progress_cb=None,
         model_name: Optional[str] = None,
         adapter_name: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
     ) -> EvalReport:
         """
         Run the full eval loop.
 
         Args:
             dataset_path:      Path to JSONL eval dataset.
-            workflow_name:     Workflow key from core/workflows.py.
-            template_override: Override the workflow's default template.
+            workflow_name:     Workflow key from core/workflows.py. Still required
+                                even when system_prompt_override is set — it supplies
+                                the grader, RAG top_k, and other per-case config.
+            template_override: Override the workflow's default template. Ignored
+                                when system_prompt_override is set.
             hyperparams:       Generation params. Defaults to low-temp for eval stability.
+            system_prompt_override: Use this exact system prompt string for every
+                                case instead of building one from a named template —
+                                lets callers (e.g. PromptOptimizer) score an arbitrary,
+                                not-yet-registered prompt candidate.
 
         Returns:
             EvalReport with per-case results and aggregate metrics.
@@ -372,7 +384,7 @@ class EvalHarness:
             ) from e
 
         workflow_cfg = get_workflow(workflow_name)
-        template_name = template_override or workflow_cfg["template"]
+        template_name = "(system_prompt_override)" if system_prompt_override is not None else (template_override or workflow_cfg["template"])
         hp = hyperparams or {"max_tokens": 512, "temperature": 0.2, "top_p": 0.95}
 
         cases = self._load_dataset(dataset_path)
@@ -389,7 +401,11 @@ class EvalHarness:
             print(f"  [{i}/{len(cases)}] {case_id}...", end="", flush=True)
 
             context_chunks = self._resolve_context(case, workflow_cfg)
-            system_prompt = self._build_system_prompt(template_name, context_chunks, case)
+            system_prompt = (
+                system_prompt_override
+                if system_prompt_override is not None
+                else self._build_system_prompt(template_name, context_chunks, case)
+            )
             user_prompt = case.get("prompt", "")
 
             # ── Thread Deadlock & Timeout Analysis ───────────────────────────

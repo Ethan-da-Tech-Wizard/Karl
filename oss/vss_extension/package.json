@@ -3,6 +3,7 @@
   "displayName": "Karl",
   "description": "Local Multi-Agent Software Engineering swarm for VS Code, powered by Karl.",
   "version": "1.4.0",
+  "icon": "media/icon.png",
   "publisher": "ethan-da-tech-wizard",
   "license": "MIT",
   "repository": {
@@ -281,7 +282,7 @@
         {
           "id": "karl-swarm",
           "title": "Karl",
-          "icon": "media/icon.svg"
+          "icon": "media/icon.png"
         }
       ]
     },

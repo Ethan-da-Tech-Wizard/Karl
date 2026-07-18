@@ -279,6 +279,9 @@ function handleSocketMessage(data) {
     } else if (method === 'file_edited') {
         log(`[Edit] Karl wrote approved change for ${params.filepath}`);
         addTimeline('Write', `Applied approved edit: ${params.filepath}`);
+        if (typeof markPendingEditByPath === 'function') {
+            markPendingEditByPath(params.filepath, 'written');
+        }
 
     } else if (method === 'test_result') {
         const status = params.passed ? 'passed' : 'failed';
@@ -297,6 +300,22 @@ function handleSocketMessage(data) {
         finishActiveTask(params.success ? 'completed' : 'failed');
         addTimeline('Finished', params.success ? 'Swarm finished successfully.' : 'Swarm finished with issues.');
         log(`[Swarm] ${params.success ? 'SUCCESS' : 'FAILURE'}: ${params.summary || ''}`);
+        if (params.run_id) {
+            const changedFiles = String(params.summary || '').replace(/^Modified files:\s*/, '').split(',')
+                .map(item => item.trim())
+                .filter(item => item && item !== 'No files modified successfully.');
+            vscode.postMessage({
+                command: 'record_swarm_run',
+                run: {
+                    runId: params.run_id,
+                    timestamp: new Date().toISOString(),
+                    objective: $('objective') ? $('objective').value.trim() : '',
+                    summary: params.summary || '',
+                    changedFiles
+                }
+            });
+            log(`[Swarm] Run ID: ${params.run_id}`);
+        }
 
     } else if (method === 'kb_ingest_progress') {
         $('kbIngestState').innerText = `${params.current}/${params.total}`;
@@ -378,6 +397,14 @@ function handleRpcResult(id, result) {
         log(`[KB] Ingestion started for ${result.file_count || 0} file(s).`);
     } else if (id === 52) {
         renderKbSearch(result);
+    } else if (id === 53) {
+        renderSwarmRagResults(result);
+    } else if (typeof result.ok === 'boolean' && Array.isArray(result.restored) && Array.isArray(result.removed)) {
+        const status = result.ok ? 'complete' : 'failed';
+        addTimeline('Rollback', `Swarm rollback ${status}.`);
+        log(`[Rollback] ${result.message || status}`);
+        if (result.restored.length) log(`[Rollback] Restored: ${result.restored.join(', ')}`);
+        if (result.removed.length) log(`[Rollback] Removed: ${result.removed.join(', ')}`);
     } else if (id === 20) {
         renderCodexTopics(result.topics || []);
     } else if (id === 21) {
