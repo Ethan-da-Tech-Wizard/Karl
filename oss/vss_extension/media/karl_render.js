@@ -157,6 +157,18 @@ function renderDownloadRegistry(models) {
     }).join('');
 }
 
+function renderAdapters(adapters, activeAdapter) {
+    if (!Array.isArray(adapters)) adapters = [];
+    const select = $('adapterSelect');
+    if (!select) return;
+    
+    select.innerHTML = '<option value="">None (Baseline Model)</option>' + 
+        adapters.map(adapter => {
+            const selected = adapter === activeAdapter ? 'selected' : '';
+            return `<option value="${escapeHtml(adapter)}" ${selected}>${escapeHtml(adapter)}</option>`;
+        }).join('');
+}
+
 // ── theme catalog ──────────────────────────────────────────────────────────────
 
 function renderThemeCatalog() {
@@ -484,10 +496,15 @@ function renderRuntimeStatus(status, latency = 0) {
     const desc = `${model.name || 'none'}${model.loaded ? ' loaded' : ''}`;
     $('runtimeModel').innerText = desc;
     $('cockpitModel').innerText = desc;
+    activeModelFilename = model.name || '';
 
     const stateStr = `${runtime.state || 'idle'} · ${clients} client${clients === 1 ? '' : 's'}`;
     $('runtimeState').innerText = stateStr;
-    $('runtimeAdapter').innerText = adapter.name || 'none';
+    const adapterName = adapter.name || '';
+    $('runtimeAdapter').innerText = adapterName || 'none';
+    if ($('adapterSelect')) {
+        $('adapterSelect').value = adapterName;
+    }
 
     const sysStr = `${system.ram_mb ?? '--'} MB · ${model.n_ctx || '--'} ctx`;
     $('runtimeSystem').innerText = sysStr;

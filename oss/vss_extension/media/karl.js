@@ -35,9 +35,15 @@ window.addEventListener('unload', () => {
 window.addEventListener('message', event => {
     const message = event.data || {};
 
+    if (message.command === 'update_token') {
+        if (boot) boot.token = message.token || '';
+        return;
+    }
+
     if (message.command === 'inject_chat') {
         const text = message.text || '';
         $('chatInput').value = text;
+        currentTargetFilepath = message.filepath || '';
         switchWorkspace('chat');
         if (message.autoSend && text.trim()) {
             sendChatMessage();
@@ -181,6 +187,18 @@ function bindEvents() {
     });
     $('tokenizeLabBtn').addEventListener('click', () => requiresBridgeSupport('Prompt Lab tokenizer visualization', 'tokenize_text'));
     $('loadModelsBtn').addEventListener('click', loadModels);
+    $('loadAdaptersBtn').addEventListener('click', loadAdapters);
+    $('activateAdapterBtn').addEventListener('click', () => {
+        if (!activeModelFilename) {
+            vscode.postMessage({ command: 'show_error', text: 'No active baseline model is loaded yet. Select a GGUF model first.' });
+            return;
+        }
+        const adapter = $('adapterSelect').value;
+        rpc(32, 'set_active_model', { 
+            filename: activeModelFilename, 
+            adapter: adapter || null 
+        });
+    });
     $('branchLatestBtn').addEventListener('click', branchFromLatest);
     $('newBranchBtn').addEventListener('click', createConversationBranch);
     
@@ -441,6 +459,7 @@ function startWorkflow(workflowId, data) {
     $('taskMode').value = workflowId;
     $('workspace').value = data.workspace_path || '';
     $('objective').value = data.objective || '';
+    currentTargetFilepath = data.filepath || '';
     
     renderContextMeta(data.context_meta);
     rememberTask(workflowId, data.mode || 'Task', data.objective || '', data.filepath || '');
@@ -468,6 +487,16 @@ function startWorkflow(workflowId, data) {
         $('visionImagePreview').innerHTML = `<span style="color:var(--karl-accent-2); font-weight:700;">Image: ${escapeHtml(data.filepath.split('/').pop())}</span>`;
         $('visionResult').style.display = 'block';
         $('visionResultText').innerText = 'Karl is inspecting image file...';
+    }
+
+    if (tab === 'chat') {
+        const chatInput = $('chatInput');
+        if (chatInput && data.prompt) {
+            chatInput.value = data.prompt;
+            setTimeout(() => {
+                sendChatMessage();
+            }, 100);
+        }
     }
 
     if (tab === 'swarm') {
@@ -672,6 +701,7 @@ function sendChatMessage() {
         vscode.postMessage({ command: 'show_error', text: 'Karl is disconnected.' });
         return;
     }
+    currentTargetFilepath = currentTargetFilepath || $('cockpitFile').title || '';
     appendMessageBubble('user', text);
     appendMessageBubble('assistant', '');
     currentConversationInput = text;
@@ -746,11 +776,15 @@ function handleChatFinished() {
 
     // Check if this was a refactor request — extract code block and notify host
     const lastInput = $('chatInput').dataset.lastSent || '';
-    if (lastInput.startsWith('Refactor the following')) {
+    if (lastInput.toLowerCase().startsWith('refactor')) {
         const fullResponse = _lastAssistantContent || '';
         const codeMatch = fullResponse.match(/```[\w]*\n([\s\S]*?)```/);
         if (codeMatch) {
-            vscode.postMessage({ command: 'refactor_result', code: codeMatch[1] });
+            vscode.postMessage({
+                command: 'refactor_result',
+                code: codeMatch[1],
+                filepath: currentTargetFilepath
+            });
         }
     }
 }

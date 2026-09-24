@@ -36,6 +36,8 @@ let nextReconnectSec = 5;
 let lastKbSnapshot = {};
 let lastKbResults = [];
 let swarmAgentProfiles = {};
+let currentTargetFilepath = '';
+let activeModelFilename = '';
 
 const $ = (id) => document.getElementById(id);
 
@@ -174,6 +176,7 @@ function switchWorkspace(wsId) {
 
     if (wsId === 'settings') {
         loadModels();
+        loadAdapters();
     }
     if (wsId === 'knowledge') {
         loadKbSources();

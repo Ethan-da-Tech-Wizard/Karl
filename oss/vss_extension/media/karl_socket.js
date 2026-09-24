@@ -153,10 +153,12 @@ function _directConnect() {
     const port = Number($('bridgePort').value) || boot.port || 8080;
     $('cockpitPort').innerText = port;
     setConnectionState('connecting', 'Connecting');
-    log(`[Bridge] Connecting to ws://localhost:${port}`);
+    const token = (boot && boot.token) ? boot.token : '';
+    const wsUrl = `ws://localhost:${port}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    log(`[Bridge] Connecting to ${wsUrl.replace(token, '***')}`);
 
     try {
-        socket = new WebSocket(`ws://localhost:${port}`);
+        socket = new WebSocket(wsUrl);
     } catch (err) {
         lastBridgeError = err.message;
         handleDisconnect(true);
@@ -174,6 +176,7 @@ function _directConnect() {
         }
         requestRuntimeStatus();
         loadAgentProfiles();
+        loadAdapters();
         runtimeStatusTimer = runtimeStatusTimer || setInterval(requestRuntimeStatus, 4000);
         _startTokenRefreshTimer();
         persist();
@@ -383,6 +386,12 @@ function handleRpcResult(id, result) {
         log(`[Models] ${result.message || 'Model updated.'}`);
         requestRuntimeStatus();
         loadModels();
+        loadAdapters();
+    } else if (id === 33) {
+        const activeAdapter = ($('runtimeAdapter') && $('runtimeAdapter').innerText !== 'none') 
+            ? $('runtimeAdapter').innerText 
+            : '';
+        renderAdapters(result.adapters || [], activeAdapter);
     } else if (id === 40) {
         renderPromptPairs(result.pairs || []);
     } else if (id === 41) {
@@ -481,6 +490,15 @@ function loadModels() {
         return;
     }
     rpc(31, 'list_models');
+}
+
+function loadAdapters() {
+    if (!isConnected()) {
+        const select = $('adapterSelect');
+        if (select) select.innerHTML = '<option value="">None (Baseline Model)</option>';
+        return;
+    }
+    rpc(33, 'list_adapters');
 }
 
 function loadPromptPairs() {

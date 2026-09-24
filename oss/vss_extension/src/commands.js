@@ -249,6 +249,7 @@ async function runWorkflow(sidebarProvider, workflow, customUri = null) {
             filepath: context.filepath || workflow.title,
             workspace_path: currentWorkspacePath(context.filepath),
             targetTab: workflow.targetTab,
+            prompt: workflow.promptBuilder ? workflow.promptBuilder(context) : '',
             context_meta: {
                 label: workflow.title,
                 originalChars,

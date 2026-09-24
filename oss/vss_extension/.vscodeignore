@@ -6,4 +6,3 @@ src/tests
 eslint.config.js
 .eslintrc.json
 package-lock.json
-node_modules

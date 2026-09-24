@@ -100,7 +100,7 @@ function activate(context) {
             }
             const lang = editor ? editor.document.languageId : 'code';
             const message = `Explain the following ${lang} code clearly. Identify any issues, anti-patterns, or improvements:\n\n\`\`\`${lang}\n${code.slice(0, 4000)}\n\`\`\``;
-            _sendToKarlWebview('inject_chat', { text: message, autoSend: true });
+            _sendToKarlWebview('inject_chat', { text: message, filepath: editor ? editor.document.uri.fsPath : '', autoSend: true });
             await vscode.commands.executeCommand('karl.focus');
         })
     );
@@ -115,29 +115,7 @@ function activate(context) {
             const code = editor.document.getText(editor.selection);
             const lang = editor.document.languageId;
             const message = `Refactor the following ${lang} code to be cleaner, more efficient, and better documented. Return ONLY the refactored code in a code block, no explanation:\n\n\`\`\`${lang}\n${code.slice(0, 3000)}\n\`\`\``;
-            _sendToKarlWebview('inject_chat', { text: message, autoSend: true });
-
-            // Register a one-time listener for Karl's refactor response to show as diff
-            const disposable = provider._view.webview.onDidReceiveMessage(async msg => {
-                if (msg.command !== 'refactor_result') return;
-                disposable.dispose();
-                const refactored = msg.code;
-                if (!refactored) return;
-
-                // Write refactored content to a temp untitled document and open diff
-                const originalUri = editor.document.uri;
-                const refactoredDoc = await vscode.workspace.openTextDocument({
-                    content: refactored,
-                    language: lang,
-                });
-                await vscode.commands.executeCommand(
-                    'vscode.diff',
-                    originalUri,
-                    refactoredDoc.uri,
-                    'Karl Refactor Preview'
-                );
-            });
-            context.subscriptions.push(disposable);
+            _sendToKarlWebview('inject_chat', { text: message, filepath: editor.document.uri.fsPath, autoSend: true });
             await vscode.commands.executeCommand('karl.focus');
         })
     );
@@ -221,7 +199,7 @@ function activate(context) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     const workspacePath = workspaceFolders && workspaceFolders.length > 0
         ? workspaceFolders[0].uri.fsPath
-        : '/home/ethan/karl';
+        : os.homedir();
 
     const inlineProvider = new MiniGptInlineCompletionProvider(workspacePath, sidebarProvider);
     context.subscriptions.push(

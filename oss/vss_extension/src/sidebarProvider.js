@@ -1,6 +1,9 @@
 // @ts-check
 const vscode = require('vscode');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const crypto = require('crypto');
 const WebSocket = require('ws');
 const { writeTempFileAndDiff } = require('./fileOps');
 const { getGitBranch } = require('./gitOps');
@@ -230,6 +233,16 @@ class KarlSidebarProvider {
         return '';
     }
 
+    _readServiceDiscovery() {
+        const discoveryPath = path.join(os.homedir(), '.karl', 'service_discovery.json');
+        try {
+            const raw = fs.readFileSync(discoveryPath, 'utf8');
+            return JSON.parse(raw);
+        } catch {
+            return null;
+        }
+    }
+
     /**
      * Connects to the Karl WebSocket server.
      * @param {number} [port]
@@ -241,6 +254,13 @@ class KarlSidebarProvider {
 
         const config = vscode.workspace.getConfiguration('karl');
 
+        // Dynamically read service discovery to get the latest port and token from disk
+        const discovery = this._readServiceDiscovery();
+        if (discovery && discovery.active_port) {
+            this.discoveredPort = discovery.active_port;
+            this.discoveredToken = discovery.token || '';
+        }
+
         // Prefer the port injected by the extension host from the service-discovery
         // file; fall back to the explicit argument, then to VS Code config.
         const activePort = port !== undefined
@@ -250,11 +270,15 @@ class KarlSidebarProvider {
         this.lastBridgeError = '';
         this._setConnectionState('connecting', 'Connecting');
 
-        // Use token from service-discovery if available (avoids a second disk read);
-        // otherwise fall through to the per-workspace bridge_token.json.
         const bridgeToken = (this.discoveredPort !== undefined && this.discoveredToken)
             ? this.discoveredToken
             : await this._readBridgeToken();
+
+        this.postMessageToWebview({
+            command: 'update_token',
+            token: bridgeToken
+        });
+
         const wsUrl = `ws://127.0.0.1:${activePort}${bridgeToken ? `?token=${encodeURIComponent(bridgeToken)}` : ''}`;
         // rejectUnauthorized: false — the Python backend uses a self-signed localhost cert
         const wsOptions = { rejectUnauthorized: false };
@@ -308,11 +332,20 @@ class KarlSidebarProvider {
                     }
                 }
 
-                // Forward message to webview
-                this.postMessageToWebview({
-                    command: 'socket_message',
-                    data
-                });
+                // NOTE: this host-owned socket runs *in addition to* the webview's own
+                // direct WebSocket connection (media/karl_socket.js `_directConnect`),
+                // which is the live path whenever `window.KARL_USE_HOST_RELAY` is not
+                // enabled (the current default — see that file's header comment).
+                // Both connections receive every server broadcast, so forwarding this
+                // frame to the webview unconditionally would make it process each
+                // notification twice (duplicate chat tokens, duplicate Review Bay
+                // entries for the same proposed edit, etc). This connection exists
+                // to keep host-only bookkeeping (auto-train output channel above,
+                // token/service-discovery refresh) alive independent of webview
+                // visibility, so it intentionally does not relay general traffic to
+                // the webview. If host-relay mode is ever finished and enabled, this
+                // forward should be restored (and the webview's own direct connect
+                // should be disabled) so only one side is live at a time.
             } catch (err) {
                 console.error('[Host Bridge Error] Malformed JSON:', err);
             }
@@ -503,6 +536,13 @@ class KarlSidebarProvider {
             lastHeartbeat: this.lastHeartbeatAt ? this.lastHeartbeatAt.toLocaleTimeString() : 'never',
             lastError: this.lastBridgeError || ''
         });
+        // Intentionally not forwarded as 'bridge_status' to the webview: this
+        // reflects the host's own background socket (see the comment in
+        // connectToBridge's message handler), which is a separate connection
+        // from the webview's own direct WebSocket. Forwarding it here would
+        // drive the webview's primary connection indicator from a connection
+        // it doesn't otherwise depend on, racing with (and sometimes
+        // contradicting) the status its own socket lifecycle already reports.
         sendActiveStateToWebview(this);
     }
 
@@ -616,6 +656,14 @@ class KarlSidebarProvider {
                     this.queueFileEdit(message.filepath, message.content, message.summary, {
                         swarmBatchId: message.swarmBatchId
                     });
+                    break;
+                case 'refactor_result':
+                    if (message.code && message.filepath) {
+                        const editId = await this.queueFileEdit(message.filepath, message.code, 'Inline refactoring proposed by Karl.');
+                        if (editId) {
+                            await this.previewFile(editId);
+                        }
+                    }
                     break;
                 case 'preview_file':
                     await this.previewFile(message.editId);
@@ -758,6 +806,7 @@ class KarlSidebarProvider {
             }
         });
         sendActiveStateToWebview(this);
+        return editId;
     }
 
     async previewFile(editId) {
@@ -1149,7 +1198,10 @@ class KarlSidebarProvider {
         const renderUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl_render.js'));
         const socketUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl_socket.js'));
         const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'karl.js'));
-        const nonce = String(Date.now());
+        // Cryptographically random nonce — a predictable one (e.g. Date.now())
+        // would let any process observing the webview load time guess it and
+        // inject a script that passes the CSP's script-src check.
+        const nonce = crypto.randomBytes(16).toString('hex');
         const config = JSON.stringify({
             port,
             autoConnect,
@@ -1614,6 +1666,16 @@ class KarlSidebarProvider {
                         <label>RAG Threshold <input id="kbThreshold" type="number" min="0" max="100" step="0.05" value="0"></label>
                         <label class="check"><input id="karlRag" type="checkbox" checked> Use RAG</label>
                         <label class="check"><input id="karlLoop" type="checkbox"> Agentic loop</label>
+                    </div>
+
+                    <div class="section-head mini-head" style="margin-top: 12px;"><div><div class="eyebrow">Adapters</div><h2>LoRA Adapters</h2></div><button id="loadAdaptersBtn">Refresh</button></div>
+                    <div class="settings-grid glow-panel" style="padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+                        <label>Select LoRA Adapter:
+                            <select id="adapterSelect" style="margin-top: 4px; width: 100%;">
+                                <option value="">None (Baseline Model)</option>
+                            </select>
+                        </label>
+                        <button id="activateAdapterBtn" class="primary" style="margin-top: 4px; width: 100%;">Load Selected Adapter</button>
                     </div>
 
                     <div class="section-head mini-head" style="margin-top: 12px;"><div><div class="eyebrow">Models</div><h2>Available GGUFs</h2></div><button id="loadModelsBtn">Refresh</button></div>
