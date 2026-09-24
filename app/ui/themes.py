@@ -729,6 +729,37 @@ QTextBrowser, QTextEdit, QPlainTextEdit, #reasoning-view, #code-preview {{
     border-color: #FF3B30;
 }}
 
+/* ── Status Bar ───────────────────────────────────────────── */
+#status-bar {{
+    background: {bg_surface};
+    border-top: 1px solid {border};
+}}
+
+/* ── Label Roles ──────────────────────────────────────────── */
+#lbl-muted {{
+    color: {text_lo};
+}}
+
+#lbl-mid {{
+    color: {text_mid};
+}}
+
+#lbl-accent {{
+    color: {accent};
+}}
+
+#lbl-danger, #lbl-red {{
+    color: {red};
+}}
+
+#lbl-warning {{
+    color: {yellow};
+}}
+
+#lbl-green, #lbl-success {{
+    color: {green};
+}}
+
 /* ── Text Displays ────────────────────────────────────────── */
 QTextBrowser {{
     background: transparent;

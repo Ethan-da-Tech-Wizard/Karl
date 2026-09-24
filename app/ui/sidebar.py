@@ -2,6 +2,21 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QSizePoli
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QFont
 
+# QFont's family argument is a single family name, not a CSS-style comma
+# list — passing "JetBrains Mono, Consolas, monospace" as one string matches
+# no installed font and silently falls back to the platform default (often
+# wider than any of the intended monospace fonts), which overflowed these
+# fixed-width buttons and clipped their labels. Use setFamilies() for a real
+# ordered fallback list instead.
+_MONO_FAMILIES = ["JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", "Courier New"]
+
+
+def _mono_font(point_size: float) -> QFont:
+    font = QFont()
+    font.setFamilies(_MONO_FAMILIES)
+    font.setPointSizeF(point_size)
+    return font
+
 _ITEMS = [
     ("◈", "Workbench",  0),
     ("⊕", "Prompt Lab", 1),
@@ -26,10 +41,10 @@ class _SidebarButton(QPushButton):
         self._icon = icon
         self._label = label
         self.setObjectName("sidebar-btn")
-        self.setFixedSize(56, 62)
+        self.setFixedSize(62, 62)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setText(f"{icon}\n{label}")
-        self.setFont(QFont("JetBrains Mono, Consolas, monospace", 7))
+        self.setFont(_mono_font(6.5))
         self.setAccessibleName(f"Workspace Navigator: {label}")
         self.setAccessibleDescription(f"Switch active view to the {label} workspace")
 
@@ -38,11 +53,11 @@ class _SidebarButton(QPushButton):
         if compact:
             self.setText(self._icon)
             self.setFixedSize(48, 50)
-            self.setFont(QFont("JetBrains Mono, Consolas, monospace", 12))
+            self.setFont(_mono_font(12))
         else:
             self.setText(f"{self._icon}\n{self._label}")
-            self.setFixedSize(56, 62)
-            self.setFont(QFont("JetBrains Mono, Consolas, monospace", 7))
+            self.setFixedSize(62, 62)
+            self.setFont(_mono_font(6.5))
 
     def set_active(self, active: bool):
         """Set the active dynamic QSS property and force a style refresh."""
@@ -60,7 +75,7 @@ class Sidebar(QWidget):
         """Build the ten-workspace navigator and select Workbench."""
         super().__init__(parent)
         self.setObjectName("sidebar")
-        self.setFixedWidth(56)
+        self.setFixedWidth(62)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
         layout = QVBoxLayout(self)
@@ -111,6 +126,6 @@ class Sidebar(QWidget):
         if self._compact == compact:
             return
         self._compact = compact
-        self.setFixedWidth(48 if compact else 56)
+        self.setFixedWidth(48 if compact else 62)
         for btn in self._buttons:
             btn.set_compact(compact)

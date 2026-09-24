@@ -86,15 +86,22 @@ class ChatView(QTextBrowser):
         border_hi = self.theme_colors.get("border_hi", "#383850")
         text_hi = self.theme_colors.get("text_hi", "#E4E4F0")
         safe_text = _escape(text)
+        # Qt's rich-text engine doesn't size `display:inline-block` to its
+        # content (it always rendered full-width, turning this into a flat
+        # highlighted bar instead of a bubble). A single-cell <table
+        # align="right"> is what Qt actually shrink-wraps to content, and it
+        # still wraps naturally within the viewport for long messages.
         return (
-            f'<div style="margin:16px 0px 4px 80px; text-align:right;">'
-            f'<div style="color:{text_lo};font-size:7.5pt;font-weight:bold;margin-bottom:4px;letter-spacing:1.5px;">'
-            f'YOU &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:{accent};text-decoration:none;font-weight:bold;">↳ branch</a></div>'
-            f'<div style="background:{bg_raised};border:1px solid {border_hi};border-radius:6px;'
-            f'padding:12px 16px;color:{text_hi};font-size:10pt;'
-            f'line-height:1.4;white-space:pre-wrap;display:inline-block;text-align:left;">{safe_text}'
-            f'{self._attachments_html(attachments or [])}</div>'
+            f'<div style="margin:16px 0px 2px 80px; text-align:right;">'
+            f'<span style="color:{text_lo};font-size:7.5pt;font-weight:bold;letter-spacing:1.5px;">'
+            f'YOU &nbsp;|&nbsp; <a href="branch:{node_id}" style="color:{accent};text-decoration:none;font-weight:bold;">↳ branch</a></span>'
             f'</div>'
+            f'<table align="right" cellspacing="0" cellpadding="0" style="margin:0 0 4px 0;"><tr>'
+            f'<td style="background:{bg_raised};border:1px solid {border_hi};border-radius:6px;'
+            f'padding:12px 16px;color:{text_hi};font-size:10pt;'
+            f'line-height:1.4;white-space:pre-wrap;text-align:left;">{safe_text}'
+            f'{self._attachments_html(attachments or [])}</td>'
+            f'</tr></table>'
         )
 
     def _attachments_html(self, attachments: list[dict]) -> str:

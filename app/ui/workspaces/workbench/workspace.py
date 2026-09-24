@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QDialog, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QRect, QPropertyAnimation
-from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor
+from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor, QFontMetrics
 
 
 from app.engine.inference_service import InferenceService
@@ -527,7 +527,13 @@ class WorkbenchWorkspace(QMainWindow):
 
         self._header_load_model_btn = QPushButton("Load Model")
         self._header_load_model_btn.setObjectName("btn-primary")
-        self._header_load_model_btn.setMinimumWidth(92)
+        # No explicit minimum: a fixed 92px floor was narrower than "Load
+        # Model" actually needs, so when the row ran short on space (e.g. a
+        # session/reasoning dock open) the layout compressed the button to
+        # that floor and clipped the label instead of shrinking the model
+        # combo box next to it, which already has room to give. Qt's default
+        # minimumSizeHint (based on the button's current text) is always
+        # wide enough for whatever text it's showing, so leave it unset.
         self._header_load_model_btn.setMaximumWidth(150)
         self._header_load_model_btn.clicked.connect(self._load_header_selected_model)
         ml.addWidget(self._header_load_model_btn)
@@ -1811,12 +1817,18 @@ class WorkbenchWorkspace(QMainWindow):
                 n_ctx = meta.get("n_ctx", n_ctx)
         accent = get_theme_colors(self.state).get("accent", "#00C2FF")
         if error:
-            self._header_model_status.setText(f"Model error: {error}")
+            full_text = f"Model error: {error}"
             self._header_model_status.setStyleSheet("color: #FF3366;")
-            return
-        prefix = "Staged" if staged else "Active"
-        self._header_model_status.setText(f"{prefix}: {model} · adapter {adapter} · ctx {n_ctx}")
-        self._header_model_status.setStyleSheet(f"color: {accent}; font-weight: bold;")
+        else:
+            prefix = "Staged" if staged else "Active"
+            full_text = f"{prefix}: {model} · adapter {adapter} · ctx {n_ctx}"
+            self._header_model_status.setStyleSheet(f"color: {accent}; font-weight: bold;")
+        metrics = QFontMetrics(self._header_model_status.font())
+        elided = metrics.elidedText(
+            full_text, Qt.TextElideMode.ElideRight, self._header_model_status.maximumWidth()
+        )
+        self._header_model_status.setText(elided)
+        self._header_model_status.setToolTip(full_text if elided != full_text else "")
 
     def _autosave_session(self):
         if not self.chat_history or len(self.chat_history) < 2:

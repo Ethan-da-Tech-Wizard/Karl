@@ -121,7 +121,11 @@ def build_input_area(w) -> QWidget:
 
     w._stop_btn = QPushButton("■ stop")
     w._stop_btn.setObjectName("btn-danger")
-    w._stop_btn.setFixedWidth(76)
+    # A fixed width clipped this label once the button's real font/padding
+    # needed more room than the hardcoded pixel guess allowed — a minimum
+    # keeps the button from looking undersized while still growing to fit
+    # whatever the actual rendered text needs.
+    w._stop_btn.setMinimumWidth(76)
     w._stop_btn.setEnabled(False)
     w._stop_btn.setToolTip("Interrupt the active generation thread")
     w._stop_btn.clicked.connect(w._stop)
@@ -129,7 +133,7 @@ def build_input_area(w) -> QWidget:
 
     w._send_btn = QPushButton("send ↵")
     w._send_btn.setObjectName("btn-primary")
-    w._send_btn.setFixedWidth(86)
+    w._send_btn.setMinimumWidth(86)
     w._send_btn.setToolTip("Send prompt to Karl (Ctrl+Enter)")
     w._send_btn.clicked.connect(w._send)
     ctrl_layout.addWidget(w._send_btn)
