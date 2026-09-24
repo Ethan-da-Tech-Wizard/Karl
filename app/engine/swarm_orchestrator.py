@@ -851,6 +851,8 @@ class SwarmOrchestratorThread(QThread):
             n = self.candidates_per_task
             candidates: list[str] = []
             try:
+                from app.engine.model_loader import ModelLoader
+                ModelLoader.clear_cache()
                 for i in range(n):
                     content = self.coder.generate(
                         task_copy, workspace_ctx,

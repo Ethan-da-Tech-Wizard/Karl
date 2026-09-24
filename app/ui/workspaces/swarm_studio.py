@@ -181,7 +181,7 @@ class SwarmStudioWorkspace(QWidget):
         layout.addWidget(self._objective_input, 2)
 
         self._workspace_input = QLineEdit()
-        self._workspace_input.setPlaceholderText("/home/ethan/karl")
+        self._workspace_input.setPlaceholderText(os.getcwd())
         self._workspace_input.setText(self.state.swarm_last_workspace or os.getcwd())
         layout.addWidget(QLabel("Workspace Path"))
         layout.addWidget(self._workspace_input)

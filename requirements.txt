@@ -2,6 +2,7 @@ llama-cpp-python
 PyQt6
 sentence-transformers
 faiss-cpu
+numpy
 PyMuPDF
 python-docx
 psutil
@@ -9,6 +10,9 @@ GPUtil
 tqdm
 requests
 keyring
+cryptography
+websockets
+mcp
 
 # training — optional; Training Studio gracefully degrades without these
 peft

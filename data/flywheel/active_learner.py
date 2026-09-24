@@ -1,7 +1,7 @@
 import os
 import json
 
-STATS_PATH = "/home/ethan/karl/data/flywheel/stats.json"
+STATS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats.json")
 
 class ActiveLearner:
     def __init__(self, stats_path: str = STATS_PATH):

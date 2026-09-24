@@ -310,7 +310,7 @@ def train_adapter(dataset_path: str, base_model_path: str, adapter_name: str, ar
         learning_rate=args.lr,
         logging_steps=1,
         num_train_epochs=args.epochs,
-        save_strategy="no",
+        save_strategy="epoch",
         report_to="none",
         fp16=True if torch.cuda.is_available() else False,
         gradient_checkpointing=True if torch.cuda.is_available() else False,
@@ -336,11 +336,7 @@ def train_adapter(dataset_path: str, base_model_path: str, adapter_name: str, ar
 
     logger.info("Saved PEFT adapter weights to %s", adapter_path)
     
-    # Clean checkpoints
-    import shutil
-    temp_dir = adapter_path / "temp_checkpoints"
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
+    # Keep checkpoints for user access
 
 
 def convert_adapter_to_gguf(base_model_path: str, adapter_name: str):

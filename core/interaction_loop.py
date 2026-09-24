@@ -284,7 +284,12 @@ def build_prompt(system_prompt, chat_history):
     if _RECENCY_INSTRUCTION not in effective_system:
         effective_system = (effective_system + "\n" if effective_system else "") + _RECENCY_INSTRUCTION
 
-    machine_speak_enabled = _machine_speak_enabled()
+    is_swarm = False
+    if isinstance(system_prompt, str):
+        if "You are an expert software engineer" in system_prompt or "Coder Agent" in system_prompt or "Architect Agent" in system_prompt:
+            is_swarm = True
+
+    machine_speak_enabled = _machine_speak_enabled() and not is_swarm
     render_history = chat_history
     if machine_speak_enabled:
         if _MACHINE_SPEAK_RULE not in effective_system:

@@ -15,7 +15,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 # Ensure output directories exist
-QUEUE_DIR = "/home/ethan/karl/data/flywheel/queue"
+QUEUE_DIR = os.path.join(_PROJECT_ROOT, "data", "flywheel", "queue")
 os.makedirs(QUEUE_DIR, exist_ok=True)
 
 # ── Semantic deduplication ────────────────────────────────────────────────────

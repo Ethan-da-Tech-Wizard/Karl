@@ -152,6 +152,7 @@ class WebSocketServerManager:
     METHOD_SCOPES: dict[str, str] = {
         "get_runtime_status": "read:telemetry",
         "list_kb_sources":    "read:kb",
+        "list_adapters":      "read:telemetry",
         "search_kb":          "read:kb",
         "ingest_path":        "write:kb",
         "submit_task":        "admin:execute",
@@ -190,6 +191,7 @@ class WebSocketServerManager:
         "refresh_token",
         "get_runtime_status",
         "list_models",
+        "list_adapters",
         "set_active_model",
         "list_prompt_pairs",
         "get_prompt_pair",
@@ -301,10 +303,17 @@ class WebSocketServerManager:
             "/opt", "/srv", "/lib", "/lib64",
         }
         user_home = os.path.expanduser("~")
-        self.blocked_paths.add(user_home)
         self.blocked_paths.add(os.path.join(user_home, "Desktop"))
         self.blocked_paths.add(os.path.join(user_home, "Documents"))
         self.blocked_paths.add(os.path.join(user_home, "Downloads"))
+        self.blocked_paths.add(os.path.join(user_home, ".ssh"))
+        self.blocked_paths.add(os.path.join(user_home, ".gnupg"))
+        self.blocked_paths.add(os.path.join(user_home, ".aws"))
+        self.blocked_paths.add(os.path.join(user_home, ".kube"))
+        self.blocked_paths.add(os.path.join(user_home, ".docker"))
+        self.blocked_paths.add(os.path.join(user_home, ".config"))
+        self.blocked_paths.add(os.path.join(user_home, ".local"))
+        self.blocked_paths.add(os.path.join(user_home, ".karl"))
 
         # Block every other local user's home directory too, not just this
         # process's own $HOME — on a shared/multi-user host, ingest_path
@@ -419,6 +428,10 @@ class WebSocketServerManager:
         if not path:
             return False
         real_path = os.path.realpath(os.path.expanduser(path))
+        user_home = os.path.realpath(os.path.expanduser("~"))
+
+        if real_path == user_home:
+            return False
 
         for blocked in self.blocked_paths:
             real_blocked = os.path.realpath(blocked)
@@ -530,6 +543,19 @@ class WebSocketServerManager:
             "active": active,
             "models": models,
         }
+
+    def _list_adapters(self) -> dict:
+        adapters_dir = os.path.join("data", "adapters")
+        adapters = []
+        if os.path.exists(adapters_dir):
+            try:
+                for entry in sorted(os.listdir(adapters_dir)):
+                    path = os.path.join(adapters_dir, entry)
+                    if os.path.isdir(path):
+                        adapters.append(entry)
+            except OSError as exc:
+                logger.warning("could not scan adapters directory %s: %s", adapters_dir, exc)
+        return {"adapters": adapters}
 
     def _set_active_model(self, filename: str, adapter: str | None = None) -> dict:
         safe_filename = os.path.basename(filename or "")
@@ -1547,6 +1573,13 @@ class WebSocketServerManager:
                             "jsonrpc": "2.0",
                             "id": req_id,
                             "result": self._list_models()
+                        }))
+
+                    elif method == "list_adapters":
+                        await websocket.send(json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": self._list_adapters()
                         }))
 
                     elif method == "set_active_model":

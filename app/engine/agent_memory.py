@@ -19,9 +19,13 @@ class CodebaseMemory:
     def __init__(
         self,
         workspace_path: str,
-        db_path: str | os.PathLike[str] = "data/agent_memory.json",
+        db_path: str | os.PathLike[str] | None = None,
     ) -> None:
         self.workspace_path = Path(workspace_path).expanduser().resolve()
+        if db_path is None:
+            import hashlib
+            ws_hash = hashlib.md5(str(self.workspace_path).encode("utf-8")).hexdigest()[:12]
+            db_path = f"data/agent_memory_{ws_hash}.json"
         self.db_path = Path(db_path)
         self.index: dict[str, dict[str, list[dict[str, Any]]]] = {}
 

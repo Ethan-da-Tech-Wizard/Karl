@@ -46,11 +46,41 @@ def parse_tool_calls(text: str) -> list[dict]:
         server = m.group(1) or ""
         name = m.group(2) or ""
         body = m.group(3).strip()
+        # Robust YAML-like parser
         args: dict[str, Any] = {}
-        for line in body.splitlines():
-            if ":" in line:
-                k, _, v = line.partition(":")
-                args[k.strip()] = v.strip()
+        lines = body.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            match = re.match(r"^\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*:(.*)$", line)
+            if match:
+                key = match.group(1).strip()
+                val = match.group(2).strip()
+                if key in ("content", "command", "code", "text", "script", "query"):
+                    # The rest of the tool body belongs to this key
+                    remaining_lines = lines[i:]
+                    first_line = remaining_lines[0]
+                    _, _, first_line_val = first_line.partition(":")
+                    remaining_content = [first_line_val] + remaining_lines[1:]
+                    raw_val = "\n".join(remaining_content).lstrip("\n")
+                    
+                    # Extract code from markdown block if present
+                    raw_val = raw_val.strip()
+                    match_block = re.search(r"```(?:[a-zA-Z0-9+#-]+)?\n(.*?)\n```", raw_val, re.DOTALL)
+                    if match_block:
+                        raw_val = match_block.group(1).strip()
+                    else:
+                        match_unclosed = re.search(r"```(?:[a-zA-Z0-9+#-]+)?\n(.*)$", raw_val, re.DOTALL)
+                        if match_unclosed:
+                            raw_val = match_unclosed.group(1).strip()
+                            
+                    args[key] = raw_val
+                    break
+                else:
+                    args[key] = val
+                    i += 1
+            else:
+                i += 1
         calls.append({"server": server, "name": name, "args": args})
     return calls
 

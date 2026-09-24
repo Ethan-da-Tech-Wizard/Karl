@@ -1299,6 +1299,13 @@ class ModelLoader:
         except Exception as exc:
             logger.warning("Failed to attach KV prompt cache: %s", exc)
 
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Clear prompt cache to force fresh generation."""
+        with cls._lock:
+            if cls._instance is not None:
+                cls._attach_kv_cache()
+
     # ─────────────────────────────────────────────────────────────────────────
 
     @classmethod

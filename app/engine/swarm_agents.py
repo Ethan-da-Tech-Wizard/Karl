@@ -72,6 +72,16 @@ def _tool_write_file(workspace_path: str, args: dict) -> str:
     import pathlib
     rel = args.get("path", "")
     content = args.get("content", "")
+    
+    # Strip markdown code blocks if the model wrapped the content in them
+    content = content.strip()
+    if content.startswith("```"):
+        first_nl = content.find("\n")
+        if first_nl != -1:
+            content = content[first_nl:].strip()
+        if content.endswith("```"):
+            content = content[:-3].strip()
+            
     target = _safe_workspace_path(workspace_path, rel)
     if target is None:
         logger.warning("SECURITY ALERT: path traversal blocked in write_file. rel=%r workspace=%r", rel, workspace_path)
@@ -186,7 +196,8 @@ class BaseSwarmAgent:
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             top_p=0.95,
-            stop=["<|im_end|>"],
+            stop=["<|im_end|>", "<|im_start|>"],
+            repeat_penalty=1.1,
         )
         return response["choices"][0]["text"]
 
@@ -221,6 +232,48 @@ class ArchitectAgent(BaseSwarmAgent):
                 "explanation": f"Failed to parse JSON plan from model. Raw output: {cleaned[:200]}",
                 "tasks": []
             }
+
+
+def extract_python_code(raw_text: str) -> Optional[str]:
+    """Extract python/code block from raw response, excluding diff blocks."""
+    match = re.search(r"```(?:python|py)?\n(.*?)\n```", raw_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    match_any = re.search(r"```(?!\s*diff)(?:[a-zA-Z0-9+#-]+)?\n(.*?)\n```", raw_text, re.DOTALL | re.IGNORECASE)
+    if match_any:
+        return match_any.group(1).strip()
+    return None
+
+
+def apply_search_replace(current_content: str, raw_text: str) -> str:
+    """Find and apply all search-replace blocks (<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE)"""
+    blocks = re.findall(
+        r"<<<<<<<\s*SEARCH\n(.*?)\n=======\n(.*?)\n>>>>>>>\s*REPLACE",
+        raw_text,
+        re.DOTALL
+    )
+    if not blocks:
+        return current_content
+
+    new_content = current_content
+    for search, replace in blocks:
+        search_str = search.strip()
+        replace_str = replace.strip()
+        if not search_str:
+            if not new_content.strip():
+                new_content = replace_str
+            else:
+                new_content = new_content + "\n\n" + replace_str
+        else:
+            if search_str in new_content:
+                new_content = new_content.replace(search_str, replace_str)
+            else:
+                if not new_content.strip():
+                    new_content = replace_str
+                else:
+                    # Loose whitespace fallback
+                    new_content = new_content.replace(search.strip(), replace_str)
+    return new_content
 
 
 def parse_reasoning_and_tool(raw_text: str) -> tuple[Optional[str], Optional[str]]:
@@ -332,7 +385,11 @@ class CoderAgent(BaseSwarmAgent):
             {"role": "user", "content": (
                 f"Task: Edit {task['filepath']}\n\n"
                 f"Instructions: {task['instructions']}\n\n"
-                f"Workspace context:\n{context_snippet}"
+                f"Workspace context:\n{context_snippet}\n\n"
+                "IMPORTANT RULES FOR YOUR RESPONSE:\n"
+                "- Write the COMPLETE new content of the file from scratch.\n"
+                "- Do NOT write a unified diff (do NOT use + or - lines). Write the full valid Python file contents as you want it saved.\n"
+                "- Make sure any Python code is wrapped inside a clean markdown code block: ```python ... ```"
             )}
         ]
 
@@ -355,7 +412,8 @@ class CoderAgent(BaseSwarmAgent):
                 try:
                     res = llm(prompt_text, max_tokens=self.max_tokens,
                               temperature=temperature, stream=True,
-                              stop=["</tool_call>", "<|im_end|>"], echo=False)
+                              stop=["</tool_call>", "<|im_end|>", "<|im_start|>"], echo=False,
+                              repeat_penalty=1.1)
                     if hasattr(res, "__iter__") and not isinstance(res, dict):
                         for chunk in res:
                             tok = chunk["choices"][0].get("text", "")
@@ -369,7 +427,8 @@ class CoderAgent(BaseSwarmAgent):
                 except Exception:
                     res = llm(prompt_text, max_tokens=self.max_tokens,
                               temperature=temperature, stream=False,
-                              stop=["<|im_end|>"], echo=False)
+                              stop=["<|im_end|>", "<|im_start|>"], echo=False,
+                              repeat_penalty=1.1)
                     if isinstance(res, dict):
                         raw = res["choices"][0]["text"]
                     else:
@@ -377,12 +436,12 @@ class CoderAgent(BaseSwarmAgent):
             else:
                 res = llm(prompt_text, max_tokens=self.max_tokens,
                            temperature=temperature, stream=False,
-                           stop=["<|im_end|>"], echo=False)
+                           stop=["<|im_end|>", "<|im_start|>"], echo=False,
+                           repeat_penalty=1.1)
                 if isinstance(res, dict):
                     raw = res["choices"][0]["text"]
                 else:
                     raw = str(res)
-    
             messages.append({"role": "assistant", "content": raw})
     
             # Parse tool calls from raw output
@@ -393,14 +452,23 @@ class CoderAgent(BaseSwarmAgent):
 
             if not tool_calls:
                 if _turn == 0:
-                    try:
-                        reasoning, tool_content = parse_reasoning_and_tool(raw)
-                        if tool_content is not None:
-                            written_content = tool_content
+                    if "<<<<<<< SEARCH" in raw:
+                        existing = _tool_read_file(workspace_path, {"path": task["filepath"]})
+                        file_content = "" if existing.startswith(("ERROR:", "SECURITY")) else existing
+                        written_content = apply_search_replace(file_content, raw)
+                    else:
+                        extracted_code = extract_python_code(raw)
+                        if extracted_code is not None:
+                            written_content = extracted_code
                         else:
-                            written_content = self.clean_output(raw)
-                    except ValueError:
-                        written_content = self.clean_output(raw)
+                            try:
+                                reasoning, tool_content = parse_reasoning_and_tool(raw)
+                                if tool_content is not None:
+                                    written_content = tool_content
+                                else:
+                                    written_content = self.clean_output(raw)
+                            except ValueError:
+                                written_content = self.clean_output(raw)
                 break
 
             tool_results = []
@@ -411,12 +479,41 @@ class CoderAgent(BaseSwarmAgent):
                     done_called = True
                     break
 
-                # Parse YAML-style args (key: value per line)
+                # Robust YAML-like parser
                 args = {}
-                for line in tool_body.strip().splitlines():
-                    if ":" in line:
-                        k, _, v = line.partition(":")
-                        args[k.strip()] = v.strip()
+                lines = tool_body.splitlines()
+                i = 0
+                while i < len(lines):
+                    line = lines[i]
+                    match = re.match(r"^\s*([a-zA-Z_][a-zA-Z0-9_-]*)\s*:(.*)$", line)
+                    if match:
+                        key = match.group(1).strip()
+                        val = match.group(2).strip()
+                        if key in ("content", "command", "code", "text", "script", "query"):
+                            # The rest of the tool body belongs to this key
+                            remaining_lines = lines[i:]
+                            first_line = remaining_lines[0]
+                            _, _, first_line_val = first_line.partition(":")
+                            remaining_content = [first_line_val] + remaining_lines[1:]
+                            raw_val = "\n".join(remaining_content).lstrip("\n")
+                            
+                            # Extract code from markdown block if present
+                            raw_val = raw_val.strip()
+                            match_block = re.search(r"```(?:[a-zA-Z0-9+#-]+)?\n(.*?)\n```", raw_val, re.DOTALL)
+                            if match_block:
+                                raw_val = match_block.group(1).strip()
+                            else:
+                                match_unclosed = re.search(r"```(?:[a-zA-Z0-9+#-]+)?\n(.*)$", raw_val, re.DOTALL)
+                                if match_unclosed:
+                                    raw_val = match_unclosed.group(1).strip()
+                                    
+                            args[key] = raw_val
+                            break
+                        else:
+                            args[key] = val
+                            i += 1
+                    else:
+                        i += 1
 
                 if self.allowed_tools is not None and tool_name not in self.allowed_tools:
                     result_text = f"ERROR: tool '{tool_name}' is disabled for this agent profile."
