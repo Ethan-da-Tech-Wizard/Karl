@@ -1,6 +1,4 @@
-import pytest
 import os
-from unittest.mock import MagicMock
 from app.engine.task_supervisor import TaskSupervisor, TaskStatus
 
 

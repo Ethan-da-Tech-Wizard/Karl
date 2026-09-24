@@ -18,8 +18,6 @@ import json
 import os
 import tempfile
 import time
-from collections import OrderedDict
-from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -152,7 +150,7 @@ class TestLogCacheStats:
                 log_cache_stats({"cache_hit": False}, "ts1")
                 log_cache_stats({"cache_hit": True},  "ts2")
             with open(log_path) as fh:
-                lines = [json.loads(l) for l in fh if l.strip()]
+                lines = [json.loads(line) for line in fh if line.strip()]
             assert len(lines) == 2
             assert lines[0]["ts"] == "ts1"
             assert lines[1]["ts"] == "ts2"
@@ -237,7 +235,6 @@ class TestAttachKvCache:
 
     def test_capacity_floored_at_256mb_min(self):
         from app.engine.model_loader import ModelLoader
-        from llama_cpp import LlamaRAMCache
 
         fake_llm = MagicMock(name="FakeLlama")
         ModelLoader._instance = fake_llm

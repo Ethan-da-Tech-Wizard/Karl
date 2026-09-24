@@ -22,7 +22,6 @@ from typing import Callable
 
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
 import fitz   # PyMuPDF
 import docx
 
@@ -289,7 +288,8 @@ class RAGPipeline:
     @property
     def encoder(self):
         if self._encoder is None:
-            import io, contextlib
+            import io
+            import contextlib
             from sentence_transformers import SentenceTransformer
             _sink = io.StringIO()
             with contextlib.redirect_stdout(_sink), contextlib.redirect_stderr(_sink):
@@ -309,7 +309,8 @@ class RAGPipeline:
         stored so subsequent calls return None immediately without retrying.
         """
         if self._reranker is None:
-            import io, contextlib
+            import io
+            import contextlib
             try:
                 from sentence_transformers import CrossEncoder
                 _sink = io.StringIO()

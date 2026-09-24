@@ -1,7 +1,5 @@
 import logging
-import os
 import time
-import psutil
 import re
 import threading
 from difflib import SequenceMatcher

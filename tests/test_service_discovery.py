@@ -15,15 +15,15 @@ websockets.serve is patched per-test to simulate port conflicts at the TCP level
 
 from __future__ import annotations
 
-import pytest
-
-pytestmark = [pytest.mark.integration, pytest.mark.websocket]
-
 import asyncio
 import json
 import socket
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+pytestmark = [pytest.mark.integration, pytest.mark.websocket]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -1,8 +1,6 @@
 import os
 import time
-from types import SimpleNamespace
 
-import pytest
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QWidget
 

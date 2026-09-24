@@ -9,7 +9,6 @@ import os
 import sys
 import json
 import unittest
-import tempfile
 import asyncio
 from unittest.mock import patch, MagicMock
 
@@ -98,7 +97,9 @@ class TestAutoTrain(unittest.TestCase):
         if _running_under_bwrap():
             self.skipTest("Codex sandbox blocks reliable localhost WebSocket tests")
 
-        app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+        # Ensure a QCoreApplication exists (needed for the event loop this
+        # WebSocket test relies on) -- the instance itself isn't used directly.
+        QCoreApplication.instance() or QCoreApplication(sys.argv)
         port = 8082
         manager = WebSocketServerManager.get_instance(port=port)
         manager.started_event.wait(timeout=5.0)

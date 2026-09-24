@@ -207,7 +207,7 @@ def test_tree_append_invalid_raises():
 
 def test_tree_update_current_node_content():
     tree = SessionTree()
-    node = tree.add_message("assistant", "draft")
+    tree.add_message("assistant", "draft")
     tree.update_current_node_content("final answer")
     assert tree.current_node.content == "final answer"
 

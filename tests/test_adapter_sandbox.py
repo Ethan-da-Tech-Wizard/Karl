@@ -14,8 +14,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 
 from tools.evaluate_adapters import evaluate_model_performance, extract_code_block
-from app.ui.workspaces.system_config.adapter_sandbox import BenchmarkWorker, GenWorker, AdapterSandboxMixin
-from app.state import AppState
+from app.ui.workspaces.system_config.adapter_sandbox import BenchmarkWorker, GenWorker
 
 
 class TestAdapterSandbox(unittest.TestCase):

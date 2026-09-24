@@ -10,9 +10,7 @@ import re
 import json
 import logging
 import subprocess
-import glob
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, Optional, Callable
 from app.engine.model_loader import ModelLoader
 from app.engine.agent_memory import CodebaseMemory, keywords_from_task
 from core.interaction_loop import build_prompt
@@ -109,7 +107,8 @@ def _tool_read_file(workspace_path: str, args: dict) -> str:
 
 @register_tool("grep_workspace", "grep_workspace(pattern) — find lines matching regex pattern across all .py files in workspace.")
 def _tool_grep_workspace(workspace_path: str, args: dict) -> str:
-    import pathlib, re as _re
+    import pathlib
+    import re as _re
     pattern = args.get("pattern", "")
     if not pattern:
         return "ERROR: pattern required"
@@ -226,7 +225,7 @@ class ArchitectAgent(BaseSwarmAgent):
         
         try:
             return json.loads(cleaned)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             # Fallback if model did not return valid JSON
             return {
                 "explanation": f"Failed to parse JSON plan from model. Raw output: {cleaned[:200]}",

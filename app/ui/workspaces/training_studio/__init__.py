@@ -8,6 +8,12 @@ from app.ui.workspaces.training_studio.auto_train_tab import AutoTrainTab
 from app.ui.workspaces.training_studio.mini_gpt_tab import MiniGptTab
 from app.ui.workspaces.training_studio.threads import AutoTrainThread
 
+# AutoTrainThread isn't used in this file -- it's re-exported here so
+# `from app.ui.workspaces.training_studio import AutoTrainThread` keeps
+# working (see tests/test_auto_train.py).
+__all__ = ["TrainingStudioWorkspace", "AutoTrainThread"]
+
+
 class TrainingStudioWorkspace(QWidget):
     """AI Lab workspace for curation, export, LoRA, and flywheel flows."""
 

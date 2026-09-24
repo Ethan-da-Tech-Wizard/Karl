@@ -9,7 +9,6 @@ It emits live loss scores and sample generations at regular intervals.
 import os
 import json
 import torch
-import torch.nn as nn
 from PyQt6.QtCore import QThread, pyqtSignal
 from app.engine.mini_transformer import MiniGPT, CharTokenizer
 

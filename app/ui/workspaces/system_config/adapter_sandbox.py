@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QTextEdit, QFormLayout, QGroupBox, QTableWidget,
@@ -38,7 +37,7 @@ class BenchmarkWorker(QThread):
         try:
             # Execute benchmark subprocess
             cmd = [sys.executable, "tools/evaluate_adapters.py", "--adapter", self.adapter_name, "--limit", "3"]
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,

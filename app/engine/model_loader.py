@@ -1043,7 +1043,7 @@ class ModelLoader:
                     
                     try:
                         return Llama(**kwargs)
-                    except TypeError as e:
+                    except TypeError:
                         if quantized_kv_cache and ("type_k" in kwargs or "type_v" in kwargs):
                             logger.warning(
                                 "Installed llama-cpp-python does not support type_k/type_v "
@@ -1439,12 +1439,6 @@ class ModelLoader:
     @classmethod
     def last_remote_fallback_reason(cls) -> str | None:
         return cls._remote_fallback_reason
-
-    @classmethod
-    def reset_circuit_breaker(cls) -> None:
-        """Reset the model-load circuit breaker to CLOSED."""
-        with cls._lock:
-            cls._circuit_breaker.reset()
 
     @classmethod
     def is_instance_locked(cls) -> bool:

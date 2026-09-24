@@ -17,7 +17,6 @@ Architecture:
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import math
 
 class CharTokenizer:
     """A simple character-level tokenizer that maps characters to integers and back."""
@@ -39,8 +38,8 @@ class CharTokenizer:
     def encode(self, s: str) -> list[int]:
         return [self.stoi.get(c, 0) for c in s]  # Fallback to index 0 for unknown characters
 
-    def decode(self, l: list[int]) -> str:
-        return "".join([self.itos.get(i, "") for i in l])
+    def decode(self, tokens: list[int]) -> str:
+        return "".join([self.itos.get(i, "") for i in tokens])
 
 
 class Head(nn.Module):

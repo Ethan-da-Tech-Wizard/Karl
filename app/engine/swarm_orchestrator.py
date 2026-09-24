@@ -18,7 +18,7 @@ import sys
 import uuid
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from PyQt6.QtCore import QThread, pyqtSignal
 from concurrent.futures import ThreadPoolExecutor
 from app.engine.swarm_agents import ArchitectAgent, CoderAgent, TesterAgent
@@ -846,7 +846,8 @@ class SwarmOrchestratorThread(QThread):
                     self.memory_recalled.emit(filepath, memory_hint)
                     self._emit_cognition("memory_recalled", filepath=filepath, text=memory_hint)
 
-            guidance_getter = lambda fp=filepath: self._drain_guidance(fp)
+            def guidance_getter(fp=filepath):
+                return self._drain_guidance(fp)
 
             n = self.candidates_per_task
             candidates: list[str] = []

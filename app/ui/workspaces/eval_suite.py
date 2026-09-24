@@ -29,9 +29,9 @@ logger = logging.getLogger("karl.eval_suite")
 
 
 def _section(text: str) -> QLabel:
-    l = QLabel(text)
-    l.setObjectName("section-header")
-    return l
+    lbl = QLabel(text)
+    lbl.setObjectName("section-header")
+    return lbl
 
 
 def _hline() -> QFrame:
@@ -777,16 +777,22 @@ class EvalSuiteWorkspace(QWidget):
             kws = [k.strip() for k in self._edit_case_keywords.text().split(",") if k.strip()]
             case["keywords"] = kws
             case["require_all"] = self._edit_case_req_all.isChecked()
-            if "schema_keys" in case: del case["schema_keys"]
+            if "schema_keys" in case:
+                del case["schema_keys"]
         elif grader == "json_valid":
             keys = [k.strip() for k in self._edit_case_keywords.text().split(",") if k.strip()]
             case["schema_keys"] = keys
-            if "keywords" in case: del case["keywords"]
-            if "require_all" in case: del case["require_all"]
+            if "keywords" in case:
+                del case["keywords"]
+            if "require_all" in case:
+                del case["require_all"]
         else:
-            if "keywords" in case: del case["keywords"]
-            if "require_all" in case: del case["require_all"]
-            if "schema_keys" in case: del case["schema_keys"]
+            if "keywords" in case:
+                del case["keywords"]
+            if "require_all" in case:
+                del case["require_all"]
+            if "schema_keys" in case:
+                del case["schema_keys"]
             
         # Update list item text if ID changed
         item = self._edit_cases_list.item(index)

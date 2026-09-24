@@ -271,7 +271,8 @@ class SessionTree:
 
     def save(self, session_id: str | None = None) -> str:
         """Write this tree to data/sessions/{session_id}.json. Returns the path."""
-        import os, json
+        import os
+        import json
         os.makedirs(self.SESSIONS_DIR, exist_ok=True)
         if session_id is None:
             import uuid
@@ -285,7 +286,7 @@ class SessionTree:
             if node_data.get("role") == "user":
                 payload["preview"] = node_data.get("content", "")[:80]
                 break
-        import tempfile, os as _os
+        import os as _os
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -305,7 +306,8 @@ class SessionTree:
     @classmethod
     def list_sessions(cls) -> list[dict]:
         """Return metadata for all saved sessions, newest first."""
-        import os, json
+        import os
+        import json
         if not os.path.exists(cls.SESSIONS_DIR):
             return []
         sessions = []

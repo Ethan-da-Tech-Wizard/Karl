@@ -1,6 +1,5 @@
 import os
 import sys
-import json
 import pytest
 
 # Ensure parent directory is in path

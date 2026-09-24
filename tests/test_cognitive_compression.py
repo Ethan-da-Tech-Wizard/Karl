@@ -2,7 +2,6 @@ import tests.qt_test_helper  # noqa: F401
 
 import os
 import sys
-import time
 from PyQt6.QtCore import QCoreApplication
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

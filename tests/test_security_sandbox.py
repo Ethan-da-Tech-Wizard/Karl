@@ -8,11 +8,17 @@ Covers:
 """
 
 import os
-import sys
 import platform
-import time
 import pytest
 from unittest.mock import patch
+
+from app.engine.swarm_agents import (
+    _safe_workspace_path,
+    _SECURITY_BLOCK_MSG,
+    _tool_write_file,
+    _tool_read_file,
+    _tool_lint_python,
+)
 
 
 # ── 1. Root / Administrator Execution Block ───────────────────────────────────
@@ -42,9 +48,6 @@ def test_root_block_allows_normal_user():
 
 
 # ── 2. _safe_workspace_path unit tests ───────────────────────────────────────
-
-from app.engine.swarm_agents import _safe_workspace_path, _SECURITY_BLOCK_MSG
-
 
 def test_safe_workspace_path_empty_rel_blocked(tmp_path):
     assert _safe_workspace_path(str(tmp_path), "") is None
@@ -85,9 +88,6 @@ def test_safe_workspace_path_symlink_escape_blocked(tmp_path):
 
 
 # ── 3. Tool Function: write_file ──────────────────────────────────────────────
-
-from app.engine.swarm_agents import _tool_write_file, _tool_read_file, _tool_lint_python
-
 
 def test_tool_write_file_symlink_escape_blocked(tmp_path):
     """write_file with a symlink that resolves outside the workspace must be blocked."""

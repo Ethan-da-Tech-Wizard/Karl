@@ -33,9 +33,9 @@ logger = logging.getLogger("karl.prompt_lab")
 
 
 def _section(text: str) -> QLabel:
-    l = QLabel(text)
-    l.setObjectName("section-header")
-    return l
+    lbl = QLabel(text)
+    lbl.setObjectName("section-header")
+    return lbl
 
 
 def _hline() -> QFrame:
@@ -613,7 +613,6 @@ class _ModelCompareThread(QThread):
 
     def run(self):
         import os
-        import time
         from app.engine.model_loader import ModelLoader
         from app.engine import config_store
         import core.interaction_loop

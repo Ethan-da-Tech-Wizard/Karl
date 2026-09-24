@@ -12,7 +12,6 @@ Mathematical definitions:
 - Cosine Similarity: A . B / (||A|| * ||B||) which simplifies to A . B when A and B are L2-normalized.
 """
 
-import math
 import re
 import numpy as np
 

@@ -233,7 +233,7 @@ def test_close_event_survives_active_kb_and_flywheel_threads(monkeypatch):
     """
     import threading as _threading
 
-    from PyQt6.QtCore import QThread, QTimer, pyqtSignal
+    from PyQt6.QtCore import QThread, pyqtSignal
     from PyQt6.QtWidgets import QApplication
 
     import app.ui.main_window as main_window_mod

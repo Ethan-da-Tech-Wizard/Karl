@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont, QKeyEvent
+from PyQt6.QtGui import QKeyEvent
 
 class CommandPalette(QDialog):
     def __init__(self, main_window, parent=None):

@@ -3,7 +3,6 @@ Tests for SQLiteConnectionPool — thread-safety, WAL configuration, and ACID sa
 under concurrent writes.
 """
 
-import os
 import sqlite3
 import threading
 import time
@@ -214,7 +213,6 @@ def test_semaphore_gates_concurrent_access_to_pool_size(tmp_path):
     db_path = str(tmp_path / "sem.db")
     pool_size = 3
     pool = SQLiteConnectionPool(db_path, pool_size=pool_size)
-    active = threading.Semaphore(0)
     barrier = threading.Barrier(pool_size)
     high_watermark = [0]
     hwm_lock = threading.Lock()

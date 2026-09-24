@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QWidget, QPushButton, QHBoxLayout
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QPolygonF, QIcon
+from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QIcon
 from app.ui.themes import get_theme_colors
 
 

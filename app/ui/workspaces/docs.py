@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QTextBrowser,
     QLabel, QFrame, QLineEdit, QPushButton, QMessageBox, QSplitter
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt
 
 from app.ui.themes import MONO, get_theme_colors
 from app.ui.workspaces.docs_data import DEFAULT_LIBRARY
@@ -14,9 +14,9 @@ logger = logging.getLogger("karl.codex")
 
 
 def _section(text: str) -> QLabel:
-    l = QLabel(text)
-    l.setObjectName("section-header")
-    return l
+    lbl = QLabel(text)
+    lbl.setObjectName("section-header")
+    return lbl
 
 def _hline() -> QFrame:
     f = QFrame()
@@ -306,7 +306,8 @@ class DocsWorkspace(QWidget):
         return re.sub(r"<(h[24])([^>]*)>(.*?)</\1>", replacer, content, flags=re.IGNORECASE)
 
     def _jump_to_anchor(self, text: str):
-        if not text: return
+        if not text:
+            return
         anchor_id = text.strip().replace(" ", "_").lower()
         self._browser.scrollToAnchor(anchor_id)
     def _send_to_workbench(self):

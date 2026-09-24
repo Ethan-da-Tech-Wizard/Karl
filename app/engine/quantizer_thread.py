@@ -135,10 +135,10 @@ class QuantizerThread(QThread):
         binary = _locate_llama_quantize(self.input_path)
         if not binary:
             self.error.emit(
-                f"llama-quantize binary not found.\n\n"
-                f"Build llama.cpp (cmake -B build && cmake --build build -t llama-quantize) "
-                f"and ensure build/bin/llama-quantize is present, "
-                f"or install it on PATH."
+                "llama-quantize binary not found.\n\n"
+                "Build llama.cpp (cmake -B build && cmake --build build -t llama-quantize) "
+                "and ensure build/bin/llama-quantize is present, "
+                "or install it on PATH."
             )
             return
 

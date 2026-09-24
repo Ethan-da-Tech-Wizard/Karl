@@ -15,7 +15,6 @@ import json
 import os
 import tempfile
 
-import pytest
 
 from app.utils.dataset_merger import (
     DatasetMerger,

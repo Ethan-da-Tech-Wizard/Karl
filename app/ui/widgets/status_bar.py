@@ -5,15 +5,15 @@ import os
 
 
 def _lbl(text: str, parent: QWidget) -> QLabel:
-    l = QLabel(text, parent)
-    l.setObjectName("lbl-muted")
-    return l
+    lbl = QLabel(text, parent)
+    lbl.setObjectName("lbl-muted")
+    return lbl
 
 
 def _sep(parent: QWidget) -> QLabel:
-    l = QLabel("·", parent)
-    l.setObjectName("lbl-muted")
-    return l
+    lbl = QLabel("·", parent)
+    lbl.setObjectName("lbl-muted")
+    return lbl
 
 
 class StatusBar(QWidget):

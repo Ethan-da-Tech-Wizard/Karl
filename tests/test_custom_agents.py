@@ -258,7 +258,7 @@ class TestCustomAgents(unittest.TestCase):
         
         # We call the generation loop synchronously (or run its target block)
         # to ensure it resolves model_path and calls ModelLoader.get_instance.
-        with patch.object(thread, "generation_finished") as mock_finished:
+        with patch.object(thread, "generation_finished"):
             # Running the main execution path of LLMThread
             thread.run()
             

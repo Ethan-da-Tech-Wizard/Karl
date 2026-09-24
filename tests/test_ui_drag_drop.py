@@ -4,7 +4,6 @@ from PyQt6.QtCore import QMimeData, QUrl, Qt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import tests.qt_test_helper  # Ensures global QApplication runs headlessly
 from app.ui.workspaces.knowledge_base import KnowledgeBaseWorkspace
 from app.ui.workspaces.training_studio.dataset_tab import DatasetListModel
 

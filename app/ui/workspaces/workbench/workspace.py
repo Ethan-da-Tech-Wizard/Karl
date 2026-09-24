@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QSpinBox, QListWidget,
     QTreeWidget, QTreeWidgetItem, QMainWindow, QDockWidget,
     QTabWidget, QLineEdit, QMenu, QInputDialog, QMessageBox, QColorDialog,
-    QApplication, QProgressBar, QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
+    QApplication, QProgressBar, QGraphicsDropShadowEffect,
     QSizePolicy, QDialog, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QRect, QPropertyAnimation, QSize
@@ -45,9 +45,8 @@ from app.ui.widgets.toast import ToastOverlay
 
 from app.ui.workspaces.workbench.chat_view import ChatView
 from app.ui.workspaces.workbench.profiles import (
-    AGENT_PROFILES, reload_profiles,
-    save_profile_override, delete_profile_override,
-    get_default_prompt, is_overridden,
+    AGENT_PROFILES, save_profile_override, delete_profile_override,
+    is_overridden,
 )
 from app.utils.correlation_logger import new_correlation_id, set_correlation_id
 from core.default_prompts import DEFAULT_SYSTEM_PROMPT

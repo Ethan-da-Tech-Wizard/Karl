@@ -10,14 +10,11 @@ import logging
 import os
 import json
 import glob
-import re
-from typing import Any
 
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter,
     QPushButton, QTextBrowser, QLabel, QListWidget,
-    QListWidgetItem, QMessageBox, QTabWidget, QFrame,
-    QSizePolicy, QTableWidget, QTableWidgetItem, QAbstractItemView,
+    QListWidgetItem, QMessageBox, QTabWidget, QTableWidget, QTableWidgetItem, QAbstractItemView,
     QComboBox, QLineEdit, QStackedWidget,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -31,16 +28,16 @@ logger = logging.getLogger("karl.flywheel_studio")
 
 
 def _section(text: str) -> QLabel:
-    l = QLabel(text)
-    l.setObjectName("section-header")
-    return l
+    lbl = QLabel(text)
+    lbl.setObjectName("section-header")
+    return lbl
 
 
 def _label(text: str, obj: str = "") -> QLabel:
-    l = QLabel(text)
+    lbl = QLabel(text)
     if obj:
-        l.setObjectName(obj)
-    return l
+        lbl.setObjectName(obj)
+    return lbl
 
 
 # ── Custom Interactive Line Chart Widget ──────────────────────────────────────
