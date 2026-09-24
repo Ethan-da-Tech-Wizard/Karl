@@ -98,6 +98,19 @@ spec:
               mountPath: /app/data/karl-defaults.json
               subPath: karl-defaults.json
               readOnly: true
+{{- if .Values.tls.enabled }}
+            # KARL_WS_HOST=0.0.0.0 (runtime.env above) means the WSS bridge
+            # requires real cert files here and refuses to start in
+            # plaintext otherwise -- see app/engine/websocket_server.py.
+            - name: tls
+              mountPath: /app/data/ssl/localhost.crt
+              subPath: tls.crt
+              readOnly: true
+            - name: tls
+              mountPath: /app/data/ssl/localhost.key
+              subPath: tls.key
+              readOnly: true
+{{- end }}
       volumes:
         - name: data
 {{- if .Values.persistence.enabled }}
@@ -109,3 +122,8 @@ spec:
         - name: config
           configMap:
             name: {{ default (printf "%s-karl" .Release.Name) .Values.fullnameOverride }}-config
+{{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ default (printf "%s-backend-tls" (default (printf "%s-karl" .Release.Name) .Values.fullnameOverride)) .Values.tls.secretName }}
+{{- end }}

@@ -106,10 +106,12 @@ RUN python -m pip install --no-index --find-links /wheels -r requirements.txt \
     && rm -rf /wheels
 
 COPY --chown=karl:karl . .
-RUN mkdir -p data/models data/vector_db data/logs data/sessions data/training data/adapters data/prompt_pairs \
-    && chown -R karl:karl /app/data
+RUN mkdir -p data/models data/vector_db data/logs data/sessions data/training data/adapters data/prompt_pairs data/ssl \
+    && chown -R karl:karl /app/data \
+    && chmod +x docker-entrypoint.sh
 
 USER karl
 EXPOSE 8080
 
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["python", "main.py"]

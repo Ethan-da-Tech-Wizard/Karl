@@ -30,6 +30,19 @@ bridge:
   secretKey: bridge-token
   token: change-me-before-deploy
 
+# KARL_WS_HOST=0.0.0.0 (see runtime.env above) means the WSS bridge
+# (app/engine/websocket_server.py::_start_server) requires real TLS cert
+# files at data/ssl/localhost.crt|.key and refuses to fall back to plaintext
+# on a non-loopback host. This provisions that cert via cert-manager so the
+# ingress's `backend-protocol: HTTPS` annotation actually terminates against
+# a live TLS listener instead of a bridge that silently failed to bind.
+tls:
+  enabled: true
+  clusterIssuer: internal-ca
+  secretName: ""
+  dnsNames:
+    - karl-backend
+
 config:
   activeModel:
     filename: deepseek-r1-1.5b.gguf

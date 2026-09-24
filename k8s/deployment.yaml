@@ -97,6 +97,18 @@ spec:
               mountPath: /app/data/karl-defaults.json
               subPath: karl-defaults.json
               readOnly: true
+            # KARL_WS_HOST=0.0.0.0 above means the WSS bridge (see
+            # app/engine/websocket_server.py::_start_server) requires real
+            # cert files here and refuses to start in plaintext otherwise.
+            # Sourced from cert-manager via k8s/certificate.yaml.
+            - name: tls
+              mountPath: /app/data/ssl/localhost.crt
+              subPath: tls.crt
+              readOnly: true
+            - name: tls
+              mountPath: /app/data/ssl/localhost.key
+              subPath: tls.key
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -104,3 +116,6 @@ spec:
         - name: config
           configMap:
             name: karl-config
+        - name: tls
+          secret:
+            secretName: karl-backend-internal-tls

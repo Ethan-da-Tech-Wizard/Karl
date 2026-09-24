@@ -1,0 +1,18 @@
+{{- if .Values.tls.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ default (printf "%s-karl" .Release.Name) .Values.fullnameOverride }}-backend-tls
+  labels:
+    app.kubernetes.io/name: {{ default .Chart.Name .Values.nameOverride }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: backend
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+spec:
+  secretName: {{ default (printf "%s-backend-tls" (default (printf "%s-karl" .Release.Name) .Values.fullnameOverride)) .Values.tls.secretName }}
+  issuerRef:
+    name: {{ .Values.tls.clusterIssuer }}
+    kind: ClusterIssuer
+  dnsNames:
+{{ toYaml .Values.tls.dnsNames | indent 4 }}
+{{- end }}

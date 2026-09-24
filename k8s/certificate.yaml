@@ -1,0 +1,25 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: karl-backend-internal-tls
+  labels:
+    app.kubernetes.io/name: karl
+    app.kubernetes.io/component: backend
+spec:
+  # Backend-facing certificate for the WSS bridge itself. KARL_WS_HOST=0.0.0.0
+  # (set in deployment.yaml) makes app/engine/websocket_server.py refuse to
+  # start the bridge in plaintext -- it requires a real cert at
+  # data/ssl/localhost.crt / data/ssl/localhost.key on any non-loopback host.
+  # This is what the ingress's `backend-protocol: HTTPS` annotation actually
+  # terminates against, so it must exist for the bridge to bind at all.
+  secretName: karl-backend-internal-tls
+  issuerRef:
+    name: internal-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - karl-backend
+    - karl-backend.default.svc.cluster.local
+  secretTemplate:
+    labels:
+      app.kubernetes.io/name: karl
+      app.kubernetes.io/component: backend
