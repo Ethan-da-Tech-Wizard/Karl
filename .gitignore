@@ -75,5 +75,8 @@ scratch/
 
 # Build artifacts for VS Code extension
 *.vsix
-package-lock.json
 node_modules/
+# package-lock.json is intentionally NOT ignored: `npm ci` (both locally and
+# in CI's node-verify job) requires a committed lockfile to do a
+# reproducible install, and actions/setup-node's cache-dependency-path
+# can't resolve without one either.
