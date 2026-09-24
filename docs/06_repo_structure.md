@@ -1,5 +1,12 @@
 # Repository Structure & File Specifications — Karl v2
 
+> **AGENTS.md is the current source of truth for repo structure and the
+> component list** (updated 2026-09). This doc predates the vision pipeline,
+> swarm engine expansion, WebSocket bridge, VS Code/Neovim clients, and
+> deployment manifests, and some specifics below (e.g. the three-column
+> layout claim) describe an earlier UI. Treat this file as historical detail
+> on the hackable core / engine files, not the current full picture.
+
 The repository separates the **application layer** (stable, threading-safe UI and engine code)
 from the **hackable core** (simple, hot-reloadable Python scripts the user edits freely).
 
@@ -97,7 +104,7 @@ Karl/
 │   ├── qlora_config_template.yaml ← Ready-to-use QLoRA config for Unsloth
 │   └── validate_dataset.py     ← Validates curated.jsonl before a training run
 │
-├── vscode-extension/
+├── oss/vss_extension/
 │   ├── extension.js            ← VS Code / Code OSS webview client and editor commands
 │   ├── package.json            ← Extension manifest, commands, settings, Activity Bar view
 │   ├── package-lock.json       ← npm lockfile

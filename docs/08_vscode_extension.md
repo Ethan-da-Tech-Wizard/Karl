@@ -13,7 +13,7 @@ WebSocket bridge:
 
 ```
 VS Code / Code OSS
-  -> vscode-extension/extension.js webview
+  -> oss/vss_extension/extension.js webview
   -> ws://localhost:<karl.port>
   -> app/engine/websocket_server.py
   -> Karl engine threads, RAG, model loader, training tools
@@ -26,7 +26,7 @@ their own machine.
 
 ## Current Extension Surface
 
-The extension package lives in `vscode-extension/`.
+The extension package lives in `oss/vss_extension/`.
 
 Current capabilities:
 
@@ -59,6 +59,8 @@ The bridge methods currently handled by `app/engine/websocket_server.py` are:
 | `compute_diff` | Render Prompt Lab output diff HTML. |
 | `list_codex_topics` | List local Codex reference topics. |
 | `get_codex_content` | Return one local Codex reference page. |
+| `list_adapters` | List installed LoRA adapters under `data/adapters/`. |
+| `set_active_model` (with `adapter` param) | Also used to load/switch the active LoRA adapter, not just the base model. |
 
 Server notifications sent back to the extension include:
 
@@ -86,7 +88,7 @@ python main.py
 Package and install the extension:
 
 ```bash
-cd ~/karl/vscode-extension
+cd ~/karl/oss/vss_extension
 npm install
 npx @vscode/vsce package
 code --install-extension karl-1.4.0.vsix
@@ -180,6 +182,23 @@ This boundary preserves privacy and keeps the extension portable. It also
 prevents the extension host from becoming a second Python runtime with its own
 dependency problems.
 
+## Connection Architecture: Two Independent Sockets
+
+The webview (`media/karl_socket.js`) opens its own direct WebSocket connection
+to the Karl bridge — this is the live, authoritative connection for chat
+streaming, swarm notifications, and the Review Bay. The extension host
+(`sidebarProvider.js`'s `connectToBridge()`) *also* opens its own separate
+connection, used only for host-side needs (the Output Channel log for
+auto-train, and refreshing the bridge token/port from
+`~/.karl/service_discovery.json`). **Do not forward the host's socket
+messages to the webview** — Karl broadcasts to every connected client, so
+forwarding both would double-deliver every notification (this caused
+duplicate Review Bay entries for the same proposed edit; fixed 2026-09).
+A `window.KARL_USE_HOST_RELAY` flag exists for a host-relay mode where the
+webview has no direct socket of its own, but it's unset/unreachable in the
+current build — the host side is missing `bridge_connect`/`bridge_send`/
+`bridge_disconnect` handlers, so don't set that flag without adding them.
+
 ## Webview ↔ Host Messaging API Contract (postMessage)
 
 The communication loop between the extension host (`extension.js` & `sidebarProvider.js`) and the Webview is mediated by standard `postMessage` payloads:
@@ -233,9 +252,6 @@ Recommended next bridge methods:
 | Method | Result |
 |--------|--------|
 | `download_model` | Streams model download progress from Karl. |
-| `list_adapters` | Installed adapters under `data/adapters/`. |
-| `load_adapter` | Loads adapter into `ModelLoader`. |
-| `unload_adapter` | Clears active adapter. |
 | `list_training_examples` | Curated examples with source and timestamps. |
 | `export_sft` | Writes Unsloth SFT JSONL. |
 | `export_dpo` | Writes Unsloth DPO JSONL. |

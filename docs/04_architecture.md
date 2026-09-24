@@ -422,7 +422,7 @@ PyQt6 desktop app
   -> engine threads, RAG, trace logger, training curator, ModelLoader
 
 VS Code / Code OSS extension
-  -> vscode-extension/extension.js webview
+  -> oss/vss_extension/extension.js webview
   -> ws://localhost:<port>
   -> app/engine/websocket_server.py
   -> engine threads, RAG, trace logger, training curator, ModelLoader

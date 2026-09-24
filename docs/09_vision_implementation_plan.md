@@ -923,11 +923,11 @@ Exit criteria:
 
 Files:
 
-- `vscode-extension/extension.js`
-- `vscode-extension/media/karl.js`
-- `vscode-extension/media/karl.css`
-- `vscode-extension/package.json`
-- `vscode-extension/README.md`
+- `oss/vss_extension/extension.js`
+- `oss/vss_extension/media/karl.js`
+- `oss/vss_extension/media/karl.css`
+- `oss/vss_extension/package.json`
+- `oss/vss_extension/README.md`
 
 Tasks:
 

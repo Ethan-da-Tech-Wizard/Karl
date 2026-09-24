@@ -171,7 +171,7 @@ Sidebar: Workbench, Prompt Lab, Knowledge Base, Vision, Training Studio, Eval Su
 ---
 
 ### ✅ M18 — VS Code / Code OSS Bridge
-**Files:** `vscode-extension/extension.js`, `vscode-extension/package.json`,
+**Files:** `oss/vss_extension/extension.js`, `oss/vss_extension/package.json`,
 `app/engine/websocket_server.py`, `app/engine/swarm_orchestrator.py`,
 `tests/test_websocket_bridge.py`
 

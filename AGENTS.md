@@ -1,9 +1,16 @@
 # AGENTS.md — Handoff Document for AI Agents
 
 > **Written for AI coding agents. Read this before touching any code.**
-> This file describes the exact current state of the repo — what is done,
+> This file describes the current state of the repo — what is done,
 > what is incomplete, what is broken, and what must be built next.
-> Every claim here is accurate as of the last Phase 1 commit.
+> The "Completion Plan" below records the original Phase 1–5 build (all
+> complete). Everything the project grew *after* that — the vision
+> pipeline, the multi-agent swarm engine, the WebSocket editor/remote
+> bridge, the VS Code and Neovim clients, k8s/Helm/Docker deployment, and
+> a full security-hardening pass — is real, shipped, and summarized in the
+> sections below, but is documented in depth in `docs/*.md` and
+> `docs/audits/` rather than re-derived here. **If you find a claim in this
+> file that doesn't match the code, trust the code and fix this file.**
 
 ---
 
@@ -40,6 +47,31 @@ MainWindow
 │   └── [9] FlywheelStudioWorkspace app/ui/workspaces/flywheel_studio.py
 └── StatusBar (fixed 24px)         app/ui/widgets/status_bar.py
 ```
+
+The sidebar/stack above is the whole visible app, but it is not the whole
+codebase. Several subsystems live outside the stack and are driven by
+their own workspace, by the WebSocket bridge, or by CLI scripts:
+
+- **Vision pipeline** (`app/vision/`) — OCR, image preprocessing, and a
+  vision-model loader consumed by `VisionWorkbench` (stack index 3).
+- **Swarm engine** (`app/engine/swarm_agents.py`, `swarm_orchestrator.py`,
+  `swarm_judge.py`, `swarm_specialists.py`, `swarm_memory.py`,
+  `task_supervisor.py`) — the Architect/Coder/Tester multi-agent pipeline
+  behind SwarmStudioWorkspace. See `docs/05_multi_agent_swarm.md`.
+- **Editor/remote bridge** (`app/engine/websocket_server.py`, ~2.5k lines)
+  — a token-scoped, RBAC-gated WSS JSON-RPC server that the VS Code
+  extension and Neovim client connect to as remote UIs onto the same
+  running app. See "Editor Extension Integration" below and
+  `docs/08_vscode_extension.md`.
+- **AI Lab** (`app/ui/workspaces/ai_lab.py`, ~800 lines, has its own test
+  file) is fully built but **deliberately not wired into the sidebar** —
+  a past audit found the "AI Lab" button actually opened Training Studio
+  and relabeled the button rather than silently swap workspaces; adding
+  AI Lab as an 11th sidebar slot is a product decision, not a bug fix.
+  See `docs/audits/repo_audit_findings_2026-07.md` item 5.
+- **Flywheel automation** (`flywheel_runner.py`, `data/flywheel/*.py`) —
+  a sandboxed background loop distinct from `FlywheelStudioWorkspace`
+  (which is the UI for viewing its telemetry).
 
 ### AppState — Shared State Container
 
@@ -84,12 +116,13 @@ The user is expected to edit them directly. Do NOT add complex dependencies here
 
 ### Editor Extension Integration
 
-Karl is equipped with a native VS Code/Code OSS editor extension (`oss/vss_extension/`) that acts as a client to the running Karl PyQt6 desktop application.
+Karl is equipped with a native VS Code/Code OSS editor extension (`oss/vss_extension/`) that acts as a client to the running Karl PyQt6 desktop application over the WebSocket bridge (`app/engine/websocket_server.py`). A Neovim client (`neovim/karl.lua`) speaks the same bridge protocol for terminal-editor users. Full protocol reference: `docs/08_vscode_extension.md`.
 
-* **Architecture**: The extension is a Webview panel that executes HTML5/JavaScript UI logic, proxying RPC calls to Karl's WebSocket server over local secure ports.
-* **Message Protocol (`postMessage`)**: The Webview and VS Code host communicate via JSON messages. The host forwards connections and editor status telemetry (`cockpit_state_update`) to the Webview and processes workspace file writes (`queue_file_edit`) proposed by the agents.
+* **Architecture**: The extension is a Webview panel that executes HTML5/JavaScript UI logic, proxying RPC calls to Karl's WebSocket server over local secure ports (WSS, token-authenticated — see `data/bridge_token.json`, gitignored, generated at runtime).
+* **Message Protocol (`postMessage`)**: The Webview and VS Code host communicate via JSON messages. The host forwards connections and editor status telemetry (`cockpit_state_update`) to the Webview and processes workspace file writes (`queue_file_edit`) proposed by agents — routed through `oss/vss_extension/src/fileOps.js` (file I/O) and `gitOps.js` (diff/git actions) into real VS Code APIs (`vscode.workspace.applyEdit` / diff views), not just displayed as chat text.
 * **Performance Rendering**: To prevent DOM fragmentation, tokens are appended directly to existing `.token-appear` nodes. Scroll recalculations are throttled using `requestAnimationFrame` to avoid layout reflow thrashing.
 * **Focus Management**: Switching workspaces within the extension automatically focuses the primary inputs (`chatInput`, `objective`, or `kbQuery`) to keep the user's hands on the keyboard.
+* **Security**: symlink-safe path checks, an allowlisted model/adapter-path validator, and a random (not timestamp-derived) CSP nonce were added in the security pass — see `docs/audits/architecture_walkthrough_2026-07.md`.
 
 ### Threading Model
 
@@ -267,6 +300,19 @@ See `docs/03_training_curator.md` for the full technical reference.
 | Hardware scout | `core/hardware_scout.py` |
 | AppState persistence (save_to_disk / load_from_disk) | `app/state.py`, `app/engine/config_store.py` |
 | Agent profile registry with reload + custom agents | `app/ui/workspaces/workbench/profiles.py` |
+| Vision pipeline — OCR, preprocessing, vision model loader | `app/vision/` |
+| Swarm engine — Architect/Coder/Tester orchestration, judge, specialists, cross-run memory | `app/engine/swarm_agents.py`, `swarm_orchestrator.py`, `swarm_judge.py`, `swarm_specialists.py`, `swarm_memory.py` |
+| WebSocket editor/remote bridge — WSS, token auth, per-method RBAC scopes | `app/engine/websocket_server.py` |
+| VS Code extension — chat panel, KB/eval/ai-lab views, real file writes via `fileOps.js`/`gitOps.js` | `oss/vss_extension/` |
+| Neovim client (same bridge protocol) | `neovim/karl.lua` |
+| Codex reference library (scraped per-topic docs) backing DocsWorkspace | `data/codex_library/`, `app/ui/workspaces/docs_data.py` |
+| Agent profile / persona editor workspace | `app/ui/workspaces/agent_profile_studio.py` |
+
+### 🔧 Built But Not Wired Into the Sidebar (by design)
+
+| Component | File(s) | Why it's not in the stack |
+|-----------|---------|----------------------------|
+| AI Lab workspace | `app/ui/workspaces/ai_lab.py` | Fully built, has its own test file, but adding an 11th sidebar slot is a product decision that hasn't been made — see `docs/audits/repo_audit_findings_2026-07.md` item 5. |
 
 > **All previously noted ⚠️ issues have been resolved.** The two items below are the
 > only remaining functional gaps (by design — they require HF weights and GPU infrastructure
@@ -296,7 +342,11 @@ failure in one sub-phase cannot corrupt the others.
 ---
 
 > **Progress Legend:** ✅ = completed · 🔨 = in progress · ⬚ = not started
-> **All phases complete. Karl is fully built.**
+> **All phases below are complete.** The work that followed Phase 5 — the vision
+> pipeline, swarm engine expansion, WebSocket bridge, VS Code/Neovim clients,
+> deployment manifests, and a full audit-driven hardening pass — isn't tracked as
+> numbered phases; see `docs/audits/repo_audit_findings_2026-07.md` and
+> `docs/audits/architecture_walkthrough_2026-07.md` for that history.
 
 
 ### ✅ Phase 1 — Wire It Together *(completed)*
@@ -608,8 +658,31 @@ Eval Suite → pick dataset.jsonl → run
 7. **No `upgrade_manager.py` exists anymore.** It was removed. Do not reference or
    re-create it. Self-upgrade functionality has been permanently cut.
 
-8. **`Karl-main/` was removed.** It was a stale snapshot of the original codebase and
-   is no longer tracked. All active work is in the root. Do not re-create it.
+8. **`Karl-main/` was removed** (an untracked, empty leftover directory tree with the
+   same name resurfaced at one point and was deleted again during the 2026-09 demo
+   cleanup pass — see `docs/audits/`). It was a stale snapshot of the original codebase.
+   All active work is in the root. Do not re-create it.
+
+11. **The WebSocket bridge (`app/engine/websocket_server.py`) is a real remote-control
+    surface**, not just a chat relay — it's what the VS Code extension and Neovim client
+    talk to. Any RPC method that reads/writes paths, sets the active model/adapter, or
+    shells out (e.g. `start_auto_train`) must go through the existing path-safety and
+    allowlist helpers (`_is_safe_path`, `_collect_kb_files`, the model/adapter basename
+    checks) — do not add a new file/subprocess-touching RPC method without them. Full
+    threat model and fixes: `docs/audits/architecture_walkthrough_2026-07.md`.
+
+12. **`k8s/`, `helm/`, `Dockerfile`, `docker-compose.yml` deploy Karl's WebSocket bridge
+    as a networked service**, which is a different trust model than the offline desktop
+    app described above — `_start_server` in `websocket_server.py` requires a real TLS
+    cert and fails closed (refuses to bind) for any non-loopback `KARL_WS_HOST`, it does
+    not fall back to plaintext. Something has to actually provision `data/ssl/localhost.{crt,key}`
+    for that non-loopback case, or the container crash-loops on boot (`main.py`'s headless
+    entrypoint correctly exits 1 when the bind fails). k8s/Helm do this via a cert-manager
+    `Certificate` (`k8s/certificate.yaml` / `helm/karl/templates/certificate.yaml`, reusing
+    the `internal-ca` issuer the ingress already references); plain Docker/docker-compose
+    do it via `docker-entrypoint.sh` generating a self-signed cert on first boot. If you
+    touch these manifests, keep the cert-provisioning path intact — don't just set
+    `KARL_WS_HOST=0.0.0.0` without one of the two provisioning mechanisms above.
 
 9. **`AppState` is the only cross-workspace communication channel.** Workspaces must
    not import each other or reference `MainWindow`. If a new workspace needs to trigger
@@ -655,6 +728,10 @@ python eval/run_eval.py --dataset eval/datasets/grounded_answer.jsonl
 
 ## Repo Structure (Current)
 
+This is a curated map of what matters, not an exhaustive listing — the repo has
+~550 tracked files. Run `git ls-files` for the literal current list; trust that
+over this tree if they disagree.
+
 ```
 Karl/
 ├── AGENTS.md                  ← YOU ARE HERE
@@ -663,84 +740,100 @@ Karl/
 ├── engine_test.py             ← headless inference test
 ├── smoke_test.py              ← template/workflow smoke tests
 ├── raw_test.py                ← raw token streaming test
+├── flywheel_runner.py         ← background sandboxed self-improvement loop (distinct from FlywheelStudioWorkspace UI)
+├── auto_train.py              ← CLI entry for the LoRA/QLoRA training thread, also invoked by the WS bridge
 ├── download_test_model.py     ← downloads deepseek-r1-1.5b.gguf Q4_K_M
+├── download_all_models.py     ← downloads every tier in data/model_registry.json
+├── setup_karl.py, karl.sh, setup_gpu.sh ← bootstrap scripts (venv, CMAKE flags, GPU/CUDA setup)
 ├── requirements.txt           ← pip deps; peft/trl/transformers/datasets are optional (Training Studio)
 │
 ├── core/                      ← HACKABLE LAYER — hot-reloaded on every generation
 │   ├── interaction_loop.py    ← build_prompt(system, history) -> str
 │   ├── prompt_templates.py    ← named templates; get_template(name, **kwargs) -> str
+│   ├── prompt_optimizer.py    ← prompt-compression / "machine-speak" trace helpers
 │   ├── workflows.py           ← 4 workflow modes (general_chat, document_extractor, grounded_answer, code_review)
 │   ├── cognitive_parser.py    ← parse_thought_stream(raw) -> (thought, response); state machine
 │   ├── agentic_loop.py        ← should_continue() + build_next_prompt(); MAX_ITERATIONS=20
-│   └── hardware_scout.py      ← get_hardware_profile() -> {ram_gb, vram_gb, storage_gb}
+│   ├── hardware_scout.py      ← get_hardware_profile() -> {ram_gb, vram_gb, storage_gb}
+│   ├── security.py            ← shared path/input validation helpers (also used by the WS bridge)
+│   └── default_prompts.py     ← built-in system prompt presets
 │
 ├── app/
 │   ├── state.py               ← AppState: shared state passed to all workspaces
-│   ├── engine/
+│   ├── engine/                ← ~30 files: model lifecycle, threads, swarm engine, bridge
 │   │   ├── model_loader.py    ← thread-safe singleton; registry n_ctx; GPU fallback; circuit breaker
-│   │   ├── llm_thread.py      ← LLMThread(QThread); streaming parser, watchdog, trace logging
-│   │   ├── agentic_thread.py  ← AgenticThread(QThread); autonomous loop, streaming parser
-│   │   ├── websocket_server.py ← secure JSON-RPC 2.0 WSS bridge; token scopes; /metrics
+│   │   ├── llm_thread.py / agentic_thread.py ← QThread generation workers, streaming parser
+│   │   ├── swarm_agents.py, swarm_orchestrator.py, swarm_judge.py, swarm_specialists.py,
+│   │   │   swarm_memory.py, task_supervisor.py ← Architect/Coder/Tester multi-agent pipeline
+│   │   ├── websocket_server.py ← secure JSON-RPC 2.0 WSS bridge; token scopes; /metrics; ~2.5k lines
+│   │   ├── tool_executor.py, mcp_client.py, remote_rpc_client.py ← tool-call execution + MCP integration
+│   │   ├── agent_memory.py    ← per-workspace codebase memory index for swarm agents
 │   │   ├── config_store.py    ← atomic data/*.json config I/O and registry cache
 │   │   └── event_broker.py    ← thread-safe in-process pub/sub telemetry bus
+│   ├── repository/
+│   │   └── session_repository.py ← file/DB-backed session persistence (distinct from MemoryManager)
+│   ├── vision/                 ← OCR, image preprocessing, vision model loader/analyzer for VisionWorkbench
 │   ├── ui/
-│   │   ├── main_window.py     ← shell only: sidebar + stack + status bar
+│   │   ├── main_window.py     ← sidebar + stack + status bar wiring
 │   │   ├── sidebar.py         ← 10-button accessible nav; workspace_changed(int) signal
 │   │   ├── themes.py          ← THEMES palettes; get_theme_stylesheet(state); MONO font stack
-│   │   ├── widgets/
-│   │   │   ├── __init__.py
-│   │   │   └── status_bar.py  ← model name, state text, RAM; set_model/set_state/set_adapter
+│   │   ├── widgets/            ← status_bar, command_palette, glow_panel, toast, shortcuts_overlay, tracing_panel, etc.
 │   │   └── workspaces/
-│   │       ├── __init__.py
 │   │       ├── workbench/        ← Workbench package; params, sessions, branching, feedback
 │   │       ├── prompt_lab.py     ← Prompt Lab; A/B streams, saved pairs, diff, tokenizer
-│   │       ├── knowledge_base.py ← chunk size/overlap controls; threshold wired to AppState (Phase 3.1 / 2.1)
-│   │       ├── training_studio/  ← Training Studio package; training requires HF weights; DPO export wired (Phase 3.3 / 4.2)
-│   │       ├── eval_suite.py     ← progress_cb wired to harness (Phase 3.1)
-│   │       └── system_config/    ← System Config package; model registry, runtime, hardware
-│   └── utils/
-│       ├── rag_pipeline.py    ← persistent FAISS; distance threshold wired via AppState.rag_threshold (Phase 2.1)
-│       ├── memory_manager.py  ← <think> blocks stripped before session save (Phase 1)
-│       ├── trace_logger.py    ← new schema (id, session_id, feedback, model, adapter, rotation)
-│       └── training_curator.py ← curated.jsonl; export_unsloth() returns path string (Phase 2.5)
+│   │       ├── knowledge_base.py ← chunk size/overlap controls; threshold wired to AppState
+│   │       ├── vision_workbench.py
+│   │       ├── training_studio/  ← Training Studio package; training requires HF weights
+│   │       ├── eval_suite.py
+│   │       ├── swarm_studio.py   ← task graph, file proposals, verification traces
+│   │       ├── system_config/    ← model registry, quantization, MCP, theme, observability, hardware
+│   │       ├── docs.py, docs_data.py ← Codex reference-library browser + its scraped content index
+│   │       ├── flywheel_studio.py ← telemetry UI for flywheel_runner.py
+│   │       ├── agent_profile_studio.py ← persona/agent-profile editor
+│   │       └── ai_lab.py          ← built, tested, NOT wired into the sidebar (see above)
+│   └── utils/                  ← ~30 files: rag_pipeline, memory_manager, trace_logger, training_curator,
+│                                  session_tree, dataset_merger, db_pool, keychain_manager, correlation_logger,
+│                                  swarm_replay, swarm_agent_profiles, topic_graph, codebase_search,
+│                                  convert_lora_to_gguf.py (+ conversion/ — vendored per-architecture
+│                                  GGUF converters it imports), and more
 │
 ├── eval/
-│   ├── harness.py             ← EvalHarness.run(); model guard + progress_cb wired (Phase 1 / 3.1)
-│   ├── graders.py             ← 5 graders: exact_match, json_valid, keyword_hit, groundedness, not_in_context
-│   ├── run_eval.py            ← CLI: --dataset, --dry-run, --output
-│   ├── benchmark_rag.py       ← RAG retrieval benchmarking
-│   └── datasets/              ← eval JSONL files (source-controlled)
+│   ├── harness.py, graders.py, run_eval.py, benchmark_rag.py, perplexity_bench.py
+│   └── datasets/               ← eval JSONL files (source-controlled)
 │
-├── training/
-│   ├── validate_dataset.py    ← validates curated.jsonl format
-│   ├── qlora_config_template.yaml
-│   └── WHEN_TO_TUNE.md
+├── training/                   ← validate_dataset.py, qlora_config_template.yaml, WHEN_TO_TUNE.md
+├── tools/                      ← operator/dataset CLI scripts: curate_code_datasets.py, decrypt_logs.py,
+│                                  generate_*_sft_dataset.py, scrape_library_docs.py, evaluate_adapters.py,
+│                                  setup_speculative_decoding.py, auto_train_lora.py
+│
+├── tests/                      ← ~80 pytest files covering nearly every module above; run `pytest` from repo root
+│
+├── oss/vss_extension/          ← VS Code/Code OSS editor extension
+│   ├── package.json           ← Extension configuration and commands registry
+│   ├── extension.js           ← Extension host entry point (commands, workspaces, diffs)
+│   ├── src/
+│   │   ├── sidebarProvider.js ← Webview container (HTML generation, socket lifecycle, postMessage proxy)
+│   │   ├── commands.js        ← registered VS Code command palette entries
+│   │   ├── fileOps.js         ← real file reads/writes into the VS Code workspace
+│   │   └── gitOps.js          ← diff views / git actions for agent-proposed edits
+│   └── media/                 ← karl.js, karl_render.js, karl_socket.js, karl_state.js, themes.js, karl.css
+├── neovim/karl.lua             ← Neovim client speaking the same WebSocket bridge protocol
+│
+├── k8s/, helm/karl/, Dockerfile, docker-compose.yml
+│                                ← deploy the WebSocket bridge as a networked service; see gotcha #12 above
+│                                  before touching — different trust model than the offline desktop app
+│
+├── docs/                       ← 01–10 numbered reference docs + audits/ (dated hardening/audit history)
 │
 └── data/
-    ├── model_registry.json    ← source-controlled; 4 tiers; n_ctx: 4096/8192/16384/32768
-    ├── active_model.json      ← written at runtime (gitignored)
-    ├── models/                ← gitignored (.gguf files)
-    ├── hf_models/             ← gitignored (HuggingFace weights for LoRA training)
-    ├── adapters/              ← gitignored (trained LoRA adapters)
-    ├── logs/
-    │   ├── traces/            ← gitignored (JSONL trace logs, one per day, configurable rotation)
-    │   ├── archive/           ← gitignored (gzip+Fernet-encrypted .jsonl.enc archives)
-    │   └── raw/               ← gitignored (.tokens raw archive per generation)
-    │  
-    ├── sessions/              ← gitignored (saved conversation JSON)
-    ├── training/              ← gitignored (curated.jsonl, export files)
-    └── vector_db/             ← gitignored (index.faiss, meta.db)
-│
-└── oss/vss_extension/          ← VS Code/Code OSS editor extension
-    ├── package.json           ← Extension configuration and commands registry
-    ├── extension.js           ← Extension host entry point (commands, workspaces, diffs)
-    ├── src/
-    │   └── sidebarProvider.js ← Webview container (HTML generation, socket lifecycle, postMessage proxy)
-    └── media/
-        ├── karl.js            ← Client event handlers and controller logic
-        ├── karl_render.js     ← Stream renderer (Token DOM re-use, throttled requestAnimationFrame scrolling)
-        ├── karl_socket.js     ← WebSocket manager (Heartbeat timers, direct/host-relay handshakes)
-        ├── karl_state.js      ← State persistence & focus redirection
-        ├── themes.js          ← Custom styling parameters
-        └── karl.css           ← Obsidian-core styling rules
+    ├── model_registry.json, vision_model_registry.json ← source-controlled model tiers
+    ├── agent_profiles.json, feature_flags.json          ← source-controlled defaults
+    ├── codex_library/                                    ← source-controlled scraped reference docs (DocsWorkspace)
+    ├── flywheel/*.py                                     ← flywheel_runner.py sandbox/generator/curator modules
+    ├── active_model.json, ui_config.json, mcp_config.json, agent_memory*.json ← runtime state (gitignored)
+    ├── bridge_token.json, ssl/                            ← runtime secrets, regenerated on launch (gitignored)
+    ├── prompt_pairs/, eval_last.json, quantization_comparison.json,
+    │   rag_benchmark_results.json                         ← personal run output (gitignored, not source)
+    ├── models/, hf_models/, adapters/                     ← gitignored (large binaries / weights / trained adapters)
+    ├── logs/, sessions/, training/, vector_db/, swarm_memory/ ← gitignored (user/runtime data)
 ```
