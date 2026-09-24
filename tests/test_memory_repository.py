@@ -28,36 +28,23 @@ class MockInMemoryRepository:
             return True
         return False
 
-def test_memory_manager_with_mock_repository():
+def test_memory_manager_autosave_with_mock_repository():
+    # Session save/load/list moved entirely to SessionTree.save()/load()/
+    # list_sessions() (see tests/test_session_tree.py) -- MemoryManager no
+    # longer has its own copy of that logic, only the autosave checkpoint
+    # and swarm-history helpers below.
     mock_repo = MockInMemoryRepository()
     manager = MemoryManager(sessions_dir="dummy/dir", repository=mock_repo)
 
-    # 1. Test save_session
-    flat_history = [
-        {"role": "user", "content": "hello"}
-    ]
-    filename = manager.save_session(flat_history, "sys_prompt", filename="test_session.json")
-    assert filename == "test_session.json"
-    assert "test_session.json" in mock_repo.store
+    from app.utils.session_tree import SessionTree
+    history = SessionTree()
+    history.add_message("user", "hello")
 
-    # 2. Test list_sessions
-    sessions = manager.list_sessions()
-    assert "test_session.json" in sessions
-
-    # 3. Test load_session
-    sys_prompt, history = manager.load_session("test_session.json")
-    assert sys_prompt == "sys_prompt"
-    active_path = history.get_active_path()
-    assert len(active_path) == 1
-    assert active_path[0].content == "hello"
-
-    # 4. Test autosave
     manager.save_autosave_checkpoint(history, "workbench")
     assert "autosave_active.json" in mock_repo.store
-    
+
     checkpoint = manager.load_autosave_checkpoint()
     assert checkpoint["active_workspace"] == "workbench"
 
-    # 5. Test clear autosave
     manager.clear_autosave_checkpoint()
     assert "autosave_active.json" not in mock_repo.store

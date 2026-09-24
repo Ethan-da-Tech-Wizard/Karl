@@ -1,6 +1,5 @@
 import os
 import re
-import time
 from datetime import datetime
 from app.repository.session_repository import SessionRepository
 
@@ -75,96 +74,6 @@ class MemoryManager:
     def clear_autosave_checkpoint(self):
         self.repository.delete(self.autosave_filename)
         self.repository.delete(self.autosave_filename + ".tmp")
-
-    def save_session(self, chat_history, system_prompt, filename=None, last_model="unknown", adapter_name=None, message_count=0):
-        if not filename:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"session_{timestamp}.json"
-        
-        serialized_history = self._serialize_history(chat_history)
-        
-        data = {
-            "system_prompt": system_prompt,
-            "chat_history": serialized_history,
-            "metadata": {
-                "last_model": last_model or "unknown",
-                "adapter_name": adapter_name,
-                "message_count": message_count,
-                "updated_time": datetime.now().isoformat()
-            }
-        }
-        
-        self.repository.save(filename, data)
-        return filename
-
-    def load_session(self, filename):
-        data = self.repository.get(filename)
-        if not data:
-            return None, None
-            
-        sys_prompt = data.get("system_prompt", "")
-        raw_history = data.get("chat_history", [])
-        
-        from app.utils.session_tree import SessionTree
-        if isinstance(raw_history, dict) and "root" in raw_history:
-            history = SessionTree.from_dict(raw_history)
-        else:
-            # Convert list of dicts to a SessionTree
-            history = SessionTree()
-            for msg in raw_history:
-                history.add_message(
-                    msg.get("role", "user"),
-                    msg.get("content", ""),
-                    attachments=msg.get("attachments"),
-                )
-                
-        return sys_prompt, history
-
-    def list_sessions(self):
-        return [session["filename"] for session in self.repository.list_all()]
-
-    def list_sessions_with_metadata(self):
-        sessions = []
-        for session in self.repository.list_all():
-            f = session["filename"]
-            data = session["data"]
-            mtime = session.get("mtime", time.time())
-            
-            try:
-                meta = data.get("metadata", {})
-                updated_time = meta.get("updated_time", datetime.fromtimestamp(mtime).isoformat())
-                
-                # Count messages
-                msg_count = 0
-                raw_history = data.get("chat_history", [])
-                if isinstance(raw_history, dict) and "root" in raw_history:
-                    def _count_nodes(node):
-                        return 1 + sum(_count_nodes(c) for c in node.get("children", []))
-                    # Subtract 1 to exclude system root node
-                    msg_count = max(0, _count_nodes(raw_history["root"]) - 1)
-                else:
-                    msg_count = len(raw_history)
-                    
-                sessions.append({
-                    "filename": f,
-                    "last_model": meta.get("last_model", "unknown"),
-                    "adapter_name": meta.get("adapter_name"),
-                    "message_count": meta.get("message_count", msg_count),
-                    "updated_time": updated_time
-                })
-            except Exception:
-                try:
-                    updated_time = datetime.fromtimestamp(mtime).isoformat()
-                except Exception:
-                    updated_time = datetime.now().isoformat()
-                sessions.append({
-                    "filename": f,
-                    "last_model": "unknown",
-                    "adapter_name": None,
-                    "message_count": 0,
-                    "updated_time": updated_time
-                })
-        return sorted(sessions, key=lambda x: x["updated_time"], reverse=True)
 
     def load_swarm_history(self):
         history = self.repository.get("../swarm_history.json")

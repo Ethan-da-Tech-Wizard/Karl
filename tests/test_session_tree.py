@@ -252,6 +252,62 @@ def test_branch_from_missing_returns_none():
     assert len(tree) == 0
 
 
+# ---------------------------------------------------------------------------
+# save() / load() / list_sessions() -- the real disk-persistence path
+# WorkbenchWorkspace actually uses (MemoryManager.save_session/load_session/
+# list_sessions are dead code, superseded by these; see AGENTS.md).
+# ---------------------------------------------------------------------------
+
+def test_tree_save_strips_think_blocks(tmp_path, monkeypatch):
+    monkeypatch.setattr(SessionTree, "SESSIONS_DIR", str(tmp_path))
+
+    tree = SessionTree()
+    tree.add_message("user", "hello")
+    node = tree.add_message(
+        "assistant",
+        "<think>\nreasoning about the greeting...\n</think>\nHi there!",
+    )
+    node.thought = "reasoning about the greeting..."
+
+    path = tree.save("test_session")
+    assert path == os.path.join(str(tmp_path), "test_session.json")
+
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    assert "reasoning about the greeting" not in raw
+    assert "<think>" not in raw
+
+
+def test_tree_save_load_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(SessionTree, "SESSIONS_DIR", str(tmp_path))
+
+    tree = SessionTree()
+    tree.add_message("user", "hello")
+    tree.add_message("assistant", "<think>\nthinking\n</think>\nHi there!")
+
+    path = tree.save("roundtrip")
+    loaded, session_id = SessionTree.load(path)
+
+    assert session_id == "roundtrip"
+    active_path = loaded.get_active_path()
+    assert [n.role for n in active_path] == ["user", "assistant"]
+    assert active_path[1].content == "Hi there!"
+    assert active_path[1].thought is None
+
+
+def test_tree_list_sessions(tmp_path, monkeypatch):
+    monkeypatch.setattr(SessionTree, "SESSIONS_DIR", str(tmp_path))
+
+    tree = SessionTree()
+    tree.add_message("user", "first question here")
+    tree.save("listed_session")
+
+    sessions = SessionTree.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == "listed_session"
+    assert sessions[0]["preview"] == "first question here"
+
+
 if __name__ == "__main__":
     test_node_defaults()
     test_node_add_child()
