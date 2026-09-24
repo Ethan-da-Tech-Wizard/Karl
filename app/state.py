@@ -106,6 +106,16 @@ class AppState(QObject):
         # Token-saving Machine Speak prompt mode
         self.enable_machine_speak: bool = True
 
+        # Remote inference engine offload (System Config > Vision/Hardware).
+        # Persisted separately from ui_config.json, via
+        # config_store.get_engine_config()/set_remote_engine_config() --
+        # ModelLoader.get_instance() reads config_store directly on every
+        # call, so this is only for the UI panel to reflect the true
+        # on-disk state instead of always starting unchecked.
+        self.remote_engine_enabled: bool = False
+        self.remote_engine_url: str = ""
+        self.remote_engine_token: str = ""
+
         # Last-applied Workbench system prompt — empty string means "use DEFAULT_SYSTEM_PROMPT".
         # WorkbenchWorkspace reads config_store directly at startup; this field
         # ensures save_to_disk / load_from_disk keep the ui_config.json in sync.
@@ -116,6 +126,7 @@ class AppState(QObject):
         # Load persisted settings from disk, overriding the hardcoded defaults
         # above with any previously saved values.
         self._load_from_disk_silent()
+        self._load_engine_config_silent()
 
     @property
     def cached_bridge_token(self) -> str | None:
@@ -153,6 +164,18 @@ class AppState(QObject):
             if field in cfg:
                 # Bypass __setattr__ to avoid emitting signals during startup
                 super(AppState, self).__setattr__(field, cfg[field])
+
+    def _load_engine_config_silent(self) -> None:
+        """Internal init helper: mirror config_store.get_engine_config() onto
+        AppState so the System Config remote-engine checkbox reflects the
+        real persisted state on startup, instead of always reading back
+        unchecked until the user re-touches it. ModelLoader itself always
+        reads config_store directly, so this doesn't change generation
+        behavior -- it only fixes what the UI displays."""
+        cfg = config_store.get_engine_config()
+        super(AppState, self).__setattr__("remote_engine_enabled", bool(cfg.get("remote_engine_enabled", False)))
+        super(AppState, self).__setattr__("remote_engine_url", cfg.get("remote_engine_url", ""))
+        super(AppState, self).__setattr__("remote_engine_token", cfg.get("remote_engine_token", ""))
 
     @pyqtSlot(str, object)
     def _emit_state_changed(self, name: str, value: object) -> None:

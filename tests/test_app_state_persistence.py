@@ -84,6 +84,40 @@ class TestAppStatePersistence(unittest.TestCase):
         self.assertAlmostEqual(state.thinking_temperature, 0.8)
         self.assertAlmostEqual(state.answering_temperature, 0.1)
 
+    # ── remote engine config rehydration ────────────────────────────────────
+    # Regression coverage: AppState used to only set remote_engine_enabled/
+    # url/token when the System Config checkbox itself was touched, so the
+    # checkbox always read back unchecked on a fresh app launch even though
+    # ModelLoader (which reads config_store directly) was still honoring a
+    # previously-persisted "enabled" setting underneath it.
+
+    def test_remote_engine_defaults_when_no_file(self):
+        state = AppState()
+        self.assertFalse(state.remote_engine_enabled)
+        self.assertEqual(state.remote_engine_url, "")
+        self.assertEqual(state.remote_engine_token, "")
+
+    def test_remote_engine_config_rehydrated_on_construction(self):
+        """A previously-persisted engine_config.json must be reflected on
+        AppState immediately at construction, not just after the user
+        re-touches the System Config checkbox."""
+        config_store.set_remote_engine_config(
+            True, "wss://remote.example:8080", "sekret-token"
+        )
+        state = AppState()
+        self.assertTrue(state.remote_engine_enabled)
+        self.assertEqual(state.remote_engine_url, "wss://remote.example:8080")
+        self.assertEqual(state.remote_engine_token, "sekret-token")
+
+    def test_remote_engine_disabled_persists_correctly(self):
+        config_store.set_remote_engine_config(True, "wss://x:1", "t")
+        config_store.set_remote_engine_config(False)
+        state = AppState()
+        self.assertFalse(state.remote_engine_enabled)
+        # Disabling doesn't clear a previously-saved URL/token -- only the
+        # enabled flag -- matching set_remote_engine_config's own contract.
+        self.assertEqual(state.remote_engine_url, "wss://x:1")
+
     # ── save / load roundtrip ─────────────────────────────────────────────
 
     def test_save_to_disk_creates_file(self):

@@ -41,26 +41,39 @@ def get_cpu_flags() -> list[str]:
 def get_hardware_uuid() -> str:
     """Retrieves physical motherboard UUID or a stable hardware-bound fallback."""
     system = platform.system()
-    try:
-        if system == "Linux":
-            # Prefer non-root DMI paths
-            for path in [
-                "/sys/class/dmi/id/product_uuid",
-                "/sys/devices/virtual/dmi/id/product_uuid",
-                "/etc/machine-id"
-            ]:
+    if system == "Linux":
+        # Try each candidate independently -- a PermissionError on one path
+        # (e.g. product_uuid is root-only, mode 0400, on many distros) must
+        # not prevent trying the next one. This used to be one try/except
+        # around the whole loop, so a permission failure on the first path
+        # silently skipped /etc/machine-id (world-readable, stable) and fell
+        # through to the non-deterministic uuid.getnode() fallback below --
+        # which changes the derived key on every restart and permanently
+        # breaks decrypting trace archives across runs. See
+        # docs/audits/architecture_walkthrough_2026-07.md for the historical
+        # incident this exact failure mode reproduces.
+        for path in [
+            "/sys/class/dmi/id/product_uuid",
+            "/sys/devices/virtual/dmi/id/product_uuid",
+            "/etc/machine-id",
+        ]:
+            try:
                 if os.path.exists(path):
                     with open(path, "r") as f:
                         uuid_str = f.read().strip()
-                        if uuid_str: return uuid_str
-        elif system == "Darwin":
+                        if uuid_str:
+                            return uuid_str
+            except Exception:
+                continue
+    elif system == "Darwin":
+        try:
             cmd = "ioreg -rd1 -c IOPlatformExpertDevice | grep IOPlatformUUID"
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             # Example output: "IOPlatformUUID" = "5B1E...B0D"
             if "IOPlatformUUID" in result.stdout:
                 return result.stdout.split("=")[-1].replace('"', '').strip()
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     # Fallback: Hash MAC addresses + CPU Info
     try:
