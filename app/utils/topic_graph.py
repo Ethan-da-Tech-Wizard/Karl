@@ -35,7 +35,3 @@ class DynamicTopicGraph:
         under = min(self.leaves, key=lambda node: node.frequency)
         under.frequency += 1
         return under.name
-
-    def frequencies(self) -> dict[str, int]:
-        """Return a snapshot of current leaf frequencies (useful for logging/debugging)."""
-        return {node.name: node.frequency for node in self.leaves}

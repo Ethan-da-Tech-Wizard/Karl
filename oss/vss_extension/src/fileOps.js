@@ -37,20 +37,6 @@ function packageContext(raw, label, summaryOnly = false) {
 }
 
 /**
- * Checks if a file exists.
- * @param {string} filepath
- * @returns {Promise<boolean>}
- */
-async function checkFileExists(filepath) {
-    try {
-        await vscode.workspace.fs.stat(vscode.Uri.file(filepath));
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
-
-/**
  * Writes content to a temp file and opens a vscode diff.
  * @param {string} filename
  * @param {string} targetPath
@@ -81,6 +67,5 @@ module.exports = {
     MAX_CONTEXT_CHARS,
     SUMMARY_CONTEXT_CHARS,
     packageContext,
-    checkFileExists,
     writeTempFileAndDiff
 };

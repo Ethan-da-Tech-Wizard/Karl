@@ -460,9 +460,3 @@ def remove_mcp_server(name: str) -> bool:
     cfg = get_mcp_config()
     cfg["mcpServers"].pop(name, None)
     return write_json_atomic(MCP_CONFIG_PATH, cfg, indent=2)
-
-
-def get_model_variants(base_model: str) -> list[dict]:
-    """Return all registry variants for a given base_model name."""
-    return [e for e in get_model_registry()
-            if isinstance(e, dict) and e.get("base_model") == base_model]

@@ -90,6 +90,17 @@ window.addEventListener('message', event => {
         }
         return;
     }
+    if (message.command === 'connection_state') {
+        // Sent only for host-side connection outcomes the webview's own direct
+        // socket can't observe itself (e.g. the host bridge's token being
+        // rejected with close code 4001). Mirrors the same status-dot/label
+        // update setConnectionState() already does for the direct-connect path.
+        lastBridgeError = message.lastError || lastBridgeError;
+        setConnectionState(message.state || 'offline', message.label || 'Offline');
+        if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+        manualDisconnect = true; // Don't let the webview's own reconnect loop retry a rejected token
+        return;
+    }
 
     // ── Webview ↔ host commands ───────────────────────────────────────────────
     if (message.command === 'start_workflow') {

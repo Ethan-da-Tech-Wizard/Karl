@@ -906,9 +906,6 @@ class KnowledgeBaseWorkspace(QWidget):
             err = f" - {item['error']}" if item["error"] else ""
             self._queue_list.addItem(f"[{status}] {fname}{err}")
 
-    def _process_next_in_queue(self):
-        self._process_ingest_queue()
-
     def _process_ingest_queue(self):
         pending = [item for item in self._ingest_queue if item["status"] == "Pending"]
         if not pending:

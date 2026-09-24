@@ -59,8 +59,17 @@ function activate(context) {
         vscode.commands.executeCommand('workbench.view.extension.karl-swarm');
     });
 
-    // Register all workflows
+    // Register all workflows as VS Code commands, EXCEPT ids that already get a
+    // dedicated, more specific command registration below (see "Inline Editor
+    // Commands"). Registering the same command id twice throws synchronously
+    // ("command 'X' already exists") and aborts the rest of activate() — silently
+    // dropping every command/listener registered after the collision. The
+    // WORKFLOW_REGISTRY entry itself is kept intact so `runWorkflowById()` (used
+    // by the webview's task-mode dropdown/quick actions via the `runWorkflow`
+    // postMessage) keeps working.
+    const WORKFLOW_IDS_WITH_DEDICATED_COMMAND = new Set(['explainSelection']);
     Object.keys(WORKFLOW_REGISTRY).forEach(id => {
+        if (WORKFLOW_IDS_WITH_DEDICATED_COMMAND.has(id)) return;
         register(`karl.${id}`, (uri) => runWorkflow(sidebarProvider, WORKFLOW_REGISTRY[id], uri));
     });
 

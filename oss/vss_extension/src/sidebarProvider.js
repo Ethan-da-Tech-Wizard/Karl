@@ -702,12 +702,6 @@ class KarlSidebarProvider {
                 case 'rollback_swarm_run':
                     await this.rollbackSwarmRun(message.runId);
                     break;
-                case 'accept_file':
-                    await this.acceptLegacyFile(message.filepath);
-                    break;
-                case 'rollback_file':
-                    await this.rollbackLegacyFile(message.filepath);
-                    break;
                 case 'runWorkflow':
                     await runWorkflowById(this, message.workflowId, message.payload);
                     break;
@@ -1111,44 +1105,6 @@ class KarlSidebarProvider {
         this.postMessageToWebview({ command: 'file_edit_rolled_back', editId });
         vscode.window.showInformationMessage(`Rolled back ${edit.filename}.`);
         sendActiveStateToWebview(this);
-    }
-
-    async acceptLegacyFile(filepath) {
-        if (!filepath) return;
-        const backupPath = filepath + '.original';
-        const backupUri = vscode.Uri.file(backupPath);
-
-        let backupExists = false;
-        try {
-            await vscode.workspace.fs.stat(backupUri);
-            backupExists = true;
-        } catch {}
-
-        if (backupExists) {
-            await vscode.workspace.fs.delete(backupUri, { recursive: false, useTrash: false });
-            vscode.window.showInformationMessage(`Accepted changes for ${path.basename(filepath)}.`);
-        }
-    }
-
-    async rollbackLegacyFile(filepath) {
-        if (!filepath) return;
-        const backupPath = filepath + '.original';
-        const fileUri = vscode.Uri.file(filepath);
-        const backupUri = vscode.Uri.file(backupPath);
-
-        let backupExists = false;
-        try {
-            await vscode.workspace.fs.stat(backupUri);
-            backupExists = true;
-        } catch {}
-
-        if (!backupExists) {
-            vscode.window.showWarningMessage('No backup file found to rollback.');
-            return;
-        }
-        await vscode.workspace.fs.copy(backupUri, fileUri, { overwrite: true });
-        await vscode.workspace.fs.delete(backupUri, { recursive: false, useTrash: false });
-        vscode.window.showInformationMessage(`Rolled back changes for ${path.basename(filepath)}.`);
     }
 
     async chooseKbFile() {

@@ -254,13 +254,13 @@ class RegistryPanelMixin:
             
             thread.progress.connect(self._on_download_progress)
             thread.log.connect(self._on_download_log)
-            thread.done.connect(lambda p: self._on_quant_done(p))
+            thread.done.connect(lambda p: self._on_registry_quant_done(p))
             thread.error.connect(self._on_download_error)
             
             thread.start()
 
 
-    def _on_quant_done(self, output_path: str):
+    def _on_registry_quant_done(self, output_path: str):
         self._progress_panel.setVisible(False)
         self._set_ui_enabled_for_download(True)
         filename = os.path.basename(output_path)

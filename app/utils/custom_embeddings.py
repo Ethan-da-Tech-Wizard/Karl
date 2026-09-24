@@ -99,23 +99,6 @@ class TfidfEmbedder:
 
         return vector.astype(np.float32)
 
-    def get_top_terms(self, vector: np.ndarray, top_n: int = 5) -> list[tuple[str, float]]:
-        """Extract the top N highest-scoring terms and their values from a TF-IDF vector."""
-        if len(vector) == 0:
-            return []
-        
-        # Sort terms by descending score
-        indices = np.argsort(vector)[::-1]
-        
-        # Map indices back to words
-        inv_vocab = {v: k for k, v in self.vocabulary.items()}
-        
-        top_terms = []
-        for idx in indices[:top_n]:
-            if vector[idx] > 0.0:
-                top_terms.append((inv_vocab[idx], float(vector[idx])))
-        return top_terms
-
     @staticmethod
     def cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
         """Compute cosine similarity between two vectors. Assumes they are already normalized."""

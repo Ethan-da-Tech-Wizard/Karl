@@ -1415,12 +1415,6 @@ class WorkbenchWorkspace(QMainWindow):
         visible = self._sessions_dock.isVisible()
         self._sessions_dock.setVisible(not visible)
 
-    def _toggle_params(self):
-        visible = not self._params_drawer.isVisible()
-        if visible:
-            self._refresh_model_combo()
-        self._params_drawer.setVisible(visible)
-
     def _on_max_tokens_changed(self, value: int):
         self._hyperparams["max_tokens"] = value
         self._update_token_budget()
@@ -2431,17 +2425,30 @@ class WorkbenchWorkspace(QMainWindow):
         )
         if not ok or not new_name.strip():
             return
-            
+
+        # Strip any directory components the user typed (e.g. "../../foo.json")
+        # so the rename can never land outside sessions_dir.
+        new_name = os.path.basename(new_name.strip())
+        if not new_name or new_name in (".", ".."):
+            QMessageBox.warning(self, "Error", "Invalid filename.")
+            return
         if not new_name.endswith(".json"):
-            new_name = new_name.strip() + ".json"
-            
-        old_path = os.path.join(self.state.memory.sessions_dir, fname)
-        new_path = os.path.join(self.state.memory.sessions_dir, new_name)
-        
+            new_name = new_name + ".json"
+
+        sessions_dir = os.path.realpath(self.state.memory.sessions_dir)
+        old_path = os.path.join(sessions_dir, fname)
+        new_path = os.path.join(sessions_dir, new_name)
+        if (
+            os.path.realpath(new_path) != new_path
+            or os.path.dirname(os.path.realpath(new_path)) != sessions_dir
+        ):
+            QMessageBox.warning(self, "Error", "Invalid filename.")
+            return
+
         if os.path.exists(new_path):
             QMessageBox.warning(self, "Error", "A session with that name already exists.")
             return
-            
+
         try:
             os.rename(old_path, new_path)
             if self._current_session_file == fname:
