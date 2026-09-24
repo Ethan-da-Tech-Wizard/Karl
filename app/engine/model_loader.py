@@ -5,9 +5,11 @@ import inspect
 import threading
 import multiprocessing
 import time
+from urllib.parse import urlparse
 from llama_cpp import Llama, LlamaRAMCache
 
 from app.engine import config_store
+from app.engine.remote_rpc_client import RemoteRPCError, RemoteRPCModel
 from core.hardware_scout import get_hardware_profile
 
 
@@ -780,6 +782,78 @@ class ModelLoader:
             # Mark this as an active inference call for the idle watcher.
             cls._last_activity_time = time.time()
 
+            # ── Remote Engine Mode ──────────────────────────────────────────
+            # When the user has enabled remote offloading (System Config →
+            # Hardware → Remote Engine Mode), route generation to the
+            # configured Karl bridge instead of loading a local GGUF. This is
+            # checked fresh on every call so the UI toggle takes effect on the
+            # next generation without an app restart. When disabled (the
+            # default), this block is a no-op and execution falls straight
+            # through to the unmodified local-load path below.
+            engine_cfg = config_store.get_engine_config()
+            remote_enabled = (
+                cls._truthy(engine_cfg.get("remote_engine_enabled", False))
+                or engine_cfg.get("engine_mode") == "remote"
+            )
+            if remote_enabled:
+                remote_url = (
+                    engine_cfg.get("remote_engine_url")
+                    or engine_cfg.get("remote_server_url")
+                    or ""
+                ).strip()
+                remote_token = (
+                    engine_cfg.get("remote_engine_token")
+                    or engine_cfg.get("remote_auth_token")
+                    or ""
+                )
+
+                existing_remote = cls._remote_instance
+                if (
+                    existing_remote is not None
+                    and getattr(existing_remote, "server_url", None) == remote_url
+                    and getattr(existing_remote, "auth_token", None) == remote_token
+                ):
+                    return existing_remote
+
+                # Capture the caller's original (possibly None) arguments so the
+                # local fallback — triggered mid-generation if the remote bridge
+                # drops out — re-enters this same method and takes the exact
+                # local-load path a non-remote call would have taken. By the
+                # time local_fallback_factory runs, _remote_fallback() will
+                # already have flipped remote_engine_enabled back to False, so
+                # this recursive call cannot re-enter the remote branch.
+                _fallback_model_path = model_path
+                _fallback_adapter_name = adapter_name
+                _fallback_draft_model_path = draft_model_path
+
+                def _local_fallback_factory():
+                    return cls.get_instance(
+                        model_path=_fallback_model_path,
+                        adapter_name=_fallback_adapter_name,
+                        draft_model_path=_fallback_draft_model_path,
+                    )
+
+                try:
+                    remote = RemoteRPCModel(
+                        remote_url,
+                        remote_token,
+                        on_fallback=lambda reason: cls._remote_fallback(reason),
+                        local_fallback_factory=_local_fallback_factory,
+                    )
+                except RemoteRPCError as exc:
+                    logger.warning(
+                        "Remote engine mode is enabled but misconfigured (%s); "
+                        "falling back to local inference for this call.", exc,
+                    )
+                    cls._remote_fallback(str(exc))
+                else:
+                    cls._remote_instance = remote
+                    logger.info(
+                        "Remote engine mode active — routing generation to %s", remote_url
+                    )
+                    return remote
+            # ── End Remote Engine Mode ──────────────────────────────────────
+
             if model_path is None:
                 active = config_store.get_active_model()
                 model_path = os.path.join("data", "models", active["filename"])
@@ -1385,7 +1459,17 @@ class ModelLoader:
 
     @classmethod
     def model_name(cls) -> str:
-        """Return the basename of the active GGUF model, or 'none'."""
+        """Return the basename of the active GGUF model, or 'none'.
+
+        When remote engine mode is active, returns ``remote:<host>`` instead
+        so trace logs and the status bar reflect that generation happened on
+        the configured Karl bridge rather than a local GGUF.
+        """
+        remote = cls._remote_instance
+        if remote is not None:
+            url = getattr(remote, "server_url", "") or ""
+            host = urlparse(url).hostname or url or "remote"
+            return f"remote:{host}"
         name = getattr(cls, "_model_name", "none")
         return name if name is not None else "none"
 
@@ -1393,7 +1477,11 @@ class ModelLoader:
     def n_ctx(cls) -> int:
         """Return the context window size for the loaded model."""
         with cls._lock:
-            if cls._instance is not None:
+            # A RemoteRPCModel has no locally-knowable context window (the
+            # remote bridge owns that). Skip straight to the registry-based
+            # estimate below rather than trusting a stale local Llama
+            # instance left over from before remote mode was enabled.
+            if cls._instance is not None and cls._remote_instance is None:
                 try:
                     if hasattr(cls._instance, "n_ctx"):
                         val = cls._instance.n_ctx
@@ -1423,9 +1511,9 @@ class ModelLoader:
 
     @classmethod
     def is_loaded(cls) -> bool:
-        """Return True when a primary Llama instance is loaded."""
+        """Return True when a primary Llama instance or a remote engine is active."""
         with cls._lock:
-            return cls._instance is not None
+            return cls._instance is not None or cls._remote_instance is not None
 
     @classmethod
     def is_speculative(cls) -> bool:
