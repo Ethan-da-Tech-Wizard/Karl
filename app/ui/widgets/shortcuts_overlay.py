@@ -159,9 +159,10 @@ class ShortcutsOverlay(QWidget):
         w = 340
         h = self.sizeHint().height() or 320
         pw = parent.width()
-        # Anchor: top-right corner with some margin
+        # Anchor: top-right corner, below the Workbench header rows
+        # (session bar, model bar, agent bar, HUD toolbar).
         x = max(0, pw - w - 12)
-        y = 48
+        y = 156
         self.setGeometry(x, y, w, max(h, 300))
 
     def show_overlay(self):

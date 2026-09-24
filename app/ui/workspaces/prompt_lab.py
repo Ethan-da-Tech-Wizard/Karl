@@ -26,6 +26,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QTextCursor
 
 from app.ui.themes import MONO
+from app.ui.widgets.model_combo import ModelComboBox
 
 
 logger = logging.getLogger("karl.prompt_lab")
@@ -225,16 +226,17 @@ class _PromptColumn(QWidget):
     generation_done = pyqtSignal(str, dict)      # response text, diagnostics
     generation_failed = pyqtSignal()
 
-    def __init__(self, label: str, parent=None):
+    def __init__(self, label: str, state=None, parent=None):
         super().__init__(parent)
         self.label = label
+        self.state = state
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
         layout.addWidget(_section(f"PROMPT  {label}"))
 
-        self._model_combo = QComboBox()
+        self._model_combo = ModelComboBox(state, short_labels=True)
         self._model_combo.setToolTip(f"Select model/adapter combination for Column {self.label}")
         layout.addWidget(self._model_combo)
 
@@ -294,99 +296,16 @@ class _PromptColumn(QWidget):
         self._active_threads = set()
         self._last_agentic_response = ""
         self._last_agentic_diagnostics = {}
+        # ModelComboBox already scans+populates itself in its own __init__;
+        # this second pass matters when `state` was None at construction
+        # (see the PromptLabWorkspace call site) and gets set afterward.
         self._refresh_model_combo()
 
-    def _is_adapter_compatible(self, model_filename: str, adapter_name: str) -> bool:
-        import json
-        import os
-        config_path = os.path.join("data", "adapters", adapter_name, "adapter_config.json")
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                base_model = config.get("base_model_name_or_path", "").lower()
-                model_fn = model_filename.lower()
-                if "1.5b" in model_fn and "1.5b" in base_model:
-                    return True
-                if "8b" in model_fn and "8b" in base_model:
-                    return True
-            except Exception:
-                pass
-        # Fallback to simple sub-string matching on name
-        if "1.5b" in model_filename.lower() and "1.5b" in adapter_name.lower():
-            return True
-        if "8b" in model_filename.lower() and "8b" in adapter_name.lower():
-            return True
-        return False
-
     def _refresh_model_combo(self):
-        self._model_combo.blockSignals(True)
-        current_data = self._model_combo.itemData(self._model_combo.currentIndex())
-        self._model_combo.clear()
-        
-        import os
-        adapters_dir = "data/adapters"
-        adapters = []
-        if os.path.exists(adapters_dir):
-            try:
-                for d in sorted(os.listdir(adapters_dir)):
-                    d_path = os.path.join(adapters_dir, d)
-                    if os.path.isdir(d_path):
-                        files_in_dir = os.listdir(d_path)
-                        if any(f.endswith(".gguf") or f.endswith(".bin") for f in files_in_dir):
-                            adapters.append(d)
-            except Exception as e:
-                logger.warning(f"Error scanning adapters for Column {self.label}: {e}")
-
-        models_dir = "data/models"
-        files = []
-        if os.path.exists(models_dir):
-            files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
-            
-        for f in sorted(files):
-            # Base model
-            self._model_combo.addItem(f, {"model": f, "adapter": None})
-            # List compatible adapters
-            for adapter in adapters:
-                if self._is_adapter_compatible(f, adapter):
-                    self._model_combo.addItem(f"{f} ({adapter})", {"model": f, "adapter": adapter})
-                    
-        # Restore selection
-        if current_data:
-            found = False
-            for idx in range(self._model_combo.count()):
-                d = self._model_combo.itemData(idx)
-                if isinstance(d, dict) and d.get("model") == current_data.get("model") and d.get("adapter") == current_data.get("adapter"):
-                    self._model_combo.setCurrentIndex(idx)
-                    found = True
-                    break
-            if not found and self._model_combo.count() > 0:
-                self._model_combo.setCurrentIndex(0)
-        else:
-            # Fall back to matching the active model and adapter from ModelLoader
-            from app.engine.model_loader import ModelLoader
-            active_model = getattr(ModelLoader, "_model_name", None)
-            active_adapter = getattr(ModelLoader, "_active_adapter", None)
-            found = False
-            for idx in range(self._model_combo.count()):
-                d = self._model_combo.itemData(idx)
-                if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") == active_adapter:
-                    self._model_combo.setCurrentIndex(idx)
-                    found = True
-                    break
-            if not found and self._model_combo.count() > 0:
-                self._model_combo.setCurrentIndex(0)
-                
-        self._model_combo.blockSignals(False)
+        self._model_combo.refresh_models()
 
     def select_model_and_adapter(self, model_name: str, adapter_name: str | None):
-        self._model_combo.blockSignals(True)
-        for idx in range(self._model_combo.count()):
-            d = self._model_combo.itemData(idx)
-            if isinstance(d, dict) and d.get("model") == model_name and d.get("adapter") == adapter_name:
-                self._model_combo.setCurrentIndex(idx)
-                break
-        self._model_combo.blockSignals(False)
+        self._model_combo.select_model(model_name, adapter_name)
 
     def _emit_run(self):
         if self._thread is not None and self._thread.isRunning():
@@ -903,10 +822,8 @@ class PromptLabWorkspace(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(1)
 
-        self._col_a = _PromptColumn("A")
-        self._col_a.state = self.state
-        self._col_b = _PromptColumn("B")
-        self._col_b.state = self.state
+        self._col_a = _PromptColumn("A", state=self.state)
+        self._col_b = _PromptColumn("B", state=self.state)
 
         self._col_a.run_requested.connect(self._run_column)
         self._col_b.run_requested.connect(self._run_column)

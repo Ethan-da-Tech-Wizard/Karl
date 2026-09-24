@@ -22,6 +22,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 
 from app.ui.themes import MONO
+from app.ui.widgets.model_combo import ModelComboBox
 
 
 logger = logging.getLogger("karl.eval_suite")
@@ -184,7 +185,7 @@ class EvalSuiteWorkspace(QWidget):
         model_lbl.setFixedWidth(70)
         ml.addWidget(model_lbl)
         
-        self._model_combo = QComboBox()
+        self._model_combo = ModelComboBox(self.state, short_labels=True)
         self._model_combo.setToolTip("Select model/adapter combination to use during evaluation runs")
         ml.addWidget(self._model_combo, 1)
         dp_layout.addWidget(model_row)
@@ -697,83 +698,8 @@ class EvalSuiteWorkspace(QWidget):
 
     # ── model selection helpers ───────────────────────────────────────────────
 
-    def _is_adapter_compatible(self, model_filename: str, adapter_name: str) -> bool:
-        config_path = os.path.join("data", "adapters", adapter_name, "adapter_config.json")
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                base_model = config.get("base_model_name_or_path", "").lower()
-                model_fn = model_filename.lower()
-                if "1.5b" in model_fn and "1.5b" in base_model:
-                    return True
-                if "8b" in model_fn and "8b" in base_model:
-                    return True
-            except Exception:
-                pass
-        if "1.5b" in model_filename.lower() and "1.5b" in adapter_name.lower():
-            return True
-        if "8b" in model_filename.lower() and "8b" in adapter_name.lower():
-            return True
-        return False
-
     def _refresh_model_combo(self):
-        self._model_combo.blockSignals(True)
-        current_data = self._model_combo.itemData(self._model_combo.currentIndex())
-        self._model_combo.clear()
-        
-        adapters_dir = "data/adapters"
-        adapters = []
-        if os.path.exists(adapters_dir):
-            try:
-                for d in sorted(os.listdir(adapters_dir)):
-                    d_path = os.path.join(adapters_dir, d)
-                    if os.path.isdir(d_path):
-                        files_in_dir = os.listdir(d_path)
-                        if any(f.endswith(".gguf") or f.endswith(".bin") for f in files_in_dir):
-                            adapters.append(d)
-            except Exception as e:
-                logger.warning(f"Error scanning adapters: {e}")
-
-        models_dir = "data/models"
-        files = []
-        if os.path.exists(models_dir):
-            files = [f for f in os.listdir(models_dir) if f.endswith(".gguf")]
-            
-        for f in sorted(files):
-            # Base model
-            self._model_combo.addItem(f, {"model": f, "adapter": None})
-            # List compatible adapters
-            for adapter in adapters:
-                if self._is_adapter_compatible(f, adapter):
-                    self._model_combo.addItem(f"{f} ({adapter})", {"model": f, "adapter": adapter})
-                    
-        # Restore selection
-        if current_data:
-            found = False
-            for idx in range(self._model_combo.count()):
-                d = self._model_combo.itemData(idx)
-                if isinstance(d, dict) and d.get("model") == current_data.get("model") and d.get("adapter") == current_data.get("adapter"):
-                    self._model_combo.setCurrentIndex(idx)
-                    found = True
-                    break
-            if not found and self._model_combo.count() > 0:
-                self._model_combo.setCurrentIndex(0)
-        else:
-            from app.engine.model_loader import ModelLoader
-            active_model = getattr(ModelLoader, "_model_name", None)
-            active_adapter = getattr(ModelLoader, "_active_adapter", None)
-            found = False
-            for idx in range(self._model_combo.count()):
-                d = self._model_combo.itemData(idx)
-                if isinstance(d, dict) and d.get("model") == active_model and d.get("adapter") == active_adapter:
-                    self._model_combo.setCurrentIndex(idx)
-                    found = True
-                    break
-            if not found and self._model_combo.count() > 0:
-                self._model_combo.setCurrentIndex(0)
-                
-        self._model_combo.blockSignals(False)
+        self._model_combo.refresh_models()
 
     def showEvent(self, event):
         super().showEvent(event)

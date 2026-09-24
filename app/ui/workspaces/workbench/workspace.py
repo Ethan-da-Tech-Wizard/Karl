@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QApplication, QProgressBar, QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
     QSizePolicy, QDialog, QDialogButtonBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QRect, QPropertyAnimation
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer, QRect, QPropertyAnimation, QSize
 from PyQt6.QtGui import QTextCursor, QKeySequence, QShortcut, QColor, QFontMetrics
 
 
@@ -37,7 +37,10 @@ from core.workflows import list_workflows
 from app.utils.session_tree import SessionTree
 from app.ui.widgets.tracing_panel import TracingPanel
 from app.ui.themes import get_theme_colors
-from app.ui.widgets.symbolic_icon import IconBtn, GearIcon, HamburgerIcon, BrainIcon
+from app.ui.widgets.symbolic_icon import (
+    IconBtn, GearIcon, HamburgerIcon, BrainIcon,
+    ThumbsUpIcon, ThumbsDownIcon, DocIcon, symbol_to_qicon,
+)
 from app.ui.widgets.toast import ToastOverlay
 
 from app.ui.workspaces.workbench.chat_view import ChatView
@@ -664,24 +667,30 @@ class WorkbenchWorkspace(QMainWindow):
         
         fbl.addWidget(_label("Actions & Feedback", "lbl-muted"))
         
-        self._thumb_btn = QPushButton("✓ Good")
+        icon_size = QSize(14, 14)
+
+        self._thumb_btn = QPushButton(" Good")
         self._thumb_btn.setObjectName("btn-success")
+        self._thumb_btn.setIcon(symbol_to_qicon(ThumbsUpIcon, self.state, color_role="green", size=14))
+        self._thumb_btn.setIconSize(icon_size)
         self._thumb_btn.setEnabled(False)
         self._thumb_btn.setToolTip("Curate this response as a positive training example")
         self._thumb_btn.clicked.connect(self._on_thumb_up)
         self._thumb_btn.setAccessibleName("Rate Good")
         self._thumb_btn.setAccessibleDescription("Curate this generation as a correct example for fine-tuning")
         fbl.addWidget(self._thumb_btn)
-        
-        self._thumb_down_btn = QPushButton("✗ Bad")
+
+        self._thumb_down_btn = QPushButton(" Bad")
         self._thumb_down_btn.setObjectName("btn-danger")
+        self._thumb_down_btn.setIcon(symbol_to_qicon(ThumbsDownIcon, self.state, color_role="red", size=14))
+        self._thumb_down_btn.setIconSize(icon_size)
         self._thumb_down_btn.setEnabled(False)
         self._thumb_down_btn.setToolTip("Flag this response as an incorrect training example")
         self._thumb_down_btn.clicked.connect(self._on_thumb_down)
         self._thumb_down_btn.setAccessibleName("Rate Bad")
         self._thumb_down_btn.setAccessibleDescription("Flag this generation as incorrect to build a rejected pair")
         fbl.addWidget(self._thumb_down_btn)
-        
+
         self._correct_btn = QPushButton("✎ Correct")
         self._correct_btn.setObjectName("btn-warning")
         self._correct_btn.setEnabled(False)
@@ -690,9 +699,11 @@ class WorkbenchWorkspace(QMainWindow):
         self._correct_btn.setAccessibleName("Correct Response")
         self._correct_btn.setAccessibleDescription("Open the editor to type a corrected version of the generation")
         fbl.addWidget(self._correct_btn)
-        
-        self._new_session_btn = QPushButton("+ New Session")
+
+        self._new_session_btn = QPushButton(" New Session")
         self._new_session_btn.setObjectName("btn-ghost")
+        self._new_session_btn.setIcon(symbol_to_qicon(DocIcon, self.state, color_role="text_hi", size=14))
+        self._new_session_btn.setIconSize(icon_size)
         self._new_session_btn.clicked.connect(self._new_session)
         self._new_session_btn.setAccessibleName("Start New Session")
         self._new_session_btn.setAccessibleDescription("Clear history and begin a fresh conversation session")
@@ -938,7 +949,15 @@ class WorkbenchWorkspace(QMainWindow):
         self._hud_master_btn.setObjectName("hud-btn")
         self._hud_master_btn.clicked.connect(self._toggle_all_huds)
         tbl.addWidget(self._hud_master_btn)
-        
+
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("hud-btn")
+        help_btn.setFixedWidth(28)
+        help_btn.setToolTip("Keyboard shortcuts (?)")
+        help_btn.setAccessibleName("Show keyboard shortcuts")
+        help_btn.clicked.connect(self._toggle_shortcuts_overlay)
+        tbl.addWidget(help_btn)
+
         self._sessions_dock.visibilityChanged.connect(lambda visible: self._update_hud_btn_styles())
         self._reasoning_dock.visibilityChanged.connect(lambda visible: self._update_hud_btn_styles())
         
@@ -1021,6 +1040,25 @@ class WorkbenchWorkspace(QMainWindow):
     def _connect_shortcuts(self):
         sc = QShortcut(QKeySequence("Ctrl+Return"), self)
         sc.activated.connect(self._send)
+
+        bindings = [
+            ("Esc", self._stop),
+            ("Ctrl+R", self._reload_active_model),
+            ("Ctrl+S", self._save_current_session),
+            ("Ctrl+N", self._new_session),
+            ("Ctrl+Shift+H", self._toggle_all_huds),
+            ("?", self._toggle_shortcuts_overlay),
+        ]
+        for key_sequence, handler in bindings:
+            shortcut = QShortcut(QKeySequence(key_sequence), self)
+            shortcut.activated.connect(handler)
+
+        from app.ui.widgets.shortcuts_overlay import ShortcutsOverlay
+        self._shortcuts_overlay = ShortcutsOverlay(self._chat_panel)
+        self._chat_panel.installEventFilter(self._shortcuts_overlay)
+
+    def _toggle_shortcuts_overlay(self):
+        self._shortcuts_overlay.toggle()
 
     def eventFilter(self, obj, event):
         if obj is getattr(self, "_input", None) and event.type() == QEvent.Type.KeyPress:
@@ -2144,6 +2182,21 @@ class WorkbenchWorkspace(QMainWindow):
             self._theme_indicator.setStyleSheet(f"color: {theme_colors.get('accent', '#00E5FF')}; font-weight: bold;")
         if hasattr(self, "_header_model_status"):
             self._update_header_model_status()
+
+        # These icons are baked to a static QIcon at construction time (see
+        # symbol_to_qicon) rather than a live-repainting BaseSymbol widget,
+        # so they need an explicit refresh here or they'd go stale-colored
+        # after a theme switch.
+        icon_size = QSize(14, 14)
+        if hasattr(self, "_thumb_btn"):
+            self._thumb_btn.setIcon(symbol_to_qicon(ThumbsUpIcon, self.state, color_role="green", size=14))
+            self._thumb_btn.setIconSize(icon_size)
+        if hasattr(self, "_thumb_down_btn"):
+            self._thumb_down_btn.setIcon(symbol_to_qicon(ThumbsDownIcon, self.state, color_role="red", size=14))
+            self._thumb_down_btn.setIconSize(icon_size)
+        if hasattr(self, "_new_session_btn"):
+            self._new_session_btn.setIcon(symbol_to_qicon(DocIcon, self.state, color_role="text_hi", size=14))
+            self._new_session_btn.setIconSize(icon_size)
 
     def _set_busy(self, busy: bool):
         self._send_btn.setEnabled(not busy)

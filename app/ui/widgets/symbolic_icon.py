@@ -1,7 +1,17 @@
 from PyQt6.QtWidgets import QWidget, QPushButton, QHBoxLayout
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QPolygonF
+from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QPolygonF, QIcon
 from app.ui.themes import get_theme_colors
+
+
+def symbol_to_qicon(icon_widget_class, state, color_role="accent", size=16) -> QIcon:
+    """Render a BaseSymbol subclass to a QIcon, for buttons that need an icon
+    alongside a text label rather than a standalone icon-only button (see
+    IconBtn for that case)."""
+    icon_widget = icon_widget_class(state, color_role=color_role, size=size)
+    pixmap = icon_widget.grab()
+    icon_widget.deleteLater()
+    return QIcon(pixmap)
 
 class BaseSymbol(QWidget):
     """Base class for theme-aware custom painted icons."""
