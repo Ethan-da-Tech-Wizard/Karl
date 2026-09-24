@@ -15,16 +15,30 @@ data/sessions/
 # Swarm cross-run failure/fix memory — per-workspace runtime state, not source
 data/swarm_memory/
 
-# model_registry.json is SOURCE CONTROLLED — do not ignore it
+# model_registry.json and vision_model_registry.json are SOURCE CONTROLLED — do not ignore them
 # Runtime-written state files (never commit)
 data/active_model.json
 data/active_vision_model.json
 data/ui_config.json
 data/theme_config.json
+data/agent_memory.json
+data/agent_memory_*.json
+data/mcp_config.json
 
-# Live bridge auth tokens — secrets, never commit
+# Live bridge auth tokens and TLS material — secrets, never commit
 data/bridge_token.json
 data/bridge_token.txt
+data/ssl/
+
+# Personal saved prompt pairs / benchmark runs — user data, not source
+data/prompt_pairs/
+data/eval_last.json
+data/quantization_comparison.json
+data/rag_benchmark_results.json
+data/flywheel/queue/
+
+# Local code-intelligence tool cache (regenerate on demand, not source)
+codelens-out/
 
 # Local scratch datasets (kept on disk, not in source control)
 workers.csv
