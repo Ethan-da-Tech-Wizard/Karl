@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from tools.auto_train_lora import build_sft_config_kwargs, detect_target_modules
+from tools.auto_train_lora import (
+    build_sft_config_kwargs,
+    detect_target_modules,
+    filter_kwargs_for_class,
+)
 
 
 class FakeModel:
@@ -63,6 +67,12 @@ def test_build_sft_config_enables_packing_and_cosine_schedule():
 
 
 def test_sft_config_accepts_packing_and_cosine_kwargs_when_trl_available():
+    """SFTConfig construction must survive whichever trl version is actually
+    installed -- requirements.txt doesn't pin trl, and SFTConfig's accepted
+    fields (e.g. warmup_ratio) have moved between releases before. Goes
+    through the same filter_kwargs_for_class() compatibility layer train()
+    uses, rather than asserting the raw kwargs dict always matches whatever
+    SFTConfig happens to accept in the installed version."""
     if importlib.util.find_spec("trl") is None:
         pytest.skip("trl not installed")
     from trl import SFTConfig
@@ -76,7 +86,8 @@ def test_sft_config_accepts_packing_and_cosine_kwargs_when_trl_available():
         epochs=1,
         logging_steps=1,
     )
-    cfg = SFTConfig(**build_sft_config_kwargs(args, Path("data/adapters/test/checkpoints")))
+    raw_kwargs = build_sft_config_kwargs(args, Path("data/adapters/test/checkpoints"))
+    cfg = SFTConfig(**filter_kwargs_for_class(raw_kwargs, SFTConfig))
 
     assert cfg.packing is True
     assert cfg.max_length == 4096

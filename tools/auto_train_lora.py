@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import inspect
 import json
 import shutil
 import sys
@@ -98,7 +99,12 @@ def detect_target_modules(model, candidates: Iterable[str] = PROJECTION_CANDIDAT
 
 
 def build_sft_config_kwargs(args: argparse.Namespace, checkpoint_dir: Path) -> dict:
-    """Build TRL SFTConfig kwargs in one place so trainer settings are testable."""
+    """Build TRL SFTConfig kwargs in one place so trainer settings are testable.
+
+    Returns the full set of settings we *want*, independent of which trl
+    version happens to be installed -- see filter_kwargs_for_class() for the
+    compatibility layer that adapts this to whatever's actually available.
+    """
     return {
         "output_dir": str(checkpoint_dir),
         "dataset_text_field": "text",
@@ -116,6 +122,31 @@ def build_sft_config_kwargs(args: argparse.Namespace, checkpoint_dir: Path) -> d
         "fp16": True,
         "gradient_checkpointing": True,
     }
+
+
+def filter_kwargs_for_class(kwargs: dict, cls) -> dict:
+    """Drop kwargs that `cls.__init__` doesn't accept.
+
+    trl/transformers occasionally rename or drop TrainingArguments/SFTConfig
+    fields between releases (e.g. warmup_ratio has moved around), and
+    requirements.txt intentionally doesn't pin trl/transformers/peft/datasets
+    versions. Rather than hard-crash on an unexpected-keyword TypeError for
+    whichever version happens to be installed, drop anything unsupported and
+    let training proceed with the rest -- logging what got dropped so it's
+    not silently lost.
+    """
+    params = inspect.signature(cls.__init__).parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(kwargs)  # __init__ accepts **kwargs -- nothing to filter
+    supported = {k: v for k, v in kwargs.items() if k in params}
+    dropped = sorted(set(kwargs) - set(supported))
+    if dropped:
+        print(
+            f"WARNING: {cls.__name__} in the installed trl version doesn't "
+            f"accept: {', '.join(dropped)} -- proceeding without them.",
+            file=sys.stderr,
+        )
+    return supported
 
 
 def train(args: argparse.Namespace) -> Path:
@@ -184,7 +215,8 @@ def train(args: argparse.Namespace) -> Path:
     model.config.use_cache = False
 
     checkpoint_dir = adapter_dir / "checkpoints"
-    training_args = SFTConfig(**build_sft_config_kwargs(args, checkpoint_dir))
+    sft_kwargs = filter_kwargs_for_class(build_sft_config_kwargs(args, checkpoint_dir), SFTConfig)
+    training_args = SFTConfig(**sft_kwargs)
 
     trainer = SFTTrainer(
         model=model,
