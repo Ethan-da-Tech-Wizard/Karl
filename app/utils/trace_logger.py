@@ -455,6 +455,82 @@ class TraceLogger:
         return self._log_file
 
     @staticmethod
+    def decrypt_to_bytearray(file_path: str, key: bytes) -> bytearray:
+        """
+        Decrypt *file_path* (Fernet-encrypted gzipped JSONL) using the provided
+        pre-derived key and return the decompressed plaintext as a mutable bytearray.
+        The caller is responsible for calling _zero_bytes() on the result when finished.
+
+        This is the single low-level primitive for turning an on-disk .enc
+        archive into plaintext bytes. Every decrypt call site (decrypt_in_memory
+        below, and tools/decrypt_logs.py) goes through either this function
+        directly or via decrypt_archive_with_token(), which layers key
+        derivation on top of it. Do not reimplement the Fernet-decrypt +
+        gzip-decompress steps elsewhere.
+        """
+        from cryptography.fernet import Fernet as _Fernet
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Archive not found: {file_path}")
+        with open(file_path, "rb") as fh:
+            encrypted_data = fh.read()
+        fernet = _Fernet(key)
+        try:
+            gzipped = fernet.decrypt(encrypted_data)
+        except Exception:
+            raise ValueError("Decryption failed: invalid key or corrupted archive.")
+        return bytearray(gzip.decompress(gzipped))
+
+    @staticmethod
+    def decrypt_archive_with_token(token: str, file_path: str) -> bytearray:
+        """
+        Canonical decrypt-side key derivation + decrypt routine.
+
+        Derives the Fernet key from *token* and the SAME machine-locked
+        hardware-UUID salt used by _get_encryption_key() at archive time,
+        trying the current PBKDF2 iteration count first and falling back to
+        the legacy (pre-hardening) count so archives written before the
+        iteration bump remain readable, then delegates to
+        decrypt_to_bytearray() for the actual Fernet-decrypt + gzip-decompress
+        work.
+
+        This is the ONLY place that should derive a decrypt-side key from a
+        token. decrypt_in_memory() and tools/decrypt_logs.py both call this
+        instead of re-deriving the key themselves — a second, independently
+        written key-derivation is exactly how this codebase previously ended
+        up with permanently undecryptable archives (see AGENTS.md / the
+        _archive_log vs. decrypt_in_memory salt-mismatch history).
+
+        Returns the decompressed plaintext (JSONL bytes) as a mutable
+        bytearray; the caller is responsible for calling _zero_bytes() on it
+        when finished.
+        """
+        from core.hardware_scout import get_hardware_profile
+
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Archive not found: {file_path}")
+
+        # Machine-locked salt — must match _get_encryption_key() exactly, or
+        # every archive encrypted by _archive_log() becomes permanently
+        # undecryptable. No fallback salt is used here: a missing hardware
+        # UUID means the key can't possibly match what was used at archive
+        # time, so guessing would just waste time before failing anyway.
+        profile = get_hardware_profile()
+        hardware_uuid = profile.get("hardware_uuid")
+        if not hardware_uuid:
+            raise ValueError("Could not determine a hardware UUID salt for key derivation.")
+
+        last_exc: Exception | None = None
+        for iterations in (_PBKDF2_ITERATIONS, _LEGACY_PBKDF2_ITERATIONS):
+            k = hashlib.pbkdf2_hmac('sha256', token.encode(), hardware_uuid.encode(), iterations)
+            key = base64.urlsafe_b64encode(k)
+            try:
+                return TraceLogger.decrypt_to_bytearray(file_path, key)
+            except ValueError as exc:
+                last_exc = exc
+                continue
+        raise ValueError("Invalid bridge token or hardware profile mismatch.") from last_exc
+
+    @staticmethod
     def decrypt_in_memory(token: str, file_path: str) -> list[dict]:
         """
         Decrypts an archived .enc log file in RAM without writing to disk.
@@ -468,82 +544,26 @@ class TraceLogger:
             else:
                 locked = True
 
+        plaintext_ba: bytearray | None = None
         try:
-            from cryptography.fernet import Fernet
-            import hashlib
-            import base64
-            from core.hardware_scout import get_hardware_profile
-
-            # 1. Derive key from PROVIDED token and the SAME motherboard-UUID salt
-            # used by _get_encryption_key() at archive time. This must match
-            # exactly, or every archive encrypted by _archive_log() becomes
-            # permanently undecryptable. No fallback salt is used here: a
-            # missing hardware UUID means the key can't possibly match what
-            # was used at archive time (that path now also refuses to use a
-            # fallback — see _get_encryption_key), so guessing would just
-            # waste time before failing anyway.
-            profile = get_hardware_profile()
-            hardware_uuid = profile.get("hardware_uuid")
-            if not hardware_uuid:
-                raise ValueError("Could not determine a hardware UUID salt for key derivation.")
-
-            if not os.path.exists(file_path):
-                raise FileNotFoundError(f"Archive not found: {file_path}")
-
-            with open(file_path, 'rb') as f_in:
-                encrypted_data = f_in.read()
-
-            # 2. Decrypt — try the current iteration count first, then the
-            # legacy (pre-hardening) count so archives written before the
-            # PBKDF2 iteration bump remain readable.
-            gzipped_data = None
-            last_exc: Exception | None = None
-            for iterations in (_PBKDF2_ITERATIONS, _LEGACY_PBKDF2_ITERATIONS):
-                k = hashlib.pbkdf2_hmac('sha256', token.encode(), hardware_uuid.encode(), iterations)
-                key = base64.urlsafe_b64encode(k)
-                try:
-                    gzipped_data = Fernet(key).decrypt(encrypted_data)
-                    break
-                except Exception as exc:
-                    last_exc = exc
-            if gzipped_data is None:
-                raise ValueError("Invalid bridge token or hardware profile mismatch.") from last_exc
-
-            # 3. Decompress and Parse
-            decompressed = gzip.decompress(gzipped_data).decode('utf-8')
+            plaintext_ba = TraceLogger.decrypt_archive_with_token(token, file_path)
+            decompressed = bytes(plaintext_ba).decode('utf-8')
             records = []
             for line in decompressed.strip().split('\n'):
                 if line.strip():
                     records.append(json.loads(line))
             return records
-            
+
         except (ValueError, FileNotFoundError):
             raise
         except Exception as e:
             logger.error(f"In-memory decryption error: {e}")
             raise RuntimeError(f"Failed to decrypt log: {e}")
         finally:
+            if plaintext_ba is not None:
+                TraceLogger._zero_bytes(plaintext_ba)
             if locked and _libc and hasattr(_libc, "munlockall"):
                 _libc.munlockall()
-
-    @staticmethod
-    def decrypt_to_bytearray(file_path: str, key: bytes) -> bytearray:
-        """
-        Decrypt *file_path* (Fernet-encrypted gzipped JSONL) using the provided
-        pre-derived key and return the decompressed plaintext as a mutable bytearray.
-        The caller is responsible for calling _zero_bytes() on the result when finished.
-        """
-        from cryptography.fernet import Fernet as _Fernet
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Archive not found: {file_path}")
-        with open(file_path, "rb") as fh:
-            encrypted_data = fh.read()
-        fernet = _Fernet(key)
-        try:
-            gzipped = fernet.decrypt(encrypted_data)
-        except Exception:
-            raise ValueError("Decryption failed: invalid key or corrupted archive.")
-        return bytearray(gzip.decompress(gzipped))
 
     def update_last_entry_feedback(self, feedback: str, corrected_response: str | None = None):
         """

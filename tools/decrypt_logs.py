@@ -11,10 +11,6 @@ Requires:
 
 import os
 import sys
-import json
-import gzip
-import base64
-import hashlib
 import shutil
 import argparse
 import getpass
@@ -38,31 +34,12 @@ _MCL_FUTURE  = 2
 
 try:
     import psutil
-    from cryptography.fernet import Fernet
     from core.hardware_scout import get_cpu_flags
     from app.utils.keychain_manager import load_cached_token, save_cached_token
+    from app.utils.trace_logger import TraceLogger
 except ImportError as e:
     print(f"Error: Missing dependencies. Please ensure you are running in the Karl venv. ({e})")
     sys.exit(1)
-
-def derive_key(token: str) -> bytes:
-    """Recreates the exact key derivation from TraceLogger."""
-    try:
-        # 1. Gather machine-locked salt (must match TraceLogger exactly)
-        from core.hardware_scout import get_hardware_uuid
-        hardware_uuid = get_hardware_uuid()
-        
-        # 2. PBKDF2 stretching
-        k = hashlib.pbkdf2_hmac(
-            'sha256', 
-            token.encode(), 
-            hardware_uuid.encode(), 
-            100000
-        )
-        return base64.urlsafe_b64encode(k)
-    except Exception as e:
-        print(f"Error during key derivation: {e}")
-        sys.exit(1)
 
 def main():
     parser = argparse.ArgumentParser(description="Decrypt Karl encrypted trace logs.")
@@ -99,29 +76,27 @@ def main():
         else:
             locked = True
 
+    plaintext_ba = None
     try:
-        key = derive_key(token)
-        
         print(f"Decrypting {args.input}...")
-        
-        with open(args.input, 'rb') as f_in:
-            encrypted_data = f_in.read()
-        
-        fernet = Fernet(key)
+
+        # Derive the key and decrypt via TraceLogger's canonical decrypt-side
+        # routine — the single place that knows how to reproduce the key
+        # _archive_log() used to encrypt, including the legacy PBKDF2
+        # iteration-count fallback for older archives. Do not re-derive the
+        # key here; a second, independently written derivation is exactly
+        # how this codebase previously ended up with permanently
+        # undecryptable archives.
         try:
-            gzipped_data = fernet.decrypt(encrypted_data)
-        except Exception:
+            plaintext_ba = TraceLogger.decrypt_archive_with_token(token, args.input)
+        except ValueError:
             # Likely invalid token or salt mismatch
             print("\nDecryption failed: Invalid bridge token or hardware profile mismatch.")
             sys.exit(1)
-            
-        print("Decompressing payload...")
-        try:
-            plaintext = gzip.decompress(gzipped_data)
         except Exception as e:
             print(f"Error: Decryption succeeded but decompression failed. The file may be corrupt. ({e})")
             sys.exit(1)
-            
+
         # 3b. Successful manual auth -> cache in keyring
         if not args.token and not os.environ.get("KARL_BRIDGE_TOKEN"):
              save_cached_token(token)
@@ -129,15 +104,17 @@ def main():
         # 4. Write Output
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         with open(args.output, 'wb') as f_out:
-            f_out.write(plaintext)
-            
+            f_out.write(bytes(plaintext_ba))
+
         print(f"Decryption complete: {args.output}")
         sys.exit(0)
-        
+
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         sys.exit(1)
     finally:
+        if plaintext_ba is not None:
+            TraceLogger._zero_bytes(plaintext_ba)
         if locked and _libc and hasattr(_libc, "munlockall"):
             _libc.munlockall()
 
